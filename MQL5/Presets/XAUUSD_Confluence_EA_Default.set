@@ -1,0 +1,49 @@
+; XAUUSD_Confluence_EA - default preset
+; In MT5: Strategy Tester > Expert Advisor: XAUUSD_Confluence_EA > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; Note: InpWorkTF and InpTrendTF are stored below as raw ENUM_TIMEFRAMES values
+; (15 = M15, 16388 = H4). If your MT5 build does not accept these lines for the
+; timeframe inputs, just set them manually in the Inputs tab:
+;   InpWorkTF  -> M15
+;   InpTrendTF -> H4
+;
+InpMagicNumber=20260908
+InpSlippagePoints=30
+InpTradeXAUUSDOnly=true
+InpMaxOpenPositions=1
+InpWorkTF=15
+InpTrendTF=16388
+InpTrendEmaPeriod=200
+InpEmaFastPeriod=20
+InpEmaSlowPeriod=50
+InpMacdFast=12
+InpMacdSlow=26
+InpMacdSignal=9
+InpRsiPeriod=14
+InpRsiUpperBlock=70.0
+InpRsiLowerBlock=30.0
+InpRsiMidline=50.0
+InpAdxPeriod=14
+InpAdxMinLevel=22.0
+InpAtrPeriod=14
+InpBandsPeriod=20
+InpBandsDeviation=2.0
+InpRiskPercent=1.0
+InpAtrSlMultiplier=1.8
+InpRiskRewardRatio=1.8
+InpMaxLotSize=5.0
+InpMaxDailyLossPct=3.0
+InpMaxTradesPerDay=6
+InpBreakevenAtrMult=1.0
+InpBreakevenBufferPts=20
+InpTrailStartAtrMult=1.5
+InpTrailAtrMult=1.2
+InpUseSessionFilter=true
+InpSessionStartHour=7
+InpSessionStartMin=0
+InpSessionEndHour=20
+InpSessionEndMin=0
+InpCloseBeforeWeekend=true
+InpWeekendCloseHour=20
+InpMaxSpreadPoints=350

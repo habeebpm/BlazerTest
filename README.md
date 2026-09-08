@@ -10,11 +10,16 @@ Backtest across several years and market regimes, forward-test on a demo
 account, and never risk money you can't afford to lose. Past performance does
 not predict future results.
 
-## File
+## Files
 
-`MQL5/Experts/XAUUSD_Confluence_EA.mq5` — copy into your terminal's
-`MQL5/Experts/` folder (File → Open Data Folder in MetaTrader 5), then
-compile in MetaEditor and attach to an **XAUUSD** chart.
+- `MQL5/Experts/XAUUSD_Confluence_EA.mq5` — the EA. Copy into your terminal's
+  `MQL5/Experts/` folder (File → Open Data Folder in MetaTrader 5), then
+  compile in MetaEditor and attach to an **XAUUSD** chart.
+- `MQL5/Presets/XAUUSD_Confluence_EA_Default.set` — a ready-made input preset
+  matching the defaults below. Load it from the EA's Inputs tab (`Load`
+  button) instead of retyping every parameter.
+- `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
+  cheat sheet.
 
 ## Strategy logic
 
