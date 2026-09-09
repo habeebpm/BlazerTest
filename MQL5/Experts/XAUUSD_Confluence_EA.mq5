@@ -30,7 +30,7 @@
 //+------------------------------------------------------------------+
 #property copyright "XAUUSD_Confluence_EA"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 #property description "Multi-indicator (EMA/MACD/RSI/ADX/ATR/Bollinger) confluence EA for XAUUSD with ATR position sizing, trailing stop, session/spread/daily-loss filters. Educational use - backtest and demo-trade thoroughly before risking real capital."
 
@@ -99,6 +99,15 @@ input int      InpWeekendCloseHour  = 20;               // Friday hour (server t
 input group "=== Spread Filter ==="
 input int      InpMaxSpreadPoints   = 350;              // Max allowed spread (points) to open new trades
 
+input group "=== Remote Bridge (iOS Monitor/Control App) ==="
+input bool     InpBridgeEnabled       = false;           // Enable remote bridge (heartbeat + remote control)
+input string   InpBridgeURL           = "https://your-bridge.example.com"; // Bridge base URL (must be whitelisted in Tools>Options>Expert Advisors)
+input string   InpBridgeApiKey        = "";               // Shared API key (sent as X-Api-Key header)
+input string   InpBridgeAccountTag    = "";                // Optional label for this account/EA instance (defaults to account login)
+input int      InpBridgeHeartbeatSec  = 30;                // Seconds between status reports pushed to the bridge
+input int      InpBridgePollSec       = 15;                // Seconds between remote-control polls (enable/disable, flatten)
+input bool     InpBridgeFailSafeOpen  = true;               // If the bridge is unreachable, keep trading enabled (true) or pause (false)
+
 //================================= GLOBALS ====================================
 
 CTrade         trade;
@@ -116,6 +125,14 @@ datetime       g_currentDay       = 0;
 double         g_dayStartEquity   = 0.0;
 int            g_tradesToday      = 0;
 bool           g_dailyLossHit     = false;
+
+// --- Remote bridge state (iOS monitor/control app talks to a bridge server; the EA never accepts inbound connections) ---
+datetime       g_lastHeartbeatAt     = 0;
+datetime       g_lastControlPollAt  = 0;
+bool           g_remoteTradingEnabled = true;   // last-known "trading allowed" flag from the bridge
+bool           g_remoteFlattenPending = false;  // set by the bridge to request an immediate flatten-all
+bool           g_bridgeReachable      = false;  // did the last poll/heartbeat succeed
+string         g_bridgeLastError      = "";
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -156,6 +173,18 @@ int OnInit()
    g_tradesToday    = 0;
    g_dailyLossHit   = false;
 
+   g_remoteTradingEnabled = true;
+   g_remoteFlattenPending = false;
+   g_bridgeReachable      = false;
+   g_bridgeLastError      = "";
+
+   if(InpBridgeEnabled && !MQLInfoInteger(MQL_TESTER))
+   {
+      EventSetTimer(5); // OnTimer fires every 5s; heartbeat/poll are throttled internally to their own intervals
+      PollBridgeControl();   // pick up the current remote state immediately instead of waiting for the first timer tick
+      SendBridgeHeartbeat();
+   }
+
    return(INIT_SUCCEEDED);
 }
 
@@ -164,6 +193,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   if(InpBridgeEnabled) EventKillTimer();
+
    if(hEmaTrend != INVALID_HANDLE) IndicatorRelease(hEmaTrend);
    if(hEmaFast  != INVALID_HANDLE) IndicatorRelease(hEmaFast);
    if(hEmaSlow  != INVALID_HANDLE) IndicatorRelease(hEmaSlow);
@@ -172,6 +203,30 @@ void OnDeinit(const int reason)
    if(hAdx      != INVALID_HANDLE) IndicatorRelease(hAdx);
    if(hAtr      != INVALID_HANDLE) IndicatorRelease(hAtr);
    if(hBands    != INVALID_HANDLE) IndicatorRelease(hBands);
+}
+
+//+------------------------------------------------------------------+
+//| Timer: drives the remote bridge heartbeat + control poll on their |
+//| own cadence, independent of tick volume (so it keeps reporting    |
+//| even on a quiet symbol/session).                                  |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!InpBridgeEnabled) return;
+
+   if(TimeCurrent() - g_lastControlPollAt >= InpBridgePollSec)
+      PollBridgeControl();
+
+   if(TimeCurrent() - g_lastHeartbeatAt >= InpBridgeHeartbeatSec)
+      SendBridgeHeartbeat();
+
+   if(g_remoteFlattenPending)
+   {
+      Print("XAUUSD_Confluence_EA: remote flatten-all command received from bridge.");
+      CloseAllPositions();
+      g_remoteFlattenPending = false;
+      SendBridgeHeartbeat(); // report the result right away instead of waiting for the next interval
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -597,6 +652,186 @@ void ManageOpenPositions(double atr)
 }
 
 //+------------------------------------------------------------------+
+//| Remote bridge helpers                                             |
+//| ------------------------------------------------------------------|
+//| The EA cannot accept inbound connections (MT5 terminals only make |
+//| outbound requests via WebRequest), so an iOS app can't talk to it |
+//| directly. Instead the EA periodically PUSHes a status heartbeat   |
+//| to a small bridge server (see /bridge in the repo) and POLLs the  |
+//| same server for remote-control flags the app has set. Add the    |
+//| bridge's domain to Tools > Options > Expert Advisors > "Allow     |
+//| WebRequest for listed URL" or these calls fail with error 4060.   |
+//+------------------------------------------------------------------+
+string JsonEscape(const string s)
+{
+   string out = s;
+   StringReplace(out, "\\", "\\\\");
+   StringReplace(out, "\"", "\\\"");
+   StringReplace(out, "\n", "\\n");
+   StringReplace(out, "\r", "");
+   return(out);
+}
+
+string BridgeAccountTag()
+{
+   if(StringLen(InpBridgeAccountTag) > 0) return(InpBridgeAccountTag);
+   return(IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)));
+}
+
+//+------------------------------------------------------------------+
+//| Build the JSON array of this EA's open positions on this symbol   |
+//+------------------------------------------------------------------+
+string BuildPositionsJson()
+{
+   string json = "[";
+   bool first = true;
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+
+      if(!first) json += ",";
+      first = false;
+
+      long type = PositionGetInteger(POSITION_TYPE);
+      json += StringFormat(
+         "{\"ticket\":%I64u,\"type\":\"%s\",\"volume\":%.2f,\"openPrice\":%.2f,\"sl\":%.2f,\"tp\":%.2f,\"profit\":%.2f}",
+         ticket,
+         type == POSITION_TYPE_BUY ? "buy" : "sell",
+         PositionGetDouble(POSITION_VOLUME),
+         PositionGetDouble(POSITION_PRICE_OPEN),
+         PositionGetDouble(POSITION_SL),
+         PositionGetDouble(POSITION_TP),
+         PositionGetDouble(POSITION_PROFIT));
+   }
+   json += "]";
+   return(json);
+}
+
+//+------------------------------------------------------------------+
+//| Push a status heartbeat to the bridge: account + EA state         |
+//+------------------------------------------------------------------+
+void SendBridgeHeartbeat()
+{
+   g_lastHeartbeatAt = TimeCurrent();
+
+   string url = InpBridgeURL + "/api/heartbeat";
+   string body = StringFormat(
+      "{\"accountTag\":\"%s\",\"login\":%I64u,\"broker\":\"%s\",\"currency\":\"%s\",\"symbol\":\"%s\","
+      "\"magicNumber\":%I64u,\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"freeMargin\":%.2f,"
+      "\"tradesToday\":%d,\"dailyLossHit\":%s,\"remoteTradingEnabled\":%s,\"positions\":%s,\"eaVersion\":\"1.1\",\"ts\":%I64d}",
+      JsonEscape(BridgeAccountTag()),
+      (ulong)AccountInfoInteger(ACCOUNT_LOGIN),
+      JsonEscape(AccountInfoString(ACCOUNT_COMPANY)),
+      JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)),
+      JsonEscape(_Symbol),
+      InpMagicNumber,
+      AccountInfoDouble(ACCOUNT_BALANCE),
+      AccountInfoDouble(ACCOUNT_EQUITY),
+      AccountInfoDouble(ACCOUNT_MARGIN),
+      AccountInfoDouble(ACCOUNT_MARGIN_FREE),
+      g_tradesToday,
+      g_dailyLossHit ? "true" : "false",
+      g_remoteTradingEnabled ? "true" : "false",
+      BuildPositionsJson(),
+      (long)TimeCurrent());
+
+   char   data[], result[];
+   string resultHeaders;
+   StringToCharArray(body, data, 0, StringLen(body));
+
+   string headers = "Content-Type: application/json\r\nX-Api-Key: " + InpBridgeApiKey + "\r\n";
+   ResetLastError();
+   int status = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
+
+   if(status == -1)
+   {
+      g_bridgeReachable = false;
+      g_bridgeLastError = "WebRequest error " + IntegerToString(GetLastError()) + " (is the bridge URL whitelisted?)";
+      Print("XAUUSD_Confluence_EA: heartbeat failed - ", g_bridgeLastError);
+   }
+   else if(status >= 200 && status < 300)
+   {
+      g_bridgeReachable = true;
+      g_bridgeLastError = "";
+   }
+   else
+   {
+      g_bridgeReachable = false;
+      g_bridgeLastError = "HTTP " + IntegerToString(status);
+      Print("XAUUSD_Confluence_EA: heartbeat rejected by bridge - ", g_bridgeLastError);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Tiny helper: read a top-level JSON boolean field without a full   |
+//| JSON parser (the control response has a small, fixed shape).      |
+//+------------------------------------------------------------------+
+bool JsonReadBool(const string json, const string key, bool defaultValue)
+{
+   string needle = "\"" + key + "\"";
+   int pos = StringFind(json, needle);
+   if(pos < 0) return(defaultValue);
+   int colon = StringFind(json, ":", pos + StringLen(needle));
+   if(colon < 0) return(defaultValue);
+   string rest = StringSubstr(json, colon + 1, 8);
+   StringTrimLeft(rest);
+   if(StringFind(rest, "true") == 0) return(true);
+   if(StringFind(rest, "false") == 0) return(false);
+   return(defaultValue);
+}
+
+//+------------------------------------------------------------------+
+//| Poll the bridge for remote-control flags set from the iOS app:    |
+//| tradingEnabled (pause/resume new entries) and flattenAll (close   |
+//| everything now). Fail-safe behavior is configurable: if the       |
+//| bridge is unreachable, either keep trading (default) or pause.    |
+//+------------------------------------------------------------------+
+void PollBridgeControl()
+{
+   g_lastControlPollAt = TimeCurrent();
+
+   string url = InpBridgeURL + "/api/control?accountTag=" + BridgeAccountTag();
+   char   data[], result[];
+   string resultHeaders;
+   string headers = "X-Api-Key: " + InpBridgeApiKey + "\r\n";
+
+   ResetLastError();
+   int status = WebRequest("GET", url, headers, 5000, data, result, resultHeaders);
+
+   if(status == -1)
+   {
+      g_bridgeReachable = false;
+      g_bridgeLastError = "WebRequest error " + IntegerToString(GetLastError()) + " (is the bridge URL whitelisted?)";
+      g_remoteTradingEnabled = InpBridgeFailSafeOpen; // fail-safe: keep trading unless configured to pause
+      return;
+   }
+
+   if(status < 200 || status >= 300)
+   {
+      g_bridgeReachable = false;
+      g_bridgeLastError = "HTTP " + IntegerToString(status);
+      g_remoteTradingEnabled = InpBridgeFailSafeOpen;
+      return;
+   }
+
+   g_bridgeReachable = true;
+   g_bridgeLastError = "";
+
+   string body = CharArrayToString(result);
+   bool wasEnabled = g_remoteTradingEnabled;
+   g_remoteTradingEnabled = JsonReadBool(body, "tradingEnabled", true);
+   bool flatten = JsonReadBool(body, "flattenAll", false);
+   if(flatten) g_remoteFlattenPending = true;
+
+   if(wasEnabled != g_remoteTradingEnabled)
+      PrintFormat("XAUUSD_Confluence_EA: remote trading %s via bridge.", g_remoteTradingEnabled ? "ENABLED" : "DISABLED");
+}
+
+//+------------------------------------------------------------------+
 //| Expert tick function                                              |
 //+------------------------------------------------------------------+
 void OnTick()
@@ -616,6 +851,7 @@ void OnTick()
 
    if(weekendBlock) return;
    if(g_dailyLossHit) return;
+   if(InpBridgeEnabled && !g_remoteTradingEnabled) return; // paused remotely from the iOS app
    if(g_tradesToday >= InpMaxTradesPerDay) return;
    if(!IsWithinSession()) return;
    if(!SpreadIsAcceptable()) return;

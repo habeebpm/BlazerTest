@@ -20,6 +20,43 @@ not predict future results.
   button) instead of retyping every parameter.
 - `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
   cheat sheet.
+- `bridge/` — a small server that lets the iOS app below monitor and remotely
+  control the EA.
+- `ios/` — the iOS app (SwiftUI + XcodeGen project).
+
+## iOS app: monitoring and remote control
+
+There is no way for a third-party iOS app to run an MQL5 EA directly.
+MetaTrader's algo-trading engine only exists inside the MetaTrader
+**terminal** — desktop, or a broker's cloud-hosted terminal — and MT5's own
+official iOS app is a manual-trading client with no support for running
+custom Expert Advisors. Apple's platform has no path to execute arbitrary
+third-party MQL5 code either. So "an iOS app that runs the EA automatically"
+is built as:
+
+```
+XAUUSD_Confluence_EA  --heartbeat-->   bridge server  <--status/control--  iOS app
+(MT5 terminal, always                  (bridge/,           (ios/,
+ on — a VPS or a                        self-hosted)        SwiftUI)
+ desktop left running)  <--poll control--
+```
+
+- The **EA** (`MQL5/Experts/XAUUSD_Confluence_EA.mq5`) keeps doing exactly
+  what it always did — evaluating signals and managing trades autonomously,
+  every tick, with no phone in the loop. It now also *optionally* (off by
+  default, `InpBridgeEnabled`) pushes a status heartbeat and polls for two
+  remote-control flags via MQL5's outbound-only `WebRequest`.
+- The **bridge** (`bridge/`) is a small server you deploy (VPS, Fly.io,
+  Render, etc.) that relays between the EA (which can only make outbound
+  calls) and the app (which can't reach a terminal directly).
+- The **iOS app** (`ios/`) polls the bridge to show live account
+  equity/balance, open positions, and daily-loss/trade-count state, and can
+  remotely pause/resume new entries or flatten all positions. It never
+  computes signals or sends orders itself — that stays in the EA, so live
+  behavior always matches what you backtested.
+
+See `bridge/README.md` and `ios/README.md` for setup. The EA works exactly
+as before if you never touch the new `=== Remote Bridge ===` inputs.
 
 ## Strategy logic
 

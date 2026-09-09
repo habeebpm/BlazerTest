@@ -1,0 +1,31 @@
+name: BlazerMT5Monitor
+options:
+  bundleIdPrefix: com.blazertest
+  deploymentTarget:
+    iOS: "17.0"
+configs:
+  Debug: debug
+  Release: release
+targets:
+  BlazerMT5Monitor:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BlazerMT5Monitor/Sources
+    info:
+      path: BlazerMT5Monitor/Info.plist
+      properties:
+        CFBundleDisplayName: "MT5 EA Monitor"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blazertest.mt5monitor
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
