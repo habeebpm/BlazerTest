@@ -3,7 +3,11 @@
 Python port of the MQL5 EA. It watches XAUUSD and opens **0.02 lots** with a
 **60-pip stop-loss ($6.00)** and a **30-pip trailing stop ($3.00)**, but only
 when at least **2 of the 3 confluences** agree and **at least one of them is
-confirmed**.
+confirmed**. Entries are evaluated on every **M5 candle close**, with at most
+**2 positions open at a time** and **no daily trade cap**.
+
+> **On a Mac?** The `MetaTrader5` Python package is Windows-only. See
+> [Running on a Mac](#running-on-a-mac) — the MQL5 EA is the simplest route.
 
 ## The three confluences
 
@@ -36,13 +40,24 @@ Measured across five independent 900-bar synthetic series:
 |---|---|---|
 | 3/3 (the old rule) | 24 | 0.77 |
 | 2/3, no confirmation | 293 | 9.38 |
-| **2/3 + ≥1 confirmed (default)** | **179** | **5.73** |
+| **2/3 + ≥1 confirmed** | **179** | **5.73** |
 | 2/3 + ≥2 confirmed | 30 | 0.96 |
+
+Moving from M15 to M5 multiplies that again — same rule, 3x the bars:
+
+| Timeframe | bars/signal | ≈ trades/day |
+|---|---|---|
+| M15 | 18.3 | 5.2 |
+| **M5 (default)** | **16.3** | **17.7** |
 
 Two consequences worth knowing:
 
-1. **`max_trades_per_day = 6` is now the binding constraint on busy days** at
-   ~5.7 signals/day. Raise it if you want every signal taken.
+1. **There is no daily trade cap** (`max_trades_per_day = 0`). At ~17 signals
+   a day on M5, the only brakes left are `max_open_positions = 2`, the
+   same-direction rule, the session window and the **3% daily-loss circuit
+   breaker** — which becomes your main protection. At 0.02 lots a $6.00 stop
+   risks about $12 per trade, so size the account accordingly, or set
+   `--max-trades-per-day` back to a number.
 2. **The trend leg is no longer mandatory**, so momentum + strength can open a
    trade *against* the H4 trend — roughly 1 signal in 20 in testing. Set
    `require_trend_confluence = True` (or `--require-trend`) to force the trend
@@ -102,6 +117,37 @@ So right now you can run `--selftest`, `test_integration.py`, `--check` and
 `--signal`, and leave the bot running in dry-run; it will pick up quotes when
 the market reopens.
 
+## Running on a Mac
+
+`pip install MetaTrader5` fails on macOS: the package publishes Windows-only
+wheels and drives the terminal over Windows IPC. Four ways round it, easiest
+first:
+
+1. **Run the MQL5 EA instead — recommended.** MetaQuotes ships MT5 for macOS,
+   and `MQL5/Experts/XAUUSD_Confluence_EA.mq5` runs natively inside it with the
+   same strategy, the same 2-of-3 rule, M5 entries, 2 concurrent positions and
+   no daily cap. No Python involved. Load
+   `MQL5/Presets/XAUUSD_Confluence_EA_Default.set` and you are done.
+2. **Windows VM** — Parallels, VMware Fusion or UTM, with MT5 + Python inside
+   the VM. The full Python bot then works unchanged.
+3. **Windows VPS** — the usual choice for running a bot 24/7, and it keeps
+   trading while your Mac is asleep.
+4. **Wine/CrossOver bottle** — install Windows Python into the same bottle as
+   MT5 and `pip install MetaTrader5` there. Works, but the fiddliest option.
+
+**What does run natively on your Mac:** everything except live trading. The
+strategy, indicators and both test suites are pure pandas/numpy:
+
+```bash
+pip install pandas numpy
+python trader.py --selftest      # strategy + entry-rule + distance checks
+python test_integration.py       # full order/trailing path against a mock MT5
+```
+
+Those two cover the entry rule, the trailing-stop maths and the order
+construction, so you can develop and verify strategy changes on the Mac and
+only need Windows (or the EA) to place real orders.
+
 ## Install (Windows — MT5 required)
 
 ```bat
@@ -125,13 +171,18 @@ python trader.py                   :: live data, DRY-RUN (no orders sent)
 python trader.py --live            :: actually trade, 60-pip stop / 30-pip trail
 ```
 
+Entries are checked once per closed M5 bar; the 5-second poll only services
+trailing stops. Override with `--timeframe M15`, `--max-positions 1`,
+`--max-trades-per-day 10`.
+
 `--live` is opt-in by design: without it the bot logs every decision and the
 exact order it *would* have sent, which is how you should run it first.
 
 Useful flags: `--unit {point,pip,usd}`, `--sl-units 60`, `--trail-units 30`,
 `--lots 0.02`, `--min-confluences {1,2,3}`, `--min-confirmed {1,2,3}`,
-`--no-confirmation`, `--require-trend`, `--force` (trade despite preflight
-problems — not advised), `-v`.
+`--no-confirmation`, `--require-trend`, `--timeframe M5`, `--max-positions 2`,
+`--max-trades-per-day 0`, `--force` (trade despite preflight problems — not
+advised), `-v`.
 
 ## Files
 
@@ -157,8 +208,11 @@ Output goes to `logs/trader.log` and every entry is appended to
 
 - Trades are evaluated once per closed working-timeframe bar and use only
   closed-bar values — no repainting.
-- With `cross_lookback = 8` and the 2-of-3 rule, expect roughly **6 signals per
-  day** on M15 (one per day under the old 3-of-3 rule). Requiring the cross on the very last closed bar (the obvious reading)
+- With `cross_lookback = 8`, the 2-of-3 rule and M5 entries, expect roughly
+  **17 signals per day** (about one per day under the original M15 3-of-3
+  rule). M5 is noisier, so more of those will be marginal.
+- Two positions may be open at once, but only in the same direction; an
+  opposing signal is skipped rather than hedged (`allow_opposite_positions`). Requiring the cross on the very last closed bar (the obvious reading)
   drops that to about **one signal per 2000 bars**, because ADX is still below
   its threshold at the moment the EMAs cross. That measurement is why the
   default is 8 in both this bot and the EA.

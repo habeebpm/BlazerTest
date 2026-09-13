@@ -46,7 +46,7 @@ class TradeConfig:
     trail_start_units: float = 30.0
 
     # ---------------- strategy ----------------
-    working_timeframe: str = "M15"      # entry timeframe
+    working_timeframe: str = "M5"       # entry timeframe (evaluated on each close)
     trend_timeframe: str = "H4"         # macro trend timeframe
     trend_ema_period: int = 200
     ema_fast: int = 20
@@ -103,8 +103,13 @@ class TradeConfig:
     use_bands_veto: bool = True
 
     # ---------------- guards (not part of the 3 confluences) ----------------
-    max_open_positions: int = 1
-    max_trades_per_day: int = 6
+    max_open_positions: int = 2
+    max_trades_per_day: int = 0         # 0 = unlimited (daily loss limit still applies)
+
+    # Two positions at once are allowed, but only in the SAME direction. A
+    # simultaneous buy and sell pays the spread twice and nets to nothing on a
+    # netting account, so an opposing signal is skipped while a position is open.
+    allow_opposite_positions: bool = False
     max_daily_loss_pct: float = 3.0
     max_spread_points: int = 350        # always in broker points
     use_session_filter: bool = True
@@ -118,6 +123,8 @@ class TradeConfig:
     deviation_points: int = 30          # max slippage
     comment: str = "XAUUSD-Confluence-Py"
     poll_seconds: float = 5.0           # trailing-stop / position management cadence
+    # Entries are evaluated once per CLOSED working-timeframe bar (M5 by
+    # default), so this cadence only governs trailing-stop upkeep.
 
     # ---------------- connection (never hardcode credentials) ----------------
     login: int | None = None

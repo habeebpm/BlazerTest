@@ -3,16 +3,17 @@
 ; or on the chart's EA Inputs dialog > Load.
 ;
 ; Note: InpWorkTF and InpTrendTF are stored below as raw ENUM_TIMEFRAMES values
-; (15 = M15, 16388 = H4). If your MT5 build does not accept these lines for the
+; (5 = M5, 16388 = H4). If your MT5 build does not accept these lines for the
 ; timeframe inputs, just set them manually in the Inputs tab:
-;   InpWorkTF  -> M15
+;   InpWorkTF  -> M5
 ;   InpTrendTF -> H4
 ;
 InpMagicNumber=20260908
 InpSlippagePoints=30
 InpTradeXAUUSDOnly=true
-InpMaxOpenPositions=1
-InpWorkTF=15
+InpMaxOpenPositions=2
+InpAllowOpposite=false
+InpWorkTF=5
 InpTrendTF=16388
 InpTrendEmaPeriod=200
 InpEmaFastPeriod=20
@@ -44,7 +45,7 @@ InpAtrSlMultiplier=1.8
 InpRiskRewardRatio=1.8
 InpMaxLotSize=5.0
 InpMaxDailyLossPct=3.0
-InpMaxTradesPerDay=6
+InpMaxTradesPerDay=0
 InpBreakevenAtrMult=1.0
 InpBreakevenBufferPts=20
 InpTrailStartAtrMult=1.5

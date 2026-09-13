@@ -1,13 +1,20 @@
 """
 Thin wrapper around the MetaTrader5 Python package.
 
-The MetaTrader5 package only runs on Windows with a MetaTrader 5 terminal
-installed, so it is imported lazily: every other module in this project stays
-importable (and testable) on Linux/macOS.
+The MetaTrader5 package ships Windows-only wheels and talks to a local
+MetaTrader 5 terminal over Windows IPC, so it cannot be installed on macOS or
+Linux. It is therefore imported lazily: every other module in this project
+(indicators, strategy, config, the test suites) stays importable and runnable
+on any platform - only live trading needs Windows.
+
+On a Mac, see the "Running on a Mac" section of README.md; the short version
+is that the MQL5 Expert Advisor runs natively inside MT5 for macOS and needs
+no Python at all.
 """
 from __future__ import annotations
 
 import logging
+import platform
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -28,9 +35,28 @@ def mt5():
         try:
             import MetaTrader5 as m
         except ImportError as exc:  # pragma: no cover - platform dependent
+            system = platform.system()
+            if system == "Darwin":
+                raise RuntimeError(
+                    "The MetaTrader5 Python package does not run on macOS - it ships "
+                    "Windows-only wheels and talks to the terminal over Windows IPC.\n"
+                    "  Options, easiest first:\n"
+                    "   1. Run the MQL5 Expert Advisor instead "
+                    "(MQL5/Experts/XAUUSD_Confluence_EA.mq5). MT5 for macOS runs it "
+                    "natively, same strategy, no Python needed. Recommended.\n"
+                    "   2. Run this bot inside a Windows VM (Parallels / VMware Fusion "
+                    "/ UTM) with MT5 and Python installed in the VM.\n"
+                    "   3. Run it on a Windows VPS, which also keeps it going when your "
+                    "Mac is asleep.\n"
+                    "   4. Install Windows Python into the same Wine/CrossOver bottle as "
+                    "MT5 and pip install MetaTrader5 there.\n"
+                    "  The strategy logic itself does run on your Mac: try "
+                    "'python trader.py --selftest' and 'python test_integration.py'."
+                ) from exc
             raise RuntimeError(
-                "The MetaTrader5 package is not available. It requires Windows "
-                "with the MetaTrader 5 terminal installed:  pip install MetaTrader5"
+                f"The MetaTrader5 package is not available on this platform ({system}). "
+                "It requires Windows with the MetaTrader 5 terminal installed: "
+                "pip install MetaTrader5"
             ) from exc
         _mt5 = m
     return _mt5

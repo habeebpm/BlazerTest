@@ -77,7 +77,11 @@ def _tick(sym):
 m.symbol_info_tick = lambda s: _tick(s)
 
 def copy_rates_from_pos(symbol, tf, start, count):
-    return _rates(count, PRICES_M15, 15) if tf == m.TIMEFRAME_M15 else _rates(count, PRICES_M15[::16], 240)
+    if tf == m.TIMEFRAME_M5:
+        return _rates(count, PRICES_M15, 5)
+    if tf == m.TIMEFRAME_M15:
+        return _rates(count, PRICES_M15, 15)
+    return _rates(count, PRICES_M15[::16], 240)
 m.copy_rates_from_pos = copy_rates_from_pos
 
 POSITIONS = []
@@ -161,9 +165,32 @@ assert abs(POSITIONS[0].sl - (entry + 9.0 - 3.0)) <= 0.005 + 1e-9, POSITIONS[0].
 print("   final stop is $3.00 behind the high -> $6.00 profit locked")
 m.symbol_info_tick = lambda s: _tick(s)   # restore the MARKET_OPEN-driven tick source
 
-print("\n=== 7. guards ===")
-print("   entry_blocked with 1 open position:", live.entry_blocked())
+print("\n=== 7. guards (max 2 at a time, no daily cap) ===")
+print(f"   config: timeframe={cfg2.working_timeframe} max_positions={cfg2.max_open_positions} "
+      f"max_trades_per_day={cfg2.max_trades_per_day} (0=unlimited)")
+print("   1 position open -> entry_blocked:", live.entry_blocked(), "(room for a 2nd)")
+assert live.entry_blocked() is None, "one position must not block with a cap of 2"
+
+# a same-direction second entry is allowed; an opposing one is not
+print("   2nd BUY (same direction) blocked?", live.opposite_position_blocks("buy"))
+assert live.opposite_position_blocks("buy") is None
+opposing = live.opposite_position_blocks("sell")
+print("   SELL while a BUY is open ->", opposing.split(";")[0] if opposing else None)
+assert opposing is not None, "an opposing signal must be skipped"
+
+# fill the second slot -> now blocked
+POSITIONS.append(types.SimpleNamespace(ticket=556, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
+                                       volume=0.02, price_open=entry, sl=req["sl"], tp=0.0,
+                                       magic=cfg2.magic))
+print("   2 positions open -> entry_blocked:", live.entry_blocked())
 assert live.entry_blocked() is not None
+
+# the daily cap is off: a high trade count must not block
+live.trades_today = 500
+POSITIONS.pop()
+print(f"   after {live.trades_today} trades today -> entry_blocked:", live.entry_blocked())
+assert live.entry_blocked() is None, "max_trades_per_day=0 must mean unlimited"
+live.trades_today = 0
 
 print("\n=== 8. market closed (quotes frozen) ===")
 import mt5_client as _mc

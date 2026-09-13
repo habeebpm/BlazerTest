@@ -45,10 +45,19 @@ confirmed** (`InpMinConfluences` / `InpMinConfirmed`), evaluated on the most
 recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
 as a veto rather than a vote.
 
+Entries are evaluated on each closed **M5** bar, with up to **2 positions open
+at a time** (same direction only) and **no daily trade cap**
+(`InpMaxTradesPerDay = 0`).
+
 At 2 of 3 the trend leg is optional, so entries against the H4 trend become
-possible — set `InpRequireTrendConfluence = true` to block them. Expect
-markedly more signals than the old 3-of-3 rule, which makes
-`InpMaxTradesPerDay` the binding limit on busy days.
+possible — set `InpRequireTrendConfluence = true` to block them. Between the
+2-of-3 rule and M5 entries this signals far more often than the original
+M15 3-of-3 version (~17 vs ~1 per day in testing), so the **daily-loss circuit
+breaker** and `InpMaxOpenPositions` are the main brakes.
+
+**Running on a Mac?** MT5 for macOS runs this EA natively — that is the
+simplest path, since the Python bot's `MetaTrader5` dependency is Windows-only.
+See `python/README.md` → "Running on a Mac".
 
 ## Risk & trade management
 

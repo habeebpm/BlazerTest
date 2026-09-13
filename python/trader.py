@@ -2,7 +2,8 @@
 """
 XAUUSD confluence trading bot for MetaTrader 5.
 
-Opens 0.02 lots of XAUUSD with a 60-pip stop-loss and a 30-pip trailing stop,
+Evaluates on every M5 candle close and opens up to 2 positions of 0.02 lots
+each on XAUUSD, with a 60-pip stop-loss and a 30-pip trailing stop,
 but only when at least 2 of the 3 confluences (trend, momentum, strength) agree
 and at least one of them is confirmed at its stricter threshold.
 
@@ -128,10 +129,10 @@ class Bot:
             return "market is closed"
         if self.daily_loss_hit:
             return "daily loss limit reached"
-        if self.trades_today >= cfg.max_trades_per_day:
+        if cfg.max_trades_per_day > 0 and self.trades_today >= cfg.max_trades_per_day:
             return f"max trades/day reached ({self.trades_today})"
         if len(mc.get_positions(cfg)) >= cfg.max_open_positions:
-            return "max open positions reached"
+            return f"max open positions reached ({cfg.max_open_positions})"
         if cfg.use_session_filter and not (cfg.session_start_hour <= now.hour < cfg.session_end_hour):
             return f"outside session {cfg.session_start_hour}:00-{cfg.session_end_hour}:00"
         if cfg.close_before_weekend and now.weekday() == 4 and now.hour >= cfg.weekend_close_hour:
@@ -142,6 +143,18 @@ class Bot:
         return None
 
     # ---------------- strategy ----------------
+    def opposite_position_blocks(self, direction: str) -> str | None:
+        """Block a signal that opposes an open position (see allow_opposite_positions)."""
+        if self.cfg.allow_opposite_positions:
+            return None
+        m = mc.mt5()
+        wanted = m.POSITION_TYPE_BUY if direction == "buy" else m.POSITION_TYPE_SELL
+        for pos in mc.get_positions(self.cfg):
+            if pos.type != wanted:
+                return (f"an opposing position is open (ticket {pos.ticket}); "
+                        "set allow_opposite_positions to permit hedging")
+        return None
+
     def latest_signal(self) -> st.Signal:
         cfg = self.cfg
         work = mc.get_closed_bars(cfg.symbol, cfg.working_timeframe, 500)
@@ -161,7 +174,7 @@ class Bot:
         if sig.direction is None:
             return
 
-        blocked = self.entry_blocked()
+        blocked = self.entry_blocked() or self.opposite_position_blocks(sig.direction)
         if blocked:
             log.info("Signal %s suppressed: %s", sig.direction.upper(), blocked)
             return
@@ -286,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unit", choices=["point", "pip", "usd"],
                         help="override distance_unit for SL/trailing distances")
     parser.add_argument("--lots", type=float, help="override lot size")
+    parser.add_argument("--timeframe", help="working timeframe for entries (default M5)")
+    parser.add_argument("--max-positions", type=int, dest="max_positions",
+                        help="max positions open at once (default 2)")
+    parser.add_argument("--max-trades-per-day", type=int, dest="max_trades_per_day",
+                        help="0 = unlimited (the default)")
     parser.add_argument("--sl-units", type=float, dest="sl_units",
                         help="override stop-loss distance, in --unit units")
     parser.add_argument("--trail-units", type=float, dest="trail_units",
@@ -320,6 +338,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.trail_units:
         overrides["trailing_stop_units"] = args.trail_units
         overrides["trail_start_units"] = args.trail_units
+    if args.timeframe:
+        overrides["working_timeframe"] = args.timeframe.upper()
+    if args.max_positions is not None:
+        overrides["max_open_positions"] = args.max_positions
+    if args.max_trades_per_day is not None:
+        overrides["max_trades_per_day"] = args.max_trades_per_day
     if args.min_confluences:
         overrides["min_confluences"] = args.min_confluences
     if args.no_confirmation:

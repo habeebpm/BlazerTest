@@ -34,6 +34,11 @@
 //| open against the higher-timeframe trend. Set                       |
 //| InpRequireTrendConfluence = true to prevent that.                  |
 //|                                                                    |
+//| Entries are evaluated once per closed working-timeframe bar (M5 by |
+//| default). With InpMaxTradesPerDay = 0 there is no daily entry cap, |
+//| so the brakes are InpMaxOpenPositions, the same-direction rule, the |
+//| daily-loss circuit breaker and the session filter.                 |
+//|                                                                    |
 //| IMPORTANT DISCLAIMER                                               |
 //| ------------------------------------------------------------------ |
 //| No trading system - this one included - can guarantee profit.     |
@@ -56,10 +61,11 @@ input group "=== General ==="
 input ulong   InpMagicNumber        = 20260908;    // Magic number
 input int     InpSlippagePoints     = 30;           // Max slippage (points)
 input bool    InpTradeXAUUSDOnly    = true;         // Require chart symbol to contain "XAU"
-input int     InpMaxOpenPositions   = 1;            // Max simultaneous open positions (this EA/symbol)
+input int     InpMaxOpenPositions   = 2;            // Max simultaneous open positions (this EA/symbol)
+input bool    InpAllowOpposite      = false;        // Allow a buy and a sell open at the same time
 
 input group "=== Timeframes ==="
-input ENUM_TIMEFRAMES InpWorkTF     = PERIOD_M15;   // Working timeframe (entries)
+input ENUM_TIMEFRAMES InpWorkTF     = PERIOD_M5;    // Working timeframe (entries evaluated at each close)
 input ENUM_TIMEFRAMES InpTrendTF    = PERIOD_H4;    // Higher timeframe (trend bias)
 
 input group "=== Trend Filter (higher timeframe EMA) ==="
@@ -105,7 +111,7 @@ input double   InpAtrSlMultiplier   = 1.8;            // Stop-loss = ATR * this 
 input double   InpRiskRewardRatio   = 1.8;            // Take-profit = SL distance * this ratio
 input double   InpMaxLotSize        = 5.0;            // Hard cap on calculated lot size
 input double   InpMaxDailyLossPct   = 3.0;            // Stop new trades after this % equity loss in a day
-input int      InpMaxTradesPerDay   = 6;              // Max new entries per calendar day
+input int      InpMaxTradesPerDay   = 0;              // Max new entries per day (0 = unlimited)
 
 input group "=== Trade Management (breakeven / trailing) ==="
 input double   InpBreakevenAtrMult  = 1.0;            // Move SL to breakeven once profit >= ATR * this
@@ -747,7 +753,7 @@ void OnTick()
 
    if(weekendBlock) return;
    if(g_dailyLossHit) return;
-   if(g_tradesToday >= InpMaxTradesPerDay) return;
+   if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay) return;
    if(!IsWithinSession()) return;
    if(!SpreadIsAcceptable()) return;
    if(CountOpenPositions(-1) >= InpMaxOpenPositions) return;
@@ -758,9 +764,25 @@ void OnTick()
    bool buySignal, sellSignal;
    EvaluateSignals(d, buySignal, sellSignal);
 
-   if(buySignal && CountOpenPositions(0) == 0)
-      OpenTrade(true, d.atr0);
-   else if(sellSignal && CountOpenPositions(1) == 0)
-      OpenTrade(false, d.atr0);
+   // A simultaneous buy and sell pays the spread twice and nets to nothing on
+   // a netting account, so an opposing signal is skipped while a position is
+   // open unless InpAllowOpposite is set.
+   int openBuys  = CountOpenPositions(0);
+   int openSells = CountOpenPositions(1);
+
+   if(buySignal)
+   {
+      if(openSells > 0 && !InpAllowOpposite)
+         Print("XAUUSD_Confluence_EA: BUY signal skipped - an opposing SELL is open.");
+      else
+         OpenTrade(true, d.atr0);
+   }
+   else if(sellSignal)
+   {
+      if(openBuys > 0 && !InpAllowOpposite)
+         Print("XAUUSD_Confluence_EA: SELL signal skipped - an opposing BUY is open.");
+      else
+         OpenTrade(false, d.atr0);
+   }
 }
 //+------------------------------------------------------------------+
