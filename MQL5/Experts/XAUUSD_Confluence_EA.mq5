@@ -22,13 +22,18 @@
 //|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
 //| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
-//| score of at least InpMinConfidence (default 50 of 100).            |
+//| score of at least InpMinConfidence - currently 0, i.e. the score    |
+//| gate is OFF, to reach a target of about 10 fills per day.           |
 //|                                                                    |
-//| The qualifying floor is 40, so a gate of 50 drops the weakest band |
-//| while leaving the 2-of-3 rule meaningful: it kept 52% of signals    |
-//| in testing (~9.2 trades/day on M5) and 84% of those were 2-of-3    |
-//| setups. Raise it to 55 (19% kept) or 65 (9% kept, mostly 3/3) to   |
-//| trade less and more selectively, or set 0 to disable the gate.     |
+//| Every other filter still applies, so this is the unscored version   |
+//| of the strategy rather than an unfiltered one. Measured fills/day:  |
+//|   gate 50: 4.7 (2 positions) 6.9 (4) 8.1 (6) - tops out near 9.3    |
+//|   gate 45: 5.6               8.5     10.1                          |
+//|   gate off:6.4              10.0     12.0                          |
+//| Set InpMinConfidence = 50 to return to the selective ~4.7/day.      |
+//|                                                                    |
+//| Positions are correlated (same symbol and direction), so four at    |
+//| 0.02 lots with a $6.00 stop risks roughly $32 together.            |
 //|                                                                    |
 //| The score measures how strongly the indicators agree - it is NOT   |
 //| a probability that the trade wins.                                 |
@@ -70,7 +75,7 @@ input group "=== General ==="
 input ulong   InpMagicNumber        = 20260908;    // Magic number
 input int     InpSlippagePoints     = 30;           // Max slippage (points)
 input bool    InpTradeXAUUSDOnly    = true;         // Require chart symbol to contain "XAU"
-input int     InpMaxOpenPositions   = 2;            // Max simultaneous open positions (this EA/symbol)
+input int     InpMaxOpenPositions   = 4;            // Max simultaneous open positions (this EA/symbol)
 input bool    InpAllowOpposite      = false;        // Allow a buy and a sell open at the same time
 
 input group "=== Timeframes ==="
@@ -104,7 +109,7 @@ input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI thi
 input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
 input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
 input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
-input double   InpMinConfidence     = 50.0;         // Min setup score 0-100 to enter (0 = off)
+input double   InpMinConfidence     = 0.0;          // Min setup score 0-100 to enter (0 = off)
 input bool     InpShowConfidence    = true;         // Show the live score in the chart comment
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="

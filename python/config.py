@@ -95,17 +95,24 @@ class TradeConfig:
     # Minimum setup-quality score (0-100) required to enter; a score exactly
     # equal to this passes. 0 disables the gate.
     #
-    # At 50 this drops the weakest half of qualifying setups: it kept 52% of
-    # signals in testing (~9.2 trades/day on M5, against 17.7 ungated). The
-    # qualifying floor is 40, so 50 filters the bottom band while leaving the
-    # 2-of-3 rule meaningful - 84% of survivors were 2-of-3 setups, versus 23%
-    # at a gate of 65. Raise it to 55 (19% kept) or 65 (9% kept, mostly 3/3)
-    # to trade less and more selectively.
+    # Currently 0 (off) to reach a target of ~10 fills/day: with the gate at
+    # 50 the strategy tops out near 9.3 fills/day however high
+    # max_open_positions goes, so hitting 10 meant giving the gate up. Every
+    # other filter still applies - 2-of-3 confluences, at least one confirmed,
+    # a fresh EMA cross, ADX >= 22 and the Bollinger veto - so this is the
+    # unscored version of the same strategy, not an unfiltered one.
+    #
+    # Measured fills/day by gate and position cap (all other filters on):
+    #     gate 50: 4.7 (2 pos)  5.9 (3)  6.9 (4)  7.6 (5)  8.1 (6)
+    #     gate 45: 5.6          7.3      8.5      9.5      10.1
+    #     gate off:6.4          8.4     10.0     11.2      12.0
+    # Set 45 with 6 positions for ~10/day while keeping a gate, at the cost of
+    # more correlated exposure; set 50 to return to the selective ~4.7/day.
     #
     # IMPORTANT: this score measures how strong the indicator agreement is,
     # NOT the probability that a trade wins - nothing in this project
     # estimates a win rate. See the confidence notes in README.md.
-    min_confidence: float = 50.0
+    min_confidence: float = 0.0
 
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR
@@ -118,10 +125,12 @@ class TradeConfig:
     use_bands_veto: bool = True
 
     # ---------------- guards (not part of the 3 confluences) ----------------
-    max_open_positions: int = 2
+    max_open_positions: int = 4
     max_trades_per_day: int = 0         # 0 = unlimited (daily loss limit still applies)
 
-    # Two positions at once are allowed, but only in the SAME direction. A
+    # Up to four positions at once, but only in the SAME direction. Note they
+    # are correlated - same symbol, same way - so an adverse move loses on all
+    # of them together: 4 x 0.02 lots at a $6.00 stop is about $32 of risk. A
     # simultaneous buy and sell pays the spread twice and nets to nothing on a
     # netting account, so an opposing signal is skipped while a position is open.
     allow_opposite_positions: bool = False

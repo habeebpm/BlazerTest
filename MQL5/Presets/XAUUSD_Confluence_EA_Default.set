@@ -11,7 +11,7 @@
 InpMagicNumber=20260908
 InpSlippagePoints=30
 InpTradeXAUUSDOnly=true
-InpMaxOpenPositions=2
+InpMaxOpenPositions=4
 InpAllowOpposite=false
 InpWorkTF=5
 InpTrendTF=16388
@@ -35,7 +35,7 @@ InpConfirmRsiMargin=5.0
 InpConfirmAdxLevel=28.0
 InpConfirmDiGap=8.0
 InpUseBandsVeto=true
-InpMinConfidence=50.0
+InpMinConfidence=0.0
 InpShowConfidence=true
 InpAdxPeriod=14
 InpAdxMinLevel=22.0

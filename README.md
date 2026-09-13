@@ -45,17 +45,15 @@ confirmed** (`InpMinConfluences` / `InpMinConfirmed`), evaluated on the most
 recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
 as a veto rather than a vote.
 
-Entries are evaluated on each closed **M5** bar and must also score at least
-**50/100** (`InpMinConfidence`), with up to **2 positions open at a time**
-(same direction only) and **no daily trade cap** (`InpMaxTradesPerDay = 0`).
+Entries are evaluated on each closed **M5** bar, with up to **4 positions open
+at a time** (same direction only) and **no daily trade cap**
+(`InpMaxTradesPerDay = 0`) — tuned for roughly **10 fills per day**.
 
 At 2 of 3 the trend leg is optional, so entries against the H4 trend become
 possible — set `InpRequireTrendConfluence = true` to block them. Between the
-2-of-3 rule and M5 entries this evaluates far more setups than the original
-M15 version (~17 signals/day before filtering), which the 50-point score gate
-trims to about 9 signals/day — roughly **4.4 actual fills per day**, since a
-signal only trades when a position slot is free. `python/simulate.py` reports
-the difference.
+2-of-3 rule and M5 entries this produces ~17.5 qualifying signals/day, of which
+roughly **10 actually fill** — a signal only trades when a position slot is
+free. `python/simulate.py` reports the difference.
 
 **Running on a Mac?** MT5 for macOS runs this EA natively — that is the
 simplest path, since the Python bot's `MetaTrader5` dependency is Windows-only.
@@ -69,13 +67,21 @@ is worth a third: passing earns 60% of it, and the rest scales with how far
 past its confirmation threshold the indicator sits. In testing the floor is
 40, the median 50 and the practical ceiling the mid-80s.
 
-**`InpMinConfidence = 50` — the EA only trades setups scoring 50 or higher.**
-The qualifying floor is 40, so this drops the weakest band of setups while
-leaving the 2-of-3 rule meaningful: it kept 52% of signals in testing (9.2
-signals/day on M5 against 17.7 ungated, or ~4.4 actual fills), and 84% of
-those entries were 2-of-3 setups. Raise it to 55 (19% kept) or 65 (9% kept, and mostly 3-of-3, since an
-unconfirmed leg is only worth 20 points) to trade less and more selectively,
-or 0 to disable the gate.
+**`InpMinConfidence = 0` — the score gate is currently off**, because a target
+of ~10 fills/day required it: with the gate at 50 the strategy tops out near
+9.3 fills/day however high `InpMaxOpenPositions` goes. Every other filter still
+applies (2-of-3 confluences, one confirmed, a fresh cross, ADX ≥ 22, the
+Bollinger veto), and the score is still computed, logged and shown on the
+chart — it just does not block entries. Measured fills/day:
+
+| Gate | 2 pos | 4 pos | 6 pos |
+|---|---|---|---|
+| 50 | 4.7 | 6.9 | 8.1 |
+| 45 | 5.6 | 8.5 | 10.1 |
+| **off (shipped)** | 6.4 | **10.0** | 12.0 |
+
+Set `InpMinConfidence = 50` with `InpMaxOpenPositions = 2` to return to the
+selective ~4.7/day configuration.
 
 **This score is not a win probability.** It measures how strongly the
 indicators agree at entry, not the odds of profit. No win rate for this EA is
