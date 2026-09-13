@@ -2,8 +2,11 @@
 """
 XAUUSD confluence trading bot for MetaTrader 5.
 
-Opens 0.02 lots of XAUUSD with the configured stop-loss and manages a trailing
-stop, but only when all THREE confluences (trend, momentum, strength) agree.
+Opens 0.02 lots of XAUUSD with a 60-pip stop-loss and a 30-pip trailing stop,
+but only when all THREE confluences (trend, momentum, strength) agree.
+
+When the market is closed the bot keeps evaluating and logging confluences but
+sends no orders, and resumes trading by itself once quotes start moving again.
 
     python trader.py --check            # connect, print spec + preflight, exit
     python trader.py --signal           # evaluate the confluences once and exit
@@ -72,12 +75,24 @@ class Bot:
         self.trades_today = 0
         self.daily_loss_hit = False
         self.running = True
+        self.quotes = mc.QuoteMonitor()
+        self.market_open = True
+        self._closed_logged = False
 
     # ---------------- lifecycle ----------------
-    def start(self) -> list[str]:
+    def start(self, probe_market: bool = True) -> list[str]:
         mc.connect(self.cfg)
         self.spec = mc.get_symbol_spec(self.cfg)
-        problems = mc.preflight_check(self.cfg, self.spec)
+
+        if probe_market:
+            self.market_open, reason = mc.market_status(self.cfg)
+            log.info("Market check: %s (%s)",
+                     "OPEN" if self.market_open else "CLOSED", reason)
+            if not self.market_open:
+                log.info("While the market is closed the bot keeps evaluating "
+                         "confluences on the last closed bars but places no orders.")
+
+        problems = mc.preflight_check(self.cfg, self.spec, market_open=self.market_open)
         self.day_start_equity = mc.account_equity()
         self.day = datetime.now(timezone.utc).date()
         return problems
@@ -108,6 +123,8 @@ class Bot:
         cfg = self.cfg
         now = datetime.now()
 
+        if not self.market_open:
+            return "market is closed"
         if self.daily_loss_hit:
             return "daily loss limit reached"
         if self.trades_today >= cfg.max_trades_per_day:
@@ -169,8 +186,22 @@ class Bot:
         })
 
     # ---------------- trailing stop ----------------
+    def refresh_market_state(self) -> None:
+        """Update open/closed state from quote liveness, logging each transition."""
+        live = self.quotes.update(mc.get_tick(self.cfg.symbol))
+        if live and not self.market_open:
+            log.info("Quotes resumed - market is OPEN, trading re-enabled.")
+            self._closed_logged = False
+        elif not live and self.market_open and not self._closed_logged:
+            log.info("Quotes frozen for %.0fs - treating the market as CLOSED; "
+                     "no orders will be sent until they resume.", self.quotes.frozen_for)
+            self._closed_logged = True
+        self.market_open = live
+
     def manage_trailing(self) -> None:
         cfg, spec = self.cfg, self.spec
+        if not self.market_open:
+            return  # stop modifications would only be rejected
         positions = mc.get_positions(cfg)
         if not positions:
             return
@@ -203,6 +234,8 @@ class Bot:
 
     def flatten_for_weekend(self) -> None:
         now = datetime.now()
+        if not self.market_open:
+            return
         if not (self.cfg.close_before_weekend and now.weekday() == 4
                 and now.hour >= self.cfg.weekend_close_hour):
             return
@@ -217,6 +250,7 @@ class Bot:
         while self.running:
             try:
                 self.roll_day()
+                self.refresh_market_state()
                 self.manage_trailing()
                 self.flatten_for_weekend()
                 self.check_for_entry()
@@ -239,6 +273,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unit", choices=["point", "pip", "usd"],
                         help="override distance_unit for SL/trailing distances")
     parser.add_argument("--lots", type=float, help="override lot size")
+    parser.add_argument("--sl-units", type=float, dest="sl_units",
+                        help="override stop-loss distance, in --unit units")
+    parser.add_argument("--trail-units", type=float, dest="trail_units",
+                        help="override trailing distance, in --unit units")
     parser.add_argument("--force", action="store_true",
                         help="trade even if preflight reports problems (not advised)")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -255,6 +293,11 @@ def main(argv: list[str] | None = None) -> int:
         overrides["distance_unit"] = args.unit
     if args.lots:
         overrides["lots"] = args.lots
+    if args.sl_units:
+        overrides["stop_loss_units"] = args.sl_units
+    if args.trail_units:
+        overrides["trailing_stop_units"] = args.trail_units
+        overrides["trail_start_units"] = args.trail_units
     cfg = TradeConfig.from_env(**overrides)
 
     bot = Bot(cfg, dry_run=not args.live)
@@ -262,12 +305,23 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, bot.stop)
 
     try:
-        problems = bot.start()
+        problems = bot.start(probe_market=not args.signal)
 
         if args.check:
-            print("\nPreflight:", "FAILED" if problems else "OK")
+            print(f"\nMarket: {'OPEN' if bot.market_open else 'CLOSED'}")
+            print(f"Symbol: {bot.spec.name}  point={bot.spec.point}  "
+                  f"digits={bot.spec.digits}  spread={bot.spec.spread_points} pts  "
+                  f"stops_level={bot.spec.stops_level_points} pts")
+            print(f"Order:  {cfg.lots} lots  SL {cfg.stop_loss_units:g} {cfg.distance_unit} "
+                  f"= ${cfg.sl_distance(bot.spec.point):.2f}  "
+                  f"trail {cfg.trailing_stop_units:g} {cfg.distance_unit} "
+                  f"= ${cfg.trail_distance(bot.spec.point):.2f}")
+            print("Preflight:", "FAILED" if problems else "OK")
             for p in problems:
                 print("  *", p)
+            if not bot.market_open:
+                print("\nNote: spread-based checks are advisory while the market is "
+                      "closed. Re-run --check after the session opens.")
             return 1 if problems else 0
 
         if args.signal:

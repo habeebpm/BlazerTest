@@ -21,8 +21,9 @@ not predict future results.
 - `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
   cheat sheet.
 - `python/` — a Python port of the same strategy that trades through the
-  MetaTrader5 Python API (0.02 lots, 6-unit stop, 3-unit trailing stop, entries
-  only at 3/3 confluences). See `python/README.md`.
+  MetaTrader5 Python API (0.02 lots, 60-pip stop, 30-pip trailing stop, entries
+  only at 3/3 confluences, and it pauses itself while the market is closed).
+  See `python/README.md`.
 
 ## Strategy logic
 

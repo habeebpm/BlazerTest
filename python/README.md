@@ -1,8 +1,8 @@
 # XAUUSD Confluence Bot (Python + MetaTrader 5)
 
 Python port of the MQL5 EA. It watches XAUUSD and opens **0.02 lots** with a
-**6-unit stop-loss** and a **3-unit trailing stop**, but only when **all three
-confluences** agree on the same direction.
+**60-pip stop-loss ($6.00)** and a **30-pip trailing stop ($3.00)**, but only
+when **all three confluences** agree on the same direction.
 
 ## The three confluences
 
@@ -19,29 +19,54 @@ Guards that can still veto a 3/3 signal (spread, session, max positions,
 max trades/day, daily-loss limit, weekend window) are deliberately kept
 separate from the confluence count.
 
-## ⚠️ Read this about "points" before going live
+## Distance units
 
-"Point" is ambiguous on gold and getting it wrong costs real money:
+Gold distances get quoted three ways, so `distance_unit` makes the choice
+explicit. With the shipped defaults of 60 / 30:
 
-| `distance_unit` | 1 unit | Your 6 / 3 becomes |
-|---|---|---|
-| `point` (MT5 point, the literal reading) | 0.01 | SL **$0.06**, trail **$0.03** |
-| `pip` | 0.10 | SL $0.60, trail $0.30 |
-| `usd` | 1.00 | SL **$6.00**, trail **$3.00** |
+| `distance_unit` | 1 unit | SL | Trail |
+|---|---|---|---|
+| `point` (MT5 point) | 0.01 | $0.60 | $0.30 |
+| **`pip` (default)** | 0.10 | **$6.00** | **$3.00** |
+| `usd` | 1.00 | $60.00 | $30.00 |
 
-A typical XAUUSD spread is 15–40 points (**$0.15–$0.40**), so a literal 6-point
-stop sits *inside the spread* — the broker rejects the order, or you are stopped
-out the instant you are filled. `preflight_check()` verifies this against your
-broker's live spread and minimum stop distance at startup and **refuses to trade
-live** rather than bleed money. Verified behaviour:
+A typical XAUUSD spread is 15–40 points ($0.15–$0.40), so the default 60-pip
+stop clears it with roughly 15x of margin and the 30-pip trail with about 7x.
+
+`preflight_check()` still re-validates this against your broker's live spread
+and minimum stop distance at startup and refuses to trade live if the stop is
+too tight to survive — an earlier 6-*point* ($0.06) configuration is correctly
+rejected:
 
 ```
 Stop-loss distance 0.06 is smaller than the current spread 0.25 (25 points).
 A buy would be stopped out the instant it opens.
 ```
 
-If that is not what you meant, run with `--unit usd` for a $6.00 stop / $3.00
-trail, which is a sane gold configuration.
+Override without editing files: `--unit pip --sl-units 60 --trail-units 30`.
+
+## When the market is closed
+
+The bot handles a shut session on its own — useful since you cannot test
+against live quotes right now:
+
+- **Detection is timezone-safe.** It watches whether the quote timestamp
+  *advances*, rather than comparing the broker's server-time stamp to your
+  local clock (brokers commonly run GMT+2/+3, so "the tick is 3 hours old"
+  usually means a timezone gap, not a closed market).
+- **No orders are sent** while quotes are frozen; entries report
+  `market is closed` and trailing-stop modifications are skipped rather than
+  fired off to be rejected.
+- **It resumes by itself** the moment quotes start moving again — no restart.
+- **Preflight demotes spread complaints to warnings** while closed, because a
+  closed-market spread reading is stale or artificially padded. Re-run
+  `--check` once the session opens for a real verdict.
+- If an order is ever rejected with `TRADE_RETCODE_MARKET_CLOSED`, that is
+  logged as a plain warning, not an error.
+
+So right now you can run `--selftest`, `test_integration.py`, `--check` and
+`--signal`, and leave the bot running in dry-run; it will pick up quotes when
+the market reopens.
 
 ## Install (Windows — MT5 required)
 
@@ -63,14 +88,14 @@ python test_integration.py         :: full run against a mock MT5, no MT5 needed
 python trader.py --check           :: connect, print symbol spec + preflight, exit
 python trader.py --signal          :: evaluate the 3 confluences once, exit
 python trader.py                   :: live data, DRY-RUN (no orders sent)
-python trader.py --live --unit usd :: actually trade, $6 stop / $3 trail
+python trader.py --live            :: actually trade, 60-pip stop / 30-pip trail
 ```
 
 `--live` is opt-in by design: without it the bot logs every decision and the
 exact order it *would* have sent, which is how you should run it first.
 
-Useful flags: `--unit {point,pip,usd}`, `--lots 0.02`, `--force` (trade despite
-preflight problems — not advised), `-v`.
+Useful flags: `--unit {point,pip,usd}`, `--sl-units 60`, `--trail-units 30`,
+`--lots 0.02`, `--force` (trade despite preflight problems — not advised), `-v`.
 
 ## Files
 
@@ -102,4 +127,8 @@ Output goes to `logs/trader.log` and every entry is appended to
   its threshold at the moment the EMAs cross. That measurement is why the
   default is 8 in both this bot and the EA.
 - No economic-calendar news filter. Gold moves violently on NFP/FOMC/CPI.
+- A 60-pip stop with a 30-pip trail means the trail starts tightening as soon
+  as the trade is 30 pips ($3.00) ahead, so many trades will exit near
+  breakeven rather than running. That is the trade-off of a tight trail; widen
+  `trail_start_units` if you would rather give winners more room.
 - This is not a profitable-by-construction system. Demo-test it first.

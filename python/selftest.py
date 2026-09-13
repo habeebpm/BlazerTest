@@ -156,23 +156,39 @@ def test_distances() -> bool:
     print("\nDistance / unit maths (XAUUSD, point = 0.01)")
     point = 0.01
     ok = True
-    expect = {"point": (0.06, 0.03), "pip": (0.60, 0.30), "usd": (6.00, 3.00)}
+    # 60 / 30 units under each interpretation
+    expect = {"point": (0.60, 0.30), "pip": (6.00, 3.00), "usd": (60.00, 30.00)}
     for unit, (sl_want, trail_want) in expect.items():
         cfg = TradeConfig(distance_unit=unit)
         ok &= check(f"{unit}: SL=${sl_want:.2f} trail=${trail_want:.2f}",
                     abs(cfg.sl_distance(point) - sl_want) < 1e-9
                     and abs(cfg.trail_distance(point) - trail_want) < 1e-9)
-    cfg = TradeConfig()
-    typical_spread = 25 * point  # $0.25, a normal gold spread
-    ok &= check("default 6 'points' is correctly detected as below spread",
-                cfg.sl_distance(point) < typical_spread,
-                f"SL ${cfg.sl_distance(point):.2f} < spread ${typical_spread:.2f}")
+
+    cfg = TradeConfig()   # the shipped default: 60 pips / 30 pips
+    typical_spread = 25 * point          # $0.25, a normal gold spread
+    wide_spread = 40 * point             # $0.40, a wide one
+    ok &= check("default SL is 60 pips = $6.00",
+                abs(cfg.sl_distance(point) - 6.00) < 1e-9)
+    ok &= check("default trail is 30 pips = $3.00",
+                abs(cfg.trail_distance(point) - 3.00) < 1e-9)
+    ok &= check("default SL clears a normal spread with margin",
+                cfg.sl_distance(point) > 4 * typical_spread,
+                f"SL $6.00 vs spread ${typical_spread:.2f}")
+    ok &= check("default trail clears even a wide spread",
+                cfg.trail_distance(point) > 2 * wide_spread,
+                f"trail $3.00 vs spread ${wide_spread:.2f}")
+
+    # a too-tight config must still be recognised as unusable
+    tight = TradeConfig(distance_unit="point", stop_loss_units=6.0)
+    ok &= check("a 6-point stop is still detected as below spread",
+                tight.sl_distance(point) < typical_spread,
+                f"SL ${tight.sl_distance(point):.2f} < spread ${typical_spread:.2f}")
     return bool(ok)
 
 
 def test_trailing() -> bool:
     print("\nTrailing stop arithmetic")
-    cfg = TradeConfig(distance_unit="usd")   # $3 trail, sane for gold
+    cfg = TradeConfig()   # shipped default: $6.00 stop, $3.00 trail
     point = 0.01
     trail = cfg.trail_distance(point)
     ok = True

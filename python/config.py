@@ -5,26 +5,25 @@ Everything the user asked for lives at the top of TradeConfig:
     lots = 0.02, stop_loss = 6 points, trailing_stop = 3 points.
 
 --------------------------------------------------------------------------
-READ THIS ABOUT "POINTS"
+DISTANCE UNITS
 --------------------------------------------------------------------------
-"Point" is ambiguous on gold, and getting it wrong is expensive:
+Gold distances are quoted three different ways, and mixing them up is
+expensive. One unit of `distance_unit` means:
 
-    distance_unit = "point"  -> 1 unit = symbol_info.point  = 0.01 USD
-                                (6 points = $0.06 of price movement)
-    distance_unit = "pip"    -> 1 unit = 10 * point         = 0.10 USD
-                                (6 pips = $0.60)
-    distance_unit = "usd"    -> 1 unit = 1.00 USD of price
-                                (6 = $6.00 -> ~600 broker points)
+    "point" -> symbol_info.point = 0.01 USD   (60 units = $0.60)
+    "pip"   -> 10 * point        = 0.10 USD   (60 units = $6.00)  <-- default
+    "usd"   -> 1.00 USD of price              (60 units = $60.00)
 
-The default below is "point", i.e. your numbers taken literally. On a normal
-XAUUSD feed the spread alone is 15-40 points and the broker's minimum stop
-distance is often 0-50 points, so a 6-point stop is *below the spread* and the
-broker will reject the order (or stop you out instantly on the spread).
+The defaults above are 60 pips stop / 30 pips trail = $6.00 / $3.00 on a
+2-digit XAUUSD feed, which clears a normal 15-40 point ($0.15-$0.40) spread
+with room to spare.
 
-preflight_check() in mt5_client.py verifies this against your live broker
-values at startup and refuses to trade rather than bleeding money. If it tells
-you the distance is too small, set distance_unit = "usd" (6 = $6.00 stop,
-$3.00 trail), which is a sane gold configuration.
+preflight_check() in mt5_client.py re-checks these against your broker's live
+spread and minimum stop distance at startup and refuses to trade if the stop
+is too tight to survive. Note that a CLOSED market reports a stale or padded
+spread, so preflight downgrades spread complaints to warnings while the
+session is shut.
+
 """
 from __future__ import annotations
 
@@ -37,14 +36,14 @@ class TradeConfig:
     # ---------------- what the user asked for ----------------
     symbol: str = "XAUUSD"
     lots: float = 0.02
-    stop_loss_units: float = 6.0        # SL distance, in `distance_unit`
-    trailing_stop_units: float = 3.0    # trail distance, in `distance_unit`
-    distance_unit: str = "point"        # "point" | "pip" | "usd"  (see module docstring)
+    stop_loss_units: float = 60.0       # SL distance, in `distance_unit`
+    trailing_stop_units: float = 30.0   # trail distance, in `distance_unit`
+    distance_unit: str = "pip"          # "point" | "pip" | "usd"  (see module docstring)
     take_profit_units: float = 0.0      # 0 = no fixed TP, exits are handled by the trail
 
     # Start trailing once the trade is this far in profit. Defaults to the
     # trail distance itself, so the stop starts following immediately.
-    trail_start_units: float = 3.0
+    trail_start_units: float = 30.0
 
     # ---------------- strategy ----------------
     working_timeframe: str = "M15"      # entry timeframe

@@ -8,6 +8,7 @@ importable (and testable) on Linux/macOS.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -124,12 +125,90 @@ def get_symbol_spec(cfg: TradeConfig) -> SymbolSpec:
 
 
 # --------------------------------------------------------------------------- #
-# preflight: the check that stops a 6-point gold stop from bleeding money
+# market open / closed
 # --------------------------------------------------------------------------- #
-def preflight_check(cfg: TradeConfig, spec: SymbolSpec) -> list[str]:
+class QuoteMonitor:
+    """Decides whether quotes are live by watching the tick timestamp advance.
+
+    Deliberately avoids comparing MT5's server-time timestamps against the
+    local clock: the broker's server sits in its own timezone (often GMT+2/+3),
+    so "tick.time is 3 hours old" usually means a timezone gap, not a closed
+    market. A frozen timestamp, measured with a monotonic wall clock, is
+    unambiguous.
+    """
+
+    def __init__(self, stale_after: float = 90.0):
+        self.stale_after = stale_after
+        self._last_quote_time = None
+        self._last_change = time.monotonic()
+
+    def update(self, tick) -> bool:
+        """Feed the latest tick; returns True while quotes still look live."""
+        qt = getattr(tick, "time_msc", None) or getattr(tick, "time", None)
+        if qt != self._last_quote_time:
+            self._last_quote_time = qt
+            self._last_change = time.monotonic()
+            return True
+        return (time.monotonic() - self._last_change) < self.stale_after
+
+    @property
+    def frozen_for(self) -> float:
+        return time.monotonic() - self._last_change
+
+
+def trade_mode_problem(cfg: TradeConfig) -> str | None:
+    """Return a reason string if the symbol itself is not fully tradable."""
+    m = mt5()
+    info = m.symbol_info(cfg.symbol)
+    if info is None:
+        return f"symbol_info({cfg.symbol}) unavailable"
+    mode = info.trade_mode
+    names = {
+        getattr(m, "SYMBOL_TRADE_MODE_DISABLED", 0): "trading disabled for this symbol",
+        getattr(m, "SYMBOL_TRADE_MODE_LONGONLY", 1): "long-only mode",
+        getattr(m, "SYMBOL_TRADE_MODE_SHORTONLY", 2): "short-only mode",
+        getattr(m, "SYMBOL_TRADE_MODE_CLOSEONLY", 3): "close-only mode (no new positions)",
+    }
+    return names.get(mode)
+
+
+def market_status(cfg: TradeConfig, samples: int = 2, gap: float = 2.0) -> tuple[bool, str]:
+    """One-shot check: is this symbol actually tradable right now?
+
+    Samples the quote timestamp `samples` times `gap` seconds apart. XAUUSD
+    ticks several times a second while its session is open, so a timestamp that
+    does not move across the samples means the session is shut.
+    """
+    problem = trade_mode_problem(cfg)
+    if problem:
+        return False, problem
+
+    monitor = QuoteMonitor(stale_after=0.0)   # any repeat sample counts as frozen
+    monitor.update(get_tick(cfg.symbol))
+    moved = False
+    for _ in range(max(1, samples - 1)):
+        time.sleep(gap)
+        if monitor.update(get_tick(cfg.symbol)):
+            moved = True
+
+    if moved:
+        return True, "quotes are live"
+    last = get_tick(cfg.symbol)
+    stamp = datetime.fromtimestamp(last.time).strftime("%Y-%m-%d %H:%M:%S")
+    return False, (f"quotes frozen across {samples} samples {gap:.0f}s apart "
+                   f"(last quote {stamp} server time) - market is closed")
+
+
+# --------------------------------------------------------------------------- #
+# preflight: the check that stops a too-tight gold stop from bleeding money
+# --------------------------------------------------------------------------- #
+def preflight_check(cfg: TradeConfig, spec: SymbolSpec,
+                    market_open: bool = True) -> list[str]:
     """Validate the configured distances against real broker constraints.
 
-    Returns a list of blocking problems (empty list == good to trade).
+    Returns a list of blocking problems (empty list == good to trade). While
+    the market is closed the reported spread is stale or artificially padded,
+    so spread-based complaints are downgraded to warnings instead of blocking.
     """
     problems: list[str] = []
     point = spec.point
@@ -150,6 +229,14 @@ def preflight_check(cfg: TradeConfig, spec: SymbolSpec) -> list[str]:
         cfg.distance_unit, cfg.stop_loss_units, sl_dist, sl_points, trail_dist,
     )
 
+    def spread_issue(msg: str) -> None:
+        """Block on a spread problem when live; only warn when the market is shut."""
+        if market_open:
+            problems.append(msg)
+        else:
+            log.warning("%s (market closed - spread reading is unreliable, "
+                        "re-check when the session opens)", msg)
+
     if spec.stops_level_points and sl_dist < min_stop_price:
         problems.append(
             f"Stop-loss distance {sl_dist:.2f} is inside the broker's minimum stop "
@@ -157,7 +244,7 @@ def preflight_check(cfg: TradeConfig, spec: SymbolSpec) -> list[str]:
             f"Orders will be rejected with 'Invalid stops'."
         )
     if sl_dist <= spread_price:
-        problems.append(
+        spread_issue(
             f"Stop-loss distance {sl_dist:.2f} is smaller than the current spread "
             f"{spread_price:.2f} ({spec.spread_points} points). A buy would be stopped "
             f"out the instant it opens."
@@ -168,7 +255,7 @@ def preflight_check(cfg: TradeConfig, spec: SymbolSpec) -> list[str]:
             "spread-driven stop-outs.", sl_dist, spread_price
         )
     if trail_dist <= spread_price:
-        problems.append(
+        spread_issue(
             f"Trailing distance {trail_dist:.2f} is smaller than the spread "
             f"{spread_price:.2f}; the trailing stop would sit on top of the price."
         )
@@ -181,12 +268,10 @@ def preflight_check(cfg: TradeConfig, spec: SymbolSpec) -> list[str]:
         log.error("PREFLIGHT FAILED - refusing to trade with these distances:")
         for p in problems:
             log.error("  * %s", p)
-        if cfg.distance_unit == "point":
-            log.error(
-                "  Fix: set distance_unit='usd' (SL $%.2f, trail $%.2f) or raise the "
-                "unit counts. See the docstring in config.py.",
-                cfg.stop_loss_units, cfg.trailing_stop_units,
-            )
+        log.error(
+            "  Fix: widen the distances or switch distance_unit (currently %r). "
+            "See the docstring in config.py.", cfg.distance_unit,
+        )
     return problems
 
 
@@ -274,7 +359,12 @@ def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: b
         log.error("order_send returned None: %s", m.last_error())
         return None
     if result.retcode != m.TRADE_RETCODE_DONE:
-        log.error("Order rejected: retcode=%s comment=%s", result.retcode, result.comment)
+        market_closed = getattr(m, "TRADE_RETCODE_MARKET_CLOSED", 10018)
+        if result.retcode == market_closed:
+            log.warning("Order not placed: the market is closed. The signal stands; "
+                        "the bot will keep evaluating and can trade when it reopens.")
+        else:
+            log.error("Order rejected: retcode=%s comment=%s", result.retcode, result.comment)
         return result
 
     log.info(
