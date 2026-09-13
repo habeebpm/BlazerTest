@@ -5,20 +5,34 @@
 //|                                                                    |
 //| STRATEGY SUMMARY                                                   |
 //| ------------------------------------------------------------------ |
-//| 1. Higher-timeframe EMA defines the macro trend bias (only trade   |
-//|    with the higher timeframe trend).                               |
-//| 2. Working-timeframe EMA fast/slow crossover supplies the entry    |
-//|    trigger.                                                        |
-//| 3. MACD confirms momentum is aligned with the trigger.             |
-//| 4. RSI filters out overbought/oversold extremes against the trade. |
-//| 5. ADX/DMI confirms the market is actually trending (filters out   |
-//|    choppy / range-bound conditions that whipsaw crossover systems).|
-//| 6. ATR drives volatility-adaptive stop-loss/take-profit distances  |
-//|    and position sizing (risk a fixed % of equity per trade).       |
-//| 7. Bollinger Bands act as an extra "don't chase price into the     |
-//|    opposite band" filter.                                          |
-//| 8. Session, spread, daily-loss and max-trade filters protect       |
-//|    against illiquid hours, wide spreads and over-trading.          |
+//| Three confluences vote on each direction, each at two strengths:   |
+//|                                                                    |
+//|  1. TREND    - pass: higher-timeframe EMA bias agrees AND the      |
+//|                working-TF fast/slow EMAs are aligned with a cross  |
+//|                inside InpCrossLookbackBars.                        |
+//|                confirmed: the EMAs have separated by at least      |
+//|                InpConfirmEmaGapAtr x ATR.                          |
+//|  2. MOMENTUM - pass: MACD on the right side of its signal and      |
+//|                turning, RSI past the midline but not extreme.      |
+//|                confirmed: MACD histogram expanding AND RSI at      |
+//|                least InpConfirmRsiMargin past the midline.         |
+//|  3. STRENGTH - pass: ADX >= InpAdxMinLevel with +DI/-DI aligned.   |
+//|                confirmed: ADX >= InpConfirmAdxLevel AND the DI     |
+//|                spread is at least InpConfirmDiGap wide.            |
+//|                                                                    |
+//| A trade needs InpMinConfluences of the three (default 2) with at   |
+//| least InpMinConfirmed of them confirmed (default 1). Requiring 2/3 |
+//| alone would let two barely-passing readings open a position.       |
+//|                                                                    |
+//| Bollinger Bands act as a VETO outside the vote (never buy at/above |
+//| the upper band, never sell at/below the lower band). ATR drives    |
+//| stop-loss/take-profit distances and position sizing. Session,      |
+//| spread, daily-loss and max-trade filters protect against illiquid  |
+//| hours, wide spreads and over-trading.                              |
+//|                                                                    |
+//| NOTE: at 2 of 3 the trend leg is not mandatory, so a trade can     |
+//| open against the higher-timeframe trend. Set                       |
+//| InpRequireTrendConfluence = true to prevent that.                  |
 //|                                                                    |
 //| IMPORTANT DISCLAIMER                                               |
 //| ------------------------------------------------------------------ |
@@ -64,6 +78,17 @@ input int      InpRsiPeriod         = 14;           // RSI period
 input double   InpRsiUpperBlock     = 70.0;          // Block BUY if RSI above this (overbought)
 input double   InpRsiLowerBlock     = 30.0;          // Block SELL if RSI below this (oversold)
 input double   InpRsiMidline        = 50.0;          // RSI midline used for directional bias
+
+input group "=== Entry Rule (how many confluences are required) ==="
+input int      InpMinConfluences    = 2;            // Confluences required to enter (1-3)
+input bool     InpRequireConfirm    = true;         // Require confirmed confluence(s)
+input int      InpMinConfirmed      = 1;            // Confirmed confluences required
+input bool     InpRequireTrendConfluence = false;   // Trend must be one of the passing confluences
+input double   InpConfirmEmaGapAtr  = 0.25;         // Trend confirm: EMA gap >= this x ATR
+input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI this far past midline
+input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
+input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
+input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="
 input int      InpAdxPeriod         = 14;           // ADX period
@@ -145,6 +170,17 @@ int OnInit()
    {
       Print("XAUUSD_Confluence_EA: failed to create one or more indicator handles. Error=", GetLastError());
       return(INIT_FAILED);
+   }
+
+   if(InpMinConfluences < 1 || InpMinConfluences > 3)
+   {
+      Print("XAUUSD_Confluence_EA: InpMinConfluences must be 1, 2 or 3.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpRequireConfirm && (InpMinConfirmed < 1 || InpMinConfirmed > InpMinConfluences))
+   {
+      Print("XAUUSD_Confluence_EA: InpMinConfirmed must be between 1 and InpMinConfluences.");
+      return(INIT_PARAMETERS_INCORRECT);
    }
 
    trade.SetExpertMagicNumber(InpMagicNumber);
@@ -359,6 +395,7 @@ struct SignalData
    double emaFast1, emaSlow1;
    bool   freshBullCross, freshBearCross;
    double macdMain1, macdSignal1, macdMain2, macdSignal2;
+   double macdHist1, macdHist2;
    double rsi1;
    double adx1, plusDi1, minusDi1;
    double atr0; // latest ATR (used for sizing/stops), includes forming bar - fine for volatility measure
@@ -427,6 +464,9 @@ bool GetSignalData(SignalData &d)
    if(CopyBuffer(hMacd, 1, 1, 2, buf) < 2) return(false);
    d.macdSignal1 = buf[0]; d.macdSignal2 = buf[1];
 
+   d.macdHist1 = d.macdMain1 - d.macdSignal1;
+   d.macdHist2 = d.macdMain2 - d.macdSignal2;
+
    // --- RSI ---
    ArraySetAsSeries(buf, true);
    if(CopyBuffer(hRsi, 0, 1, 1, buf) < 1) return(false);
@@ -468,6 +508,69 @@ bool GetSignalData(SignalData &d)
 }
 
 //+------------------------------------------------------------------+
+//| Count how many of the three confluences a direction collects,     |
+//| and how many of those reach their stricter "confirmed" threshold. |
+//+------------------------------------------------------------------+
+void ScoreConfluences(const SignalData &d, const bool isBuy,
+                      int &passCount, int &confirmedCount, bool &trendPassed)
+{
+   passCount      = 0;
+   confirmedCount = 0;
+   trendPassed    = false;
+
+   // ---- Confluence 1: TREND ----
+   bool htfOk   = isBuy ? (d.trendClose > d.trendEma) : (d.trendClose < d.trendEma);
+   bool cross   = isBuy ? d.freshBullCross : d.freshBearCross;
+   bool aligned = isBuy ? (d.emaFast1 > d.emaSlow1) : (d.emaFast1 < d.emaSlow1);
+   bool trend   = (htfOk && cross && aligned);
+   if(trend)
+   {
+      passCount++;
+      trendPassed = true;
+      // confirmed when the EMAs have genuinely separated, not merely touched
+      double emaGap = MathAbs(d.emaFast1 - d.emaSlow1);
+      if(emaGap >= InpConfirmEmaGapAtr * d.atr0) confirmedCount++;
+   }
+
+   // ---- Confluence 2: MOMENTUM ----
+   bool macdOk = isBuy ? (d.macdMain1 > d.macdSignal1 && d.macdMain1 > d.macdMain2)
+                       : (d.macdMain1 < d.macdSignal1 && d.macdMain1 < d.macdMain2);
+   bool rsiOk  = isBuy ? (d.rsi1 > InpRsiMidline && d.rsi1 < InpRsiUpperBlock)
+                       : (d.rsi1 < InpRsiMidline && d.rsi1 > InpRsiLowerBlock);
+   if(macdOk && rsiOk)
+   {
+      passCount++;
+      // confirmed when the histogram is still expanding and RSI is decisively past 50
+      bool histExpanding = isBuy ? (d.macdHist1 > d.macdHist2) : (d.macdHist1 < d.macdHist2);
+      bool rsiDecisive   = isBuy ? (d.rsi1 >= InpRsiMidline + InpConfirmRsiMargin)
+                                 : (d.rsi1 <= InpRsiMidline - InpConfirmRsiMargin);
+      if(histExpanding && rsiDecisive) confirmedCount++;
+   }
+
+   // ---- Confluence 3: STRENGTH ----
+   bool diOk = isBuy ? (d.plusDi1 > d.minusDi1) : (d.minusDi1 > d.plusDi1);
+   if(d.adx1 >= InpAdxMinLevel && diOk)
+   {
+      passCount++;
+      double diGap = MathAbs(d.plusDi1 - d.minusDi1);
+      if(d.adx1 >= InpConfirmAdxLevel && diGap >= InpConfirmDiGap) confirmedCount++;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Does a direction clear the configured entry bar?                  |
+//+------------------------------------------------------------------+
+bool Qualifies(const int passCount, const int confirmedCount,
+               const bool trendPassed, const bool vetoed)
+{
+   if(vetoed)                                            return(false);
+   if(passCount < InpMinConfluences)                     return(false);
+   if(InpRequireConfirm && confirmedCount < InpMinConfirmed) return(false);
+   if(InpRequireTrendConfluence && !trendPassed)         return(false);
+   return(true);
+}
+
+//+------------------------------------------------------------------+
 //| Evaluate long/short confluence signals                            |
 //+------------------------------------------------------------------+
 void EvaluateSignals(const SignalData &d, bool &buySignal, bool &sellSignal)
@@ -475,30 +578,31 @@ void EvaluateSignals(const SignalData &d, bool &buySignal, bool &sellSignal)
    buySignal  = false;
    sellSignal = false;
 
-   bool htfBullish = d.trendClose > d.trendEma;
-   bool htfBearish = d.trendClose < d.trendEma;
+   int  buyPass, buyConfirmed, sellPass, sellConfirmed;
+   bool buyTrend, sellTrend;
+   ScoreConfluences(d, true,  buyPass,  buyConfirmed,  buyTrend);
+   ScoreConfluences(d, false, sellPass, sellConfirmed, sellTrend);
 
-   bool bullishCross = d.freshBullCross && (d.emaFast1 > d.emaSlow1);
-   bool bearishCross = d.freshBearCross && (d.emaFast1 < d.emaSlow1);
+   // Bollinger veto sits outside the vote: never chase an already-extended move
+   bool buyVetoed  = (InpUseBandsVeto && d.close1 >= d.bandsUpper1);
+   bool sellVetoed = (InpUseBandsVeto && d.close1 <= d.bandsLower1);
 
-   bool macdBullish = (d.macdMain1 > d.macdSignal1) && (d.macdMain1 > d.macdMain2);
-   bool macdBearish = (d.macdMain1 < d.macdSignal1) && (d.macdMain1 < d.macdMain2);
+   bool buyOk  = Qualifies(buyPass,  buyConfirmed,  buyTrend,  buyVetoed);
+   bool sellOk = Qualifies(sellPass, sellConfirmed, sellTrend, sellVetoed);
 
-   bool rsiOkBuy  = (d.rsi1 > InpRsiMidline) && (d.rsi1 < InpRsiUpperBlock);
-   bool rsiOkSell = (d.rsi1 < InpRsiMidline) && (d.rsi1 > InpRsiLowerBlock);
+   // if both directions qualify the picture is contradictory - stand aside
+   buySignal  = (buyOk  && !sellOk);
+   sellSignal = (sellOk && !buyOk);
 
-   bool trendingMarket = d.adx1 >= InpAdxMinLevel;
-   bool dmiBullish     = d.plusDi1  > d.minusDi1;
-   bool dmiBearish     = d.minusDi1 > d.plusDi1;
-
-   bool notAtUpperBand = d.close1 < d.bandsUpper1; // don't chase price already at/above the upper band
-   bool notAtLowerBand = d.close1 > d.bandsLower1; // don't chase price already at/below the lower band
-
-   buySignal  = htfBullish && bullishCross && macdBullish && rsiOkBuy  &&
-                trendingMarket && dmiBullish && notAtUpperBand;
-
-   sellSignal = htfBearish && bearishCross && macdBearish && rsiOkSell &&
-                trendingMarket && dmiBearish && notAtLowerBand;
+   if(buySignal || sellSignal)
+   {
+      PrintFormat("XAUUSD_Confluence_EA: %s entry - %d/3 confluences, %d confirmed "
+                  "(need %d/3 with %d confirmed)",
+                  buySignal ? "BUY" : "SELL",
+                  buySignal ? buyPass : sellPass,
+                  buySignal ? buyConfirmed : sellConfirmed,
+                  InpMinConfluences, InpRequireConfirm ? InpMinConfirmed : 0);
+   }
 }
 
 //+------------------------------------------------------------------+

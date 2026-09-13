@@ -1,8 +1,9 @@
 # XAUUSD Confluence EA (MQL5)
 
 An MQL5 Expert Advisor that automates XAUUSD (Gold) trading using a
-multi-indicator **confluence** strategy: trades are only taken when trend,
-momentum, trend-strength and volatility indicators all line up, combined with
+multi-indicator **confluence** strategy: trend, momentum and trend-strength
+each vote on a direction, and a trade is taken when at least **2 of the 3**
+agree with **at least one confirmed** at a stricter threshold — combined with
 ATR-based risk management and several protective filters.
 
 ⚠️ **No EA can guarantee profit.** Gold is volatile and highly news-sensitive.
@@ -21,15 +22,15 @@ not predict future results.
 - `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
   cheat sheet.
 - `python/` — a Python port of the same strategy that trades through the
-  MetaTrader5 Python API (0.02 lots, 60-pip stop, 30-pip trailing stop, entries
-  only at 3/3 confluences, and it pauses itself while the market is closed).
+  MetaTrader5 Python API (0.02 lots, 60-pip stop, 30-pip trailing stop, the
+  same 2-of-3 entry rule, and it pauses itself while the market is closed).
   See `python/README.md`.
 
 ## Strategy logic
 
 | Role | Indicator | Purpose |
 |---|---|---|
-| Macro trend bias | EMA(200) on a higher timeframe (default H4) | Only trade in the direction of the dominant trend |
+| Macro trend bias | EMA(200) on a higher timeframe (default H4) | Sets the dominant-trend vote (one of the three confluences) |
 | Entry trigger | EMA(20)/EMA(50) crossover on the working timeframe (default M15) | Times the entry to a fresh directional shift |
 | Momentum confirmation | MACD(12,26,9) | Confirms momentum agrees with the crossover direction |
 | Overbought/oversold filter | RSI(14) | Blocks buys above 70 / sells below 30; requires RSI on the correct side of 50 |
@@ -37,9 +38,17 @@ not predict future results.
 | Volatility / extension filter | Bollinger Bands(20, 2) | Avoids buying into an already-extended move at the upper band (or selling into the lower band) |
 | Stops, targets & sizing | ATR(14) | Stop-loss = ATR × multiplier; take-profit = SL distance × risk:reward ratio; lot size computed from % equity risked |
 
-A trade is only opened once **all** of the above align on the most recently
-**closed** bar (no repainting), and only once per new bar on the working
-timeframe.
+These roll up into **three confluences** — trend (EMAs), momentum (MACD+RSI)
+and strength (ADX/DMI) — each voting at a *pass* and a stricter *confirmed*
+level. A trade opens when **at least 2 of the 3 pass and at least 1 is
+confirmed** (`InpMinConfluences` / `InpMinConfirmed`), evaluated on the most
+recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
+as a veto rather than a vote.
+
+At 2 of 3 the trend leg is optional, so entries against the H4 trend become
+possible — set `InpRequireTrendConfluence = true` to block them. Expect
+markedly more signals than the old 3-of-3 rule, which makes
+`InpMaxTradesPerDay` the binding limit on busy days.
 
 ## Risk & trade management
 
@@ -71,6 +80,8 @@ so they can be optimized in the Strategy Tester:
 
 - `InpWorkTF` / `InpTrendTF` — entry and trend timeframes.
 - `InpTrendEmaPeriod`, `InpEmaFastPeriod`, `InpEmaSlowPeriod` — trend/entry EMAs.
+- `InpMinConfluences`, `InpRequireConfirm`, `InpMinConfirmed`, `InpRequireTrendConfluence` — the entry rule.
+- `InpConfirmEmaGapAtr`, `InpConfirmRsiMargin`, `InpConfirmAdxLevel`, `InpConfirmDiGap` — confirmation thresholds.
 - `InpMacdFast/Slow/Signal`, `InpRsiPeriod`, `InpRsiUpperBlock/LowerBlock` — momentum filters.
 - `InpAdxPeriod`, `InpAdxMinLevel` — trend-strength filter.
 - `InpAtrPeriod`, `InpBandsPeriod`, `InpBandsDeviation` — volatility filters.

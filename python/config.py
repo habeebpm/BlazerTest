@@ -74,6 +74,34 @@ class TradeConfig:
     # day on M15. Set 0 to drop the cross requirement and accept alignment alone.
     cross_lookback: int = 8
 
+    # ---------------- how many confluences are required ----------------
+    # A trade needs `min_confluences` of the three (trend / momentum / strength)
+    # agreeing on a direction. At 2 the bot trades more often but on weaker
+    # evidence, so `require_confirmation` demands that at least one of the
+    # passing confluences also clears a stricter "confirmed" threshold - that
+    # stops two barely-passing readings (ADX 22.1 with RSI 50.4) from opening
+    # a position.
+    min_confluences: int = 2
+    require_confirmation: bool = True
+    min_confirmed: int = 1
+
+    # Side effect of dropping to 2/3: the trend confluence is no longer
+    # mandatory, so momentum + strength can open a trade AGAINST the H4 trend
+    # (measured at roughly 1 in 20 signals, and chop trades more often too).
+    # Set this True to keep counter-trend entries out while still only needing
+    # 2 of 3 - the trend leg then has to be one of the two.
+    require_trend_confluence: bool = False
+
+    # Confirmation thresholds - the stronger version of each confluence
+    confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR
+    confirm_rsi_margin: float = 5.0     # momentum: RSI this far past the midline
+    confirm_adx_level: float = 28.0     # strength: ADX at least this (base 22)
+    confirm_di_gap: float = 8.0         # strength: |+DI - -DI| at least this
+
+    # Bollinger veto: never open into an already-extended move (price at or
+    # beyond the band in the trade's direction). Not a confluence - a veto.
+    use_bands_veto: bool = True
+
     # ---------------- guards (not part of the 3 confluences) ----------------
     max_open_positions: int = 1
     max_trades_per_day: int = 6

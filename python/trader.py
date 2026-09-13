@@ -3,7 +3,8 @@
 XAUUSD confluence trading bot for MetaTrader 5.
 
 Opens 0.02 lots of XAUUSD with a 60-pip stop-loss and a 30-pip trailing stop,
-but only when all THREE confluences (trend, momentum, strength) agree.
+but only when at least 2 of the 3 confluences (trend, momentum, strength) agree
+and at least one of them is confirmed at its stricter threshold.
 
 When the market is closed the bot keeps evaluating and logging confluences but
 sends no orders, and resumes trading by itself once quotes start moving again.
@@ -166,8 +167,17 @@ class Bot:
             return
 
         side = sig.buy if sig.direction == "buy" else sig.sell
-        log.info("ALL 3 CONFLUENCES AGREE (%s): %s | %s | %s", sig.direction.upper(),
-                 side.reasons["trend"], side.reasons["momentum"], side.reasons["strength"])
+        names = ("trend", "momentum", "strength")
+        passed = [n for n, ok in zip(names, (side.trend, side.momentum, side.strength)) if ok]
+        confirmed = [n for n, ok in zip(
+            names, (side.trend_confirmed, side.momentum_confirmed, side.strength_confirmed)) if ok]
+        log.info("ENTRY %s - %d/3 confluences (%s), confirmed: %s",
+                 sig.direction.upper(), side.count, ", ".join(passed),
+                 ", ".join(confirmed) if confirmed else "none")
+        for name in names:
+            log.info("    %-8s %s%s", name,
+                     "CONFIRMED " if name in confirmed else ("pass " if name in passed else "fail "),
+                     side.reasons[name])
 
         result = mc.open_position(self.cfg, self.spec, sig.direction, self.dry_run)
         self.trades_today += 1
@@ -175,6 +185,9 @@ class Bot:
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "bar_time": str(sig.bar_time),
             "direction": sig.direction,
+            "confluences": side.count,
+            "confirmed": side.confirmed_count,
+            "marks": side.marks(),
             "lots": self.cfg.lots,
             "price": getattr(result, "price", sig.close),
             "sl_units": self.cfg.stop_loss_units,
@@ -277,6 +290,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="override stop-loss distance, in --unit units")
     parser.add_argument("--trail-units", type=float, dest="trail_units",
                         help="override trailing distance, in --unit units")
+    parser.add_argument("--min-confluences", type=int, dest="min_confluences",
+                        choices=[1, 2, 3], help="confluences required to enter (default 2)")
+    parser.add_argument("--no-confirmation", action="store_true",
+                        help="drop the 'at least one confirmed' requirement")
+    parser.add_argument("--require-trend", action="store_true",
+                        help="the trend confluence must be one of the passing ones "
+                             "(blocks counter-trend entries)")
+    parser.add_argument("--min-confirmed", type=int, dest="min_confirmed",
+                        choices=[1, 2, 3], help="confirmed confluences required (default 1)")
     parser.add_argument("--force", action="store_true",
                         help="trade even if preflight reports problems (not advised)")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -298,6 +320,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.trail_units:
         overrides["trailing_stop_units"] = args.trail_units
         overrides["trail_start_units"] = args.trail_units
+    if args.min_confluences:
+        overrides["min_confluences"] = args.min_confluences
+    if args.no_confirmation:
+        overrides["require_confirmation"] = False
+    if args.require_trend:
+        overrides["require_trend_confluence"] = True
+    if args.min_confirmed:
+        overrides["min_confirmed"] = args.min_confirmed
     cfg = TradeConfig.from_env(**overrides)
 
     bot = Bot(cfg, dry_run=not args.live)
@@ -328,10 +358,17 @@ def main(argv: list[str] | None = None) -> int:
             sig = bot.latest_signal()
             print(f"\nBar {sig.bar_time}  close={sig.close:.2f}")
             for tag, side in (("BUY", sig.buy), ("SELL", sig.sell)):
-                print(f"  {tag}: trend={side.trend} momentum={side.momentum} "
-                      f"strength={side.strength}  ({side.count}/3)")
+                state = lambda ok, conf: "CONFIRMED" if conf else ("pass" if ok else "fail")
+                print(f"  {tag}: {side.count}/3 confluences, {side.confirmed_count} confirmed"
+                      + ("  [VETOED: " + side.veto_reason + "]" if side.vetoed else ""))
+                print(f"      trend    {state(side.trend, side.trend_confirmed)}")
+                print(f"      momentum {state(side.momentum, side.momentum_confirmed)}")
+                print(f"      strength {state(side.strength, side.strength_confirmed)}")
                 for k, v in side.reasons.items():
-                    print(f"      {k}: {v}")
+                    print(f"        {k}: {v}")
+                print(f"      qualifies: {side.qualifies(cfg)}")
+            print(f"  need >= {cfg.min_confluences}/3 with >= "
+                  f"{cfg.min_confirmed if cfg.require_confirmation else 0} confirmed")
             print(f"  => {sig.direction or 'no trade'}")
             return 0
 

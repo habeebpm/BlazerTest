@@ -120,7 +120,10 @@ def test_confluences() -> bool:
         buy_hits += s.direction == "buy"
         sell_hits += s.direction == "sell"
     ok &= check("uptrend produces buy signals", buy_hits > 0, f"{buy_hits} buys")
-    ok &= check("uptrend produces no sell signals", sell_hits == 0, f"{sell_hits} sells")
+    # At 2/3 the trend leg is optional, so a pullback can produce a counter-trend
+    # sell. Buys must still dominate heavily.
+    ok &= check("uptrend is dominated by buys", buy_hits > 5 * sell_hits,
+                f"{buy_hits} buys vs {sell_hits} counter-trend sells")
 
     # --- strong downtrend: mirror image ---
     down = build_frame(trending_series(900, 2400.0, -0.20, seed=23), cfg)
@@ -130,25 +133,111 @@ def test_confluences() -> bool:
         buy_hits += s.direction == "buy"
         sell_hits += s.direction == "sell"
     ok &= check("downtrend produces sell signals", sell_hits > 0, f"{sell_hits} sells")
-    ok &= check("downtrend produces no buy signals", buy_hits == 0, f"{buy_hits} buys")
+    ok &= check("downtrend is dominated by sells", sell_hits > 5 * buy_hits,
+                f"{sell_hits} sells vs {buy_hits} counter-trend buys")
 
     # --- chop: the ADX/strength confluence should keep us out ---
     chop = build_frame(choppy_series(900, 2100.0), cfg)
     trades = sum(st.evaluate(chop, cfg, i).direction is not None
                  for i in range(300, len(chop)))
-    ok &= check("range-bound market trades rarely", trades <= 3, f"{trades} signals")
+    trend_trades = max(buy_hits + sell_hits, 1)
+    ok &= check("range-bound market trades less than a trending one",
+                trades < trend_trades, f"{trades} chop signals vs {trend_trades} in a trend")
 
-    # --- a signal really does require all three, never 2/3 ---
-    sig = st.evaluate(up, cfg, len(up) - 1)
-    two_of_three_traded = False
+    # requiring the trend leg should suppress counter-trend entries entirely
+    strict_cfg = TradeConfig(require_trend_confluence=True)
+    counter = 0
     for i in range(300, len(up)):
-        s = st.evaluate(up, cfg, i)
-        if s.direction is not None:
-            side = s.buy if s.direction == "buy" else s.sell
-            if side.count != 3:
-                two_of_three_traded = True
-    ok &= check("no trade is ever taken on fewer than 3/3", not two_of_three_traded)
+        sg = st.evaluate(up, strict_cfg, i)
+        counter += sg.direction == "sell"
+    ok &= check("require_trend_confluence removes counter-trend entries",
+                counter == 0, f"{counter} counter-trend signals in an uptrend")
+
+    sig = st.evaluate(up, cfg, len(up) - 1)
     ok &= check("Signal.summary renders", isinstance(sig.summary(), str), sig.summary())
+    return bool(ok)
+
+
+def test_entry_rule() -> bool:
+    """The 2-of-3 rule with a confirmation requirement."""
+    print("\nEntry rule (>= 2/3 with >= 1 confirmed)")
+    cfg = TradeConfig()
+    ok = True
+
+    frames = [build_frame(trending_series(900, 2000.0, d, seed=sd), cfg)
+              for d, sd in [(0.20, 17), (-0.20, 23), (0.0, 9), (0.12, 3)]]
+
+    below_min = 0
+    unconfirmed = 0
+    vetoed_traded = 0
+    signals = 0
+    for df in frames:
+        for i in range(300, len(df)):
+            sg = st.evaluate(df, cfg, i)
+            if sg.direction is None:
+                continue
+            signals += 1
+            side = sg.buy if sg.direction == "buy" else sg.sell
+            if side.count < cfg.min_confluences:
+                below_min += 1
+            if side.confirmed_count < cfg.min_confirmed:
+                unconfirmed += 1
+            if side.vetoed:
+                vetoed_traded += 1
+
+    ok &= check("never trades below the minimum confluence count", below_min == 0,
+                f"{signals} signals, {below_min} under {cfg.min_confluences}/3")
+    ok &= check("never trades without a confirmed confluence", unconfirmed == 0,
+                f"{unconfirmed} unconfirmed entries")
+    ok &= check("never trades into a Bollinger veto", vetoed_traded == 0)
+    ok &= check("2/3 actually produces signals", signals > 0, f"{signals} signals")
+
+    # 2/3 must be strictly more permissive than 3/3, and confirmation must bite
+    def count(**kw):
+        """Signals across the same frames under a different entry rule.
+
+        The indicator columns do not depend on the entry rule, so the frames
+        built above are reused - rebuilding one per bar is needlessly slow.
+        """
+        c = TradeConfig(**kw)
+        return sum(st.evaluate(df, c, i).direction is not None
+                   for df in frames for i in range(300, len(df)))
+
+    strict = count(min_confluences=3, require_confirmation=False)
+    loose = count(min_confluences=2, require_confirmation=False)
+    default = count()
+    two_conf = count(min_confluences=2, require_confirmation=True, min_confirmed=2)
+    print(f"      3/3={strict}  2/3 raw={loose}  2/3+1conf={default}  2/3+2conf={two_conf}")
+    ok &= check("2/3 trades more often than 3/3", default > strict)
+    ok &= check("confirmation filters out weak 2/3 signals", default < loose,
+                f"{loose - default} signals rejected for having no confirmed leg")
+    ok &= check("requiring 2 confirmations is stricter still", two_conf < default)
+
+    # A hand-built bar: exactly 2 passes, zero confirmed -> must NOT trade.
+    # The trend leg needs a real cross inside the lookback window, so the
+    # PREVIOUS bar has to sit with fast below slow.
+    df = frames[0].copy()
+    i = len(df) - 1
+    r, r_prev = df.index[i], df.index[i - 1]
+    df.loc[r_prev, ["ema_fast", "ema_slow"]] = [1999.90, 2000.00]   # pre-cross
+    df.loc[r, ["htf_close", "htf_ema"]] = [2100.0, 2000.0]          # trend bias up
+    df.loc[r, ["ema_fast", "ema_slow"]] = [2000.10, 2000.00]        # just crossed, gap tiny
+    df.loc[r, ["adx", "plus_di", "minus_di"]] = [22.5, 26.0, 24.0]  # passes, not confirmed
+    df.loc[r, ["macd", "macd_signal"]] = [-1.0, -0.5]               # momentum fails
+    df.loc[r, "rsi"] = 52.0
+    df.loc[r, ["bb_upper", "bb_lower"]] = [9999.0, 0.0]             # no veto
+    df.loc[r, "close"] = 2000.05
+    marginal = st.evaluate(df, cfg, i)
+    side = marginal.buy
+    ok &= check("staged setup really is 2/3 with 0 confirmed",
+                side.count == 2 and side.confirmed_count == 0,
+                f"marks={side.marks()} count={side.count} confirmed={side.confirmed_count}")
+    ok &= check("hand-built marginal 2/3 with 0 confirmed is rejected",
+                marginal.direction is None,
+                f"{side.count}/3 passes, {side.confirmed_count} confirmed -> "
+                f"{marginal.direction or 'no trade'}")
+    ok &= check("same setup trades once confirmation is not required",
+                st.evaluate(df, TradeConfig(require_confirmation=False), i).direction == "buy")
     return bool(ok)
 
 
@@ -234,6 +323,7 @@ def run() -> int:
     results = [
         test_indicators(),
         test_confluences(),
+        test_entry_rule(),
         test_distances(),
         test_trailing(),
     ]

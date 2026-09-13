@@ -2,22 +2,56 @@
 
 Python port of the MQL5 EA. It watches XAUUSD and opens **0.02 lots** with a
 **60-pip stop-loss ($6.00)** and a **30-pip trailing stop ($3.00)**, but only
-when **all three confluences** agree on the same direction.
+when at least **2 of the 3 confluences** agree and **at least one of them is
+confirmed**.
 
 ## The three confluences
 
-| # | Confluence | Passes when (buy side) |
+Each confluence votes at two strengths — a **pass** and a stricter
+**confirmed** (buy side shown; sell is the mirror):
+
+| # | Confluence | Passes when | Confirmed when |
+|---|---|---|---|
+| 1 | **Trend** | H4 close > EMA(200), EMA(20) > EMA(50), cross within `cross_lookback` bars | EMAs separated by ≥ `0.25 × ATR` |
+| 2 | **Momentum** | MACD > signal and rising, 50 < RSI < 70 | MACD histogram expanding **and** RSI ≥ 55 |
+| 3 | **Strength** | ADX ≥ 22, +DI > −DI | ADX ≥ 28 **and** DI gap ≥ 8 |
+
+### The entry rule
+
+A trade needs **≥ 2 of 3 passes** with **≥ 1 confirmed**. The confirmation tier
+is what stops two barely-passing readings (ADX 22.1 alongside RSI 50.4) from
+opening a position — in testing it rejects **38% of raw 2/3 signals**.
+
+A **Bollinger veto** sits outside the vote: no buying at/above the upper band,
+no selling at/below the lower band, no matter how many confluences agree.
+
+Every bar logs the state, e.g. `BUY[T/M/S=Cyn 2/3 conf=1]` — `C` confirmed,
+`y` passed, `n` failed.
+
+### What dropping to 2/3 costs you
+
+Measured across five independent 900-bar synthetic series:
+
+| Rule | Signals | ≈ trades/day (M15) |
 |---|---|---|
-| 1 | **Trend** | H4 close > EMA(200) **and** EMA(20) > EMA(50) **and** that cross happened within the last `cross_lookback` bars |
-| 2 | **Momentum** | MACD main > signal **and** MACD rising **and** 50 < RSI < 70 |
-| 3 | **Strength** | ADX ≥ 22 **and** +DI > −DI |
+| 3/3 (the old rule) | 24 | 0.77 |
+| 2/3, no confirmation | 293 | 9.38 |
+| **2/3 + ≥1 confirmed (default)** | **179** | **5.73** |
+| 2/3 + ≥2 confirmed | 30 | 0.96 |
 
-Sell is the mirror image. A trade is taken **only at 3/3** — never 2/3. The log
-prints the state every bar, e.g. `BUY[T/M/S=nYY 2/3] SELL[...] -> no trade`.
+Two consequences worth knowing:
 
-Guards that can still veto a 3/3 signal (spread, session, max positions,
-max trades/day, daily-loss limit, weekend window) are deliberately kept
-separate from the confluence count.
+1. **`max_trades_per_day = 6` is now the binding constraint on busy days** at
+   ~5.7 signals/day. Raise it if you want every signal taken.
+2. **The trend leg is no longer mandatory**, so momentum + strength can open a
+   trade *against* the H4 trend — roughly 1 signal in 20 in testing. Set
+   `require_trend_confluence = True` (or `--require-trend`) to force the trend
+   confluence to be one of the two passing ones; that removes counter-trend
+   entries entirely.
+
+Guards that can still veto a qualifying signal (spread, session, max positions,
+max trades/day, daily-loss limit, weekend window) stay separate from the
+confluence count.
 
 ## Distance units
 
@@ -95,7 +129,9 @@ python trader.py --live            :: actually trade, 60-pip stop / 30-pip trail
 exact order it *would* have sent, which is how you should run it first.
 
 Useful flags: `--unit {point,pip,usd}`, `--sl-units 60`, `--trail-units 30`,
-`--lots 0.02`, `--force` (trade despite preflight problems — not advised), `-v`.
+`--lots 0.02`, `--min-confluences {1,2,3}`, `--min-confirmed {1,2,3}`,
+`--no-confirmation`, `--require-trend`, `--force` (trade despite preflight
+problems — not advised), `-v`.
 
 ## Files
 
@@ -121,8 +157,8 @@ Output goes to `logs/trader.log` and every entry is appended to
 
 - Trades are evaluated once per closed working-timeframe bar and use only
   closed-bar values — no repainting.
-- With the default `cross_lookback = 8`, expect roughly **one signal per day**
-  on M15. Requiring the cross on the very last closed bar (the obvious reading)
+- With `cross_lookback = 8` and the 2-of-3 rule, expect roughly **6 signals per
+  day** on M15 (one per day under the old 3-of-3 rule). Requiring the cross on the very last closed bar (the obvious reading)
   drops that to about **one signal per 2000 bars**, because ADX is still below
   its threshold at the moment the EMAs cross. That measurement is why the
   default is 8 in both this bot and the EA.
