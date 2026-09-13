@@ -33,7 +33,8 @@
 //| Set InpMinConfidence = 50 to return to the selective ~4.7/day.      |
 //|                                                                    |
 //| Positions are correlated (same symbol and direction), so four at    |
-//| 0.02 lots with a $6.00 stop risks roughly $32 together.            |
+//| 0.01 lots with a $6.00 stop risk about $24 together ($6 each: one   |
+//| lot is 100oz, so $1 of price is $1 per 0.01 lot).                  |
 //|                                                                    |
 //| The score measures how strongly the indicators agree - it is NOT   |
 //| a probability that the trade wins.                                 |
@@ -122,7 +123,9 @@ input int      InpBandsPeriod       = 20;            // Bollinger Bands period
 input double   InpBandsDeviation    = 2.0;            // Bollinger Bands deviation
 
 input group "=== Risk Management ==="
-input double   InpRiskPercent       = 1.0;           // Risk per trade (% of equity)
+input bool     InpUseFixedLot       = true;          // Trade a fixed lot size (ignore risk %)
+input double   InpFixedLot          = 0.01;          // Fixed lot size when the above is true
+input double   InpRiskPercent       = 1.0;           // Risk per trade (% of equity), if not fixed
 input double   InpAtrSlMultiplier   = 1.8;            // Stop-loss = ATR * this multiplier
 input double   InpRiskRewardRatio   = 1.8;            // Take-profit = SL distance * this ratio
 input double   InpMaxLotSize        = 5.0;            // Hard cap on calculated lot size
@@ -193,6 +196,24 @@ int OnInit()
       Print("XAUUSD_Confluence_EA: failed to create one or more indicator handles. Error=", GetLastError());
       return(INIT_FAILED);
    }
+
+   if(InpUseFixedLot && InpFixedLot <= 0.0)
+   {
+      Print("XAUUSD_Confluence_EA: InpFixedLot must be greater than 0 when "
+            "InpUseFixedLot is true.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpUseFixedLot)
+   {
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      if(InpFixedLot < minLot)
+         PrintFormat("XAUUSD_Confluence_EA: InpFixedLot %.2f is below the broker minimum "
+                     "%.2f - trades will be sized at %.2f.", InpFixedLot, minLot, minLot);
+      PrintFormat("XAUUSD_Confluence_EA: fixed lot sizing, %.2f lots per trade.", InpFixedLot);
+   }
+   else
+      PrintFormat("XAUUSD_Confluence_EA: risk-based sizing, %.2f%% of equity per trade.",
+                  InpRiskPercent);
 
    if(InpMinConfluences < 1 || InpMinConfluences > 3)
    {
@@ -380,14 +401,27 @@ bool HandleWeekendFlatten()
 //+------------------------------------------------------------------+
 double CalcLotSize(double slDistance)
 {
+   double lotStep   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+
+   // Fixed lot: trade the same size every time, whatever the account balance.
+   // Risk then varies with the stop distance instead of the other way round.
+   if(InpUseFixedLot)
+   {
+      double fixed = InpFixedLot;
+      if(fixed < minLot) fixed = minLot;
+      if(fixed > maxLot) fixed = maxLot;
+      if(fixed > InpMaxLotSize) fixed = InpMaxLotSize;
+      fixed = MathFloor(fixed / lotStep) * lotStep;   // respect the broker's step
+      return(NormalizeDouble(fixed, 2));
+   }
+
    double equity    = AccountInfoDouble(ACCOUNT_EQUITY);
    double riskMoney = equity * InpRiskPercent / 100.0;
 
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double lotStep   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   double minLot    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
 
    if(tickValue <= 0.0 || tickSize <= 0.0 || slDistance <= 0.0)
       return(minLot);

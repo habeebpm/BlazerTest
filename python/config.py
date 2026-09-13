@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 class TradeConfig:
     # ---------------- what the user asked for ----------------
     symbol: str = "XAUUSD"
-    lots: float = 0.02
+    lots: float = 0.01
     stop_loss_units: float = 60.0       # SL distance, in `distance_unit`
     trailing_stop_units: float = 30.0   # trail distance, in `distance_unit`
     distance_unit: str = "pip"          # "point" | "pip" | "usd"  (see module docstring)
@@ -130,7 +130,8 @@ class TradeConfig:
 
     # Up to four positions at once, but only in the SAME direction. Note they
     # are correlated - same symbol, same way - so an adverse move loses on all
-    # of them together: 4 x 0.02 lots at a $6.00 stop is about $32 of risk. A
+    # of them together. One XAUUSD lot is 100oz, so $1 of price is $1 per 0.01
+    # lot: a $6.00 stop risks $6 per trade and $24 across four positions. A
     # simultaneous buy and sell pays the spread twice and nets to nothing on a
     # netting account, so an opposing signal is skipped while a position is open.
     allow_opposite_positions: bool = False

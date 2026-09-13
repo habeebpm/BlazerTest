@@ -145,11 +145,11 @@ print(f"   order: {'BUY' if req['type']==0 else 'SELL'} {req['volume']} lots @ {
 # 60 pips = $6.00; SL is normalized to the symbol digits (2), so allow
 # half a cent of rounding
 assert abs((entry - req["sl"]) - 6.00) <= 0.005 + 1e-9, "SL must be $6.00 below entry"
-assert req["volume"] == 0.02, "lot size must be 0.02"
+assert req["volume"] == cfg2.lots, f"lot size must be {cfg2.lots}"
 
 print("\n=== 6. trailing stop on a live position ===")
 POSITIONS.append(types.SimpleNamespace(ticket=555, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
-                                       volume=0.02, price_open=entry, sl=req["sl"], tp=0.0, magic=cfg2.magic))
+                                       volume=cfg2.lots, price_open=entry, sl=req["sl"], tp=0.0, magic=cfg2.magic))
 sent.clear()
 for bump in (1.0, 3.0, 5.0, 4.0, 9.0):
     m.symbol_info_tick = (lambda b: (lambda s: types.SimpleNamespace(
@@ -183,7 +183,7 @@ assert opposing is not None, "an opposing signal must be skipped"
 extra = []
 for n in range(cap - len(POSITIONS)):
     pos = types.SimpleNamespace(ticket=600 + n, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
-                                volume=0.02, price_open=entry, sl=req["sl"], tp=0.0,
+                                volume=cfg2.lots, price_open=entry, sl=req["sl"], tp=0.0,
                                 magic=cfg2.magic)
     POSITIONS.append(pos); extra.append(pos)
 print(f"   {len(POSITIONS)} positions open -> entry_blocked: {live.entry_blocked()}")
@@ -220,7 +220,7 @@ print("   entry_blocked:", closed_bot.entry_blocked())
 assert closed_bot.entry_blocked() == "market is closed"
 
 POSITIONS.append(types.SimpleNamespace(ticket=777, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
-                                       volume=0.02, price_open=2000.0, sl=1994.0, tp=0.0,
+                                       volume=cfg2.lots, price_open=2000.0, sl=1994.0, tp=0.0,
                                        magic=cfg2.magic))
 sent.clear()
 closed_bot.manage_trailing()

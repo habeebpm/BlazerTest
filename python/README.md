@@ -1,6 +1,6 @@
 # XAUUSD Confluence Bot (Python + MetaTrader 5)
 
-Python port of the MQL5 EA. It watches XAUUSD and opens **0.02 lots** with a
+Python port of the MQL5 EA. It watches XAUUSD and opens **0.01 lots** with a
 **60-pip stop-loss ($6.00)** and a **30-pip trailing stop ($3.00)**, but only
 when at least **2 of the 3 confluences** agree and **at least one of them is
 confirmed**. Entries are evaluated on every **M5 candle close**, with up to
@@ -267,7 +267,7 @@ advised), `-v`.
 
 | File | Role |
 |---|---|
-| `config.py` | All settings; lot size, distances, unit handling |
+| `config.py` | All settings; lot size (0.01), distances, unit handling |
 | `indicators.py` | EMA/MACD/RSI/ADX/ATR/Bollinger, matched to MT5's formulas |
 | `strategy.py` | The three confluences (pure pandas, no MT5 import) |
 | `mt5_client.py` | Connection, rates, preflight, order send, trailing modify |
@@ -300,10 +300,11 @@ Output goes to `logs/trader.log` and every entry is appended to
 - Up to four positions may be open at once, but only in the same direction; an
   opposing signal is skipped rather than hedged (`allow_opposite_positions`).
   **They are correlated** — same symbol, same way — so an adverse move loses on
-  all of them together: 4 × 0.02 lots at a $6.00 stop risks about **$32**. The
-  3% daily-loss breaker needs roughly a $1,100 account to absorb that.
-- At 10 fills/day the spread costs about **$5/day, ~$100/month** at a $0.25
-  spread and 0.02 lots. Run `python simulate.py` to recompute for your spread. Requiring the cross on the very last closed bar (the obvious reading)
+  all of them together. One XAUUSD lot is 100oz, so $1 of price is $1 per 0.01
+  lot: a $6.00 stop risks **$6 per trade, $24 across four positions**. The 3%
+  daily-loss breaker allows 5 losing trades on a $1,000 account, 2.5 on $500.
+- At 10 fills/day the spread costs about **$2.50/day, ~$50/month** at a $0.25
+  spread and 0.01 lots. Run `python simulate.py` to recompute for your spread. Requiring the cross on the very last closed bar (the obvious reading)
   drops that to about **one signal per 2000 bars**, because ADX is still below
   its threshold at the moment the EMAs cross. That measurement is why the
   default is 8 in both this bot and the EA.

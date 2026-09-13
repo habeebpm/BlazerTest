@@ -22,7 +22,7 @@ not predict future results.
 - `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
   cheat sheet.
 - `python/` — a Python port of the same strategy that trades through the
-  MetaTrader5 Python API (0.02 lots, 60-pip stop, 30-pip trailing stop, the
+  MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
   See `python/README.md`.
 
@@ -36,7 +36,7 @@ not predict future results.
 | Overbought/oversold filter | RSI(14) | Blocks buys above 70 / sells below 30; requires RSI on the correct side of 50 |
 | Trend-strength filter | ADX/DMI(14) | Requires ADX ≥ 22 and +DI/-DI aligned, filtering out choppy/range-bound conditions that whipsaw crossover systems |
 | Volatility / extension filter | Bollinger Bands(20, 2) | Avoids buying into an already-extended move at the upper band (or selling into the lower band) |
-| Stops, targets & sizing | ATR(14) | Stop-loss = ATR × multiplier; take-profit = SL distance × risk:reward ratio; lot size computed from % equity risked |
+| Stops & targets | ATR(14) | Stop-loss = ATR × multiplier; take-profit = SL distance × risk:reward ratio (lot size is fixed at 0.01 by default, not ATR-derived) |
 
 These roll up into **three confluences** — trend (EMAs), momentum (MACD+RSI)
 and strength (ADX/DMI) — each voting at a *pass* and a stricter *confirmed*
@@ -89,9 +89,12 @@ known — see "Before going live" for how to measure one.
 
 ## Risk & trade management
 
-- **Position sizing** — risk a fixed percentage of account equity per trade
-  (`InpRiskPercent`), derived from the ATR-based stop distance and the
-  symbol's tick value, capped by `InpMaxLotSize`.
+- **Position sizing** — **fixed 0.01 lots** by default (`InpUseFixedLot` /
+  `InpFixedLot`). Set `InpUseFixedLot = false` to size from a percentage of
+  equity instead (`InpRiskPercent`), derived from the ATR-based stop distance
+  and the symbol's tick value, capped by `InpMaxLotSize`.
+  One XAUUSD lot is 100oz, so $1 of price is $1 per 0.01 lot: the $6.00 stop
+  risks about **$6 per trade**, or **$24** with four positions open.
 - **Breakeven** — stop is moved to entry + buffer once price has moved
   `InpBreakevenAtrMult × ATR` in profit.
 - **ATR trailing stop** — once profit passes `InpTrailStartAtrMult × ATR`,
@@ -122,7 +125,7 @@ so they can be optimized in the Strategy Tester:
 - `InpMacdFast/Slow/Signal`, `InpRsiPeriod`, `InpRsiUpperBlock/LowerBlock` — momentum filters.
 - `InpAdxPeriod`, `InpAdxMinLevel` — trend-strength filter.
 - `InpAtrPeriod`, `InpBandsPeriod`, `InpBandsDeviation` — volatility filters.
-- `InpRiskPercent`, `InpAtrSlMultiplier`, `InpRiskRewardRatio`, `InpMaxLotSize` — sizing/stops.
+- `InpUseFixedLot`, `InpFixedLot`, `InpRiskPercent`, `InpAtrSlMultiplier`, `InpRiskRewardRatio`, `InpMaxLotSize` — sizing/stops.
 - `InpMaxDailyLossPct`, `InpMaxTradesPerDay`, `InpMaxOpenPositions` — trade-frequency guards.
 - `InpUseSessionFilter`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — timing filters.
 - `InpMaxSpreadPoints` — spread guard.
