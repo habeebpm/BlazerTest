@@ -30,6 +30,11 @@ Note what 2-of-3 implies: the trend confluence is not mandatory, so momentum
 plus strength can open a position against the higher-timeframe trend. Set
 `require_trend_confluence` to force the trend leg to be one of the two.
 
+Each direction also carries a CONFIDENCE score of 0-100. Read it as a measure
+of SETUP QUALITY - how many confluences agree and how emphatically - and not
+as a probability of the trade making money. Nothing here estimates a win rate;
+only a backtest against real tick data can do that.
+
 Everything here is pure pandas: no MetaTrader5 import, so the logic can be
 unit-tested and backtested on any machine, including this Linux container.
 """
@@ -54,6 +59,8 @@ class Confluences:
     strength_confirmed: bool = False
     vetoed: bool = False
     veto_reason: str = ""
+    confidence: float = 0.0     # 0-100 SETUP QUALITY, not a probability of profit
+    parts: dict = field(default_factory=dict)   # per-confluence contribution
     reasons: dict = field(default_factory=dict)
 
     @property
@@ -80,6 +87,8 @@ class Confluences:
         """Does this direction meet the configured entry bar?"""
         if self.vetoed:
             return False
+        if self.confidence < cfg.min_confidence:
+            return False
         if self.count < cfg.min_confluences:
             return False
         if cfg.require_confirmation and self.confirmed_count < cfg.min_confirmed:
@@ -102,7 +111,7 @@ class Signal:
         def fmt(tag: str, c: Confluences) -> str:
             veto = " VETO" if c.vetoed else ""
             return (f"{tag}[T/M/S={c.marks()} {c.count}/3 "
-                    f"conf={c.confirmed_count}{veto}]")
+                    f"conf={c.confirmed_count} score={c.confidence:.0f}%{veto}]")
         return f"{fmt('BUY', self.buy)} {fmt('SELL', self.sell)} -> {self.direction or 'no trade'}"
 
 
@@ -146,6 +155,27 @@ def compute_indicators(work: pd.DataFrame, trend: pd.DataFrame,
         direction="backward",
     )
     return df
+
+
+def _clip01(x: float) -> float:
+    return 0.0 if x <= 0.0 else (1.0 if x >= 1.0 else float(x))
+
+
+def _component_score(passed: bool, confirmed: bool, strength: float,
+                     max_points: float = 100.0 / 3.0) -> float:
+    """Score one confluence out of `max_points`.
+
+    A pass is worth 60% of the component. The remaining 40% is earned
+    continuously by `strength` (0-1), a normalized measure of how far past its
+    confirmation threshold the indicator actually is - so a confluence that
+    barely confirms scores well below one that confirms emphatically.
+    """
+    if not passed:
+        return 0.0
+    score = max_points * 0.60
+    if confirmed:
+        score += max_points * 0.40 * _clip01(strength)
+    return score
 
 
 def _crossed_recently(df: pd.DataFrame, idx: int, lookback: int, bullish: bool) -> bool:
@@ -251,14 +281,36 @@ def evaluate(df: pd.DataFrame, cfg: TradeConfig, idx: int = -1) -> Signal:
             f"+DI={row['plus_di']:.1f} -DI={row['minus_di']:.1f} gap={di_gap:.1f}"
         )
 
+    # ---- confidence: 0-100 setup quality (NOT a win probability) -------------
+    # Each confluence contributes up to a third. 60% of that is earned by
+    # passing; the rest scales with how far past the confirmation threshold the
+    # indicator actually sits, so "barely confirmed" scores well below
+    # "emphatically confirmed".
+    gap_strength = (ema_gap / gap_needed - 1.0) if gap_needed > 0 else 0.0
+    rsi_dist = abs(row["rsi"] - cfg.rsi_midline)
+    rsi_strength = (rsi_dist - cfg.confirm_rsi_margin) / 15.0
+    adx_headroom = max(cfg.confirm_adx_level - cfg.adx_min_level, 1.0)
+    adx_strength = (row["adx"] - cfg.confirm_adx_level) / adx_headroom
+    di_strength = (di_gap / cfg.confirm_di_gap - 1.0) if cfg.confirm_di_gap > 0 else 0.0
+
+    for c, tag in ((buy, "buy"), (sell, "sell")):
+        c.parts["trend"] = _component_score(c.trend, c.trend_confirmed, gap_strength)
+        c.parts["momentum"] = _component_score(
+            c.momentum, c.momentum_confirmed, rsi_strength)
+        c.parts["strength"] = _component_score(
+            c.strength, c.strength_confirmed, min(adx_strength, di_strength))
+        c.confidence = round(sum(c.parts.values()), 1)
+
     # ---- Bollinger veto (outside the vote) ----------------------------------
     if cfg.use_bands_veto:
         if row["close"] >= row["bb_upper"]:
             buy.vetoed = True
+            buy.confidence = 0.0
             buy.veto_reason = (f"close {row['close']:.2f} at/above upper band "
                                f"{row['bb_upper']:.2f} - move already extended")
         if row["close"] <= row["bb_lower"]:
             sell.vetoed = True
+            sell.confidence = 0.0
             sell.veto_reason = (f"close {row['close']:.2f} at/below lower band "
                                 f"{row['bb_lower']:.2f} - move already extended")
 

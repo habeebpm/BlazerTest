@@ -31,7 +31,7 @@ not predict future results.
 | Role | Indicator | Purpose |
 |---|---|---|
 | Macro trend bias | EMA(200) on a higher timeframe (default H4) | Sets the dominant-trend vote (one of the three confluences) |
-| Entry trigger | EMA(20)/EMA(50) crossover on the working timeframe (default M15) | Times the entry to a fresh directional shift |
+| Entry trigger | EMA(20)/EMA(50) crossover on the working timeframe (default M5) | Times the entry to a fresh directional shift |
 | Momentum confirmation | MACD(12,26,9) | Confirms momentum agrees with the crossover direction |
 | Overbought/oversold filter | RSI(14) | Blocks buys above 70 / sells below 30; requires RSI on the correct side of 50 |
 | Trend-strength filter | ADX/DMI(14) | Requires ADX ≥ 22 and +DI/-DI aligned, filtering out choppy/range-bound conditions that whipsaw crossover systems |
@@ -58,6 +58,19 @@ breaker** and `InpMaxOpenPositions` are the main brakes.
 **Running on a Mac?** MT5 for macOS runs this EA natively — that is the
 simplest path, since the Python bot's `MetaTrader5` dependency is Windows-only.
 See `python/README.md` → "Running on a Mac".
+
+## Confidence score
+
+Each evaluation produces a **0–100 setup score** per direction, shown live in
+the chart comment (`InpShowConfidence`), printed on entry, and usable as an
+entry gate via `InpMinConfidence`. Each confluence is worth a third: passing
+earns 60% of it, and the rest scales with how far past its confirmation
+threshold the indicator sits. In testing the floor is 40, the median 50 and
+the practical ceiling the mid-80s.
+
+**This score is not a win probability.** It measures how strongly the
+indicators agree at entry, not the odds of profit. No win rate for this EA is
+known — see "Before going live" for how to measure one.
 
 ## Risk & trade management
 
@@ -102,7 +115,10 @@ so they can be optimized in the Strategy Tester:
 ## Before going live
 
 1. **Backtest** in the MT5 Strategy Tester with tick data (every tick / real
-   ticks) across multiple years, including trending and ranging periods.
+   ticks) across multiple years, including trending and ranging periods. This
+   is the only way to obtain a real win rate, profit factor and drawdown for
+   this EA — none is claimed or known in advance, and the setup score is a
+   measure of indicator agreement, not of expected profit.
 2. **Optimize cautiously** — avoid over-fitting a handful of parameters to
    one historical window; validate on out-of-sample data.
 3. **Forward-test on a demo account** for at least several weeks.

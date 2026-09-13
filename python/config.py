@@ -92,6 +92,12 @@ class TradeConfig:
     # 2 of 3 - the trend leg then has to be one of the two.
     require_trend_confluence: bool = False
 
+    # Minimum setup-quality score (0-100) required to enter. 0 disables the
+    # gate. IMPORTANT: this score measures how strong the indicator agreement
+    # is, NOT the probability that a trade wins - nothing in this project
+    # estimates a win rate. See the confidence notes in README.md.
+    min_confidence: float = 0.0
+
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR
     confirm_rsi_margin: float = 5.0     # momentum: RSI this far past the midline

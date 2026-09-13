@@ -184,9 +184,12 @@ class Bot:
         passed = [n for n, ok in zip(names, (side.trend, side.momentum, side.strength)) if ok]
         confirmed = [n for n, ok in zip(
             names, (side.trend_confirmed, side.momentum_confirmed, side.strength_confirmed)) if ok]
-        log.info("ENTRY %s - %d/3 confluences (%s), confirmed: %s",
-                 sig.direction.upper(), side.count, ", ".join(passed),
+        log.info("ENTRY %s - setup score %.0f%% | %d/3 confluences (%s), confirmed: %s",
+                 sig.direction.upper(), side.confidence, side.count, ", ".join(passed),
                  ", ".join(confirmed) if confirmed else "none")
+        log.info("    score parts: trend %.1f + momentum %.1f + strength %.1f "
+                 "(setup quality, not a win probability)",
+                 side.parts["trend"], side.parts["momentum"], side.parts["strength"])
         for name in names:
             log.info("    %-8s %s%s", name,
                      "CONFIRMED " if name in confirmed else ("pass " if name in passed else "fail "),
@@ -200,6 +203,7 @@ class Bot:
             "direction": sig.direction,
             "confluences": side.count,
             "confirmed": side.confirmed_count,
+            "score": side.confidence,
             "marks": side.marks(),
             "lots": self.cfg.lots,
             "price": getattr(result, "price", sig.close),
@@ -317,6 +321,9 @@ def main(argv: list[str] | None = None) -> int:
                              "(blocks counter-trend entries)")
     parser.add_argument("--min-confirmed", type=int, dest="min_confirmed",
                         choices=[1, 2, 3], help="confirmed confluences required (default 1)")
+    parser.add_argument("--min-confidence", type=float, dest="min_confidence",
+                        help="minimum setup score 0-100 to enter (default 0 = no gate); "
+                             "this is setup quality, not a win probability")
     parser.add_argument("--force", action="store_true",
                         help="trade even if preflight reports problems (not advised)")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -352,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["require_trend_confluence"] = True
     if args.min_confirmed:
         overrides["min_confirmed"] = args.min_confirmed
+    if args.min_confidence is not None:
+        overrides["min_confidence"] = args.min_confidence
     cfg = TradeConfig.from_env(**overrides)
 
     bot = Bot(cfg, dry_run=not args.live)
@@ -383,16 +392,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nBar {sig.bar_time}  close={sig.close:.2f}")
             for tag, side in (("BUY", sig.buy), ("SELL", sig.sell)):
                 state = lambda ok, conf: "CONFIRMED" if conf else ("pass" if ok else "fail")
-                print(f"  {tag}: {side.count}/3 confluences, {side.confirmed_count} confirmed"
+                print(f"  {tag}: score {side.confidence:.0f}% | "
+                      f"{side.count}/3 confluences, {side.confirmed_count} confirmed"
                       + ("  [VETOED: " + side.veto_reason + "]" if side.vetoed else ""))
                 print(f"      trend    {state(side.trend, side.trend_confirmed)}")
                 print(f"      momentum {state(side.momentum, side.momentum_confirmed)}")
                 print(f"      strength {state(side.strength, side.strength_confirmed)}")
                 for k, v in side.reasons.items():
                     print(f"        {k}: {v}")
+                print(f"      score parts: trend {side.parts['trend']:.1f} + "
+                      f"momentum {side.parts['momentum']:.1f} + "
+                      f"strength {side.parts['strength']:.1f}")
                 print(f"      qualifies: {side.qualifies(cfg)}")
             print(f"  need >= {cfg.min_confluences}/3 with >= "
-                  f"{cfg.min_confirmed if cfg.require_confirmation else 0} confirmed")
+                  f"{cfg.min_confirmed if cfg.require_confirmation else 0} confirmed"
+                  + (f", score >= {cfg.min_confidence:.0f}%" if cfg.min_confidence else ""))
+            print("  (score = setup quality, NOT a probability that the trade wins)")
             print(f"  => {sig.direction or 'no trade'}")
             return 0
 

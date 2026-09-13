@@ -95,6 +95,8 @@ input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI thi
 input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
 input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
 input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
+input double   InpMinConfidence     = 0.0;          // Min setup score 0-100 to enter (0 = off)
+input bool     InpShowConfidence    = true;         // Show the live score in the chart comment
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="
 input int      InpAdxPeriod         = 14;           // ADX period
@@ -215,6 +217,7 @@ void OnDeinit(const int reason)
    if(hAdx      != INVALID_HANDLE) IndicatorRelease(hAdx);
    if(hAtr      != INVALID_HANDLE) IndicatorRelease(hAtr);
    if(hBands    != INVALID_HANDLE) IndicatorRelease(hBands);
+   Comment("");
 }
 
 //+------------------------------------------------------------------+
@@ -514,15 +517,39 @@ bool GetSignalData(SignalData &d)
 }
 
 //+------------------------------------------------------------------+
+//| Score one confluence out of maxPoints.                            |
+//| A pass earns 60%; the rest scales with how far past the           |
+//| confirmation threshold the indicator actually sits.               |
+//+------------------------------------------------------------------+
+double ComponentScore(const bool passed, const bool confirmed,
+                      const double strength, const double maxPoints)
+{
+   if(!passed) return(0.0);
+   double score = maxPoints * 0.60;
+   if(confirmed)
+   {
+      double s = strength;
+      if(s < 0.0) s = 0.0;
+      if(s > 1.0) s = 1.0;
+      score += maxPoints * 0.40 * s;
+   }
+   return(score);
+}
+
+//+------------------------------------------------------------------+
 //| Count how many of the three confluences a direction collects,     |
 //| and how many of those reach their stricter "confirmed" threshold. |
 //+------------------------------------------------------------------+
 void ScoreConfluences(const SignalData &d, const bool isBuy,
-                      int &passCount, int &confirmedCount, bool &trendPassed)
+                      int &passCount, int &confirmedCount, bool &trendPassed,
+                      double &confidence)
 {
    passCount      = 0;
    confirmedCount = 0;
    trendPassed    = false;
+   confidence     = 0.0;
+
+   const double maxPoints = 100.0 / 3.0;   // each confluence is worth a third
 
    // ---- Confluence 1: TREND ----
    bool htfOk   = isBuy ? (d.trendClose > d.trendEma) : (d.trendClose < d.trendEma);
@@ -534,8 +561,12 @@ void ScoreConfluences(const SignalData &d, const bool isBuy,
       passCount++;
       trendPassed = true;
       // confirmed when the EMAs have genuinely separated, not merely touched
-      double emaGap = MathAbs(d.emaFast1 - d.emaSlow1);
-      if(emaGap >= InpConfirmEmaGapAtr * d.atr0) confirmedCount++;
+      double emaGap    = MathAbs(d.emaFast1 - d.emaSlow1);
+      double gapNeeded = InpConfirmEmaGapAtr * d.atr0;
+      bool   trendConf = (emaGap >= gapNeeded);
+      if(trendConf) confirmedCount++;
+      double gapStrength = (gapNeeded > 0.0) ? (emaGap / gapNeeded - 1.0) : 0.0;
+      confidence += ComponentScore(true, trendConf, gapStrength, maxPoints);
    }
 
    // ---- Confluence 2: MOMENTUM ----
@@ -550,7 +581,11 @@ void ScoreConfluences(const SignalData &d, const bool isBuy,
       bool histExpanding = isBuy ? (d.macdHist1 > d.macdHist2) : (d.macdHist1 < d.macdHist2);
       bool rsiDecisive   = isBuy ? (d.rsi1 >= InpRsiMidline + InpConfirmRsiMargin)
                                  : (d.rsi1 <= InpRsiMidline - InpConfirmRsiMargin);
-      if(histExpanding && rsiDecisive) confirmedCount++;
+      bool momConf = (histExpanding && rsiDecisive);
+      if(momConf) confirmedCount++;
+      double rsiDist     = MathAbs(d.rsi1 - InpRsiMidline);
+      double rsiStrength = (rsiDist - InpConfirmRsiMargin) / 15.0;
+      confidence += ComponentScore(true, momConf, rsiStrength, maxPoints);
    }
 
    // ---- Confluence 3: STRENGTH ----
@@ -558,18 +593,26 @@ void ScoreConfluences(const SignalData &d, const bool isBuy,
    if(d.adx1 >= InpAdxMinLevel && diOk)
    {
       passCount++;
-      double diGap = MathAbs(d.plusDi1 - d.minusDi1);
-      if(d.adx1 >= InpConfirmAdxLevel && diGap >= InpConfirmDiGap) confirmedCount++;
+      double diGap     = MathAbs(d.plusDi1 - d.minusDi1);
+      bool   strConf   = (d.adx1 >= InpConfirmAdxLevel && diGap >= InpConfirmDiGap);
+      if(strConf) confirmedCount++;
+      double adxHeadroom = MathMax(InpConfirmAdxLevel - InpAdxMinLevel, 1.0);
+      double adxStrength = (d.adx1 - InpConfirmAdxLevel) / adxHeadroom;
+      double diStrength  = (InpConfirmDiGap > 0.0) ? (diGap / InpConfirmDiGap - 1.0) : 0.0;
+      confidence += ComponentScore(true, strConf, MathMin(adxStrength, diStrength), maxPoints);
    }
+
+   confidence = NormalizeDouble(confidence, 1);
 }
 
 //+------------------------------------------------------------------+
 //| Does a direction clear the configured entry bar?                  |
 //+------------------------------------------------------------------+
 bool Qualifies(const int passCount, const int confirmedCount,
-               const bool trendPassed, const bool vetoed)
+               const bool trendPassed, const bool vetoed, const double confidence)
 {
    if(vetoed)                                            return(false);
+   if(confidence < InpMinConfidence)                     return(false);
    if(passCount < InpMinConfluences)                     return(false);
    if(InpRequireConfirm && confirmedCount < InpMinConfirmed) return(false);
    if(InpRequireTrendConfluence && !trendPassed)         return(false);
@@ -584,17 +627,32 @@ void EvaluateSignals(const SignalData &d, bool &buySignal, bool &sellSignal)
    buySignal  = false;
    sellSignal = false;
 
-   int  buyPass, buyConfirmed, sellPass, sellConfirmed;
-   bool buyTrend, sellTrend;
-   ScoreConfluences(d, true,  buyPass,  buyConfirmed,  buyTrend);
-   ScoreConfluences(d, false, sellPass, sellConfirmed, sellTrend);
+   int    buyPass, buyConfirmed, sellPass, sellConfirmed;
+   bool   buyTrend, sellTrend;
+   double buyScore, sellScore;
+   ScoreConfluences(d, true,  buyPass,  buyConfirmed,  buyTrend,  buyScore);
+   ScoreConfluences(d, false, sellPass, sellConfirmed, sellTrend, sellScore);
 
    // Bollinger veto sits outside the vote: never chase an already-extended move
    bool buyVetoed  = (InpUseBandsVeto && d.close1 >= d.bandsUpper1);
    bool sellVetoed = (InpUseBandsVeto && d.close1 <= d.bandsLower1);
 
-   bool buyOk  = Qualifies(buyPass,  buyConfirmed,  buyTrend,  buyVetoed);
-   bool sellOk = Qualifies(sellPass, sellConfirmed, sellTrend, sellVetoed);
+   if(buyVetoed)  buyScore  = 0.0;
+   if(sellVetoed) sellScore = 0.0;
+
+   bool buyOk  = Qualifies(buyPass,  buyConfirmed,  buyTrend,  buyVetoed,  buyScore);
+   bool sellOk = Qualifies(sellPass, sellConfirmed, sellTrend, sellVetoed, sellScore);
+
+   if(InpShowConfidence)
+      Comment(StringFormat(
+         "XAUUSD Confluence EA\n"
+         "BUY  score %.0f%%  (%d/3, %d confirmed)%s\n"
+         "SELL score %.0f%%  (%d/3, %d confirmed)%s\n"
+         "need >= %d/3, %d confirmed, score >= %.0f%%\n"
+         "score = setup quality, NOT a win probability",
+         buyScore,  buyPass,  buyConfirmed,  buyVetoed  ? "  [VETO]" : "",
+         sellScore, sellPass, sellConfirmed, sellVetoed ? "  [VETO]" : "",
+         InpMinConfluences, InpRequireConfirm ? InpMinConfirmed : 0, InpMinConfidence));
 
    // if both directions qualify the picture is contradictory - stand aside
    buySignal  = (buyOk  && !sellOk);
@@ -602,12 +660,13 @@ void EvaluateSignals(const SignalData &d, bool &buySignal, bool &sellSignal)
 
    if(buySignal || sellSignal)
    {
-      PrintFormat("XAUUSD_Confluence_EA: %s entry - %d/3 confluences, %d confirmed "
-                  "(need %d/3 with %d confirmed)",
+      PrintFormat("XAUUSD_Confluence_EA: %s entry - setup score %.0f%% | "
+                  "%d/3 confluences, %d confirmed (need %d/3, %d confirmed, score >= %.0f%%)",
                   buySignal ? "BUY" : "SELL",
+                  buySignal ? buyScore : sellScore,
                   buySignal ? buyPass : sellPass,
                   buySignal ? buyConfirmed : sellConfirmed,
-                  InpMinConfluences, InpRequireConfirm ? InpMinConfirmed : 0);
+                  InpMinConfluences, InpRequireConfirm ? InpMinConfirmed : 0, InpMinConfidence);
    }
 }
 

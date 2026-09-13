@@ -241,6 +241,73 @@ def test_entry_rule() -> bool:
     return bool(ok)
 
 
+def test_confidence() -> bool:
+    """The 0-100 setup-quality score."""
+    print("\nConfidence score (setup quality, not a win probability)")
+    cfg = TradeConfig()
+    ok = True
+
+    frames = [build_frame(trending_series(900, 2000.0, d, seed=sd), cfg)
+              for d, sd in [(0.20, 17), (-0.20, 23), (0.0, 9), (0.12, 3)]]
+
+    all_scores, taken = [], []
+    for df in frames:
+        for i in range(300, len(df)):
+            sg = st.evaluate(df, cfg, i)
+            for side in (sg.buy, sg.sell):
+                all_scores.append(side.confidence)
+            if sg.direction:
+                s2 = sg.buy if sg.direction == "buy" else sg.sell
+                taken.append(s2.confidence)
+
+    ok &= check("every score is within 0-100",
+                all(0.0 <= v <= 100.0 for v in all_scores),
+                f"min {min(all_scores):.0f} max {max(all_scores):.0f}")
+    ok &= check("a no-confluence bar scores 0", min(all_scores) == 0.0)
+    ok &= check("qualifying setups score at least 40",
+                taken and min(taken) >= 40.0 - 1e-9, f"floor {min(taken):.1f}")
+
+    # more evidence must score higher than less
+    best, worst = max(taken), min(taken)
+    ok &= check("the score spreads across setups", best > worst + 15,
+                f"{worst:.0f} .. {best:.0f}")
+
+    # a 3/3 all-confirmed bar must outscore the staged 2/3 zero-confirmed bar
+    df = frames[0].copy()
+    i = len(df) - 1
+    r, r_prev = df.index[i], df.index[i - 1]
+    df.loc[r_prev, ["ema_fast", "ema_slow"]] = [1999.90, 2000.00]
+    df.loc[r, ["htf_close", "htf_ema"]] = [2100.0, 2000.0]
+    df.loc[r, ["ema_fast", "ema_slow"]] = [2010.0, 2000.0]        # wide gap
+    df.loc[r, ["macd", "macd_signal"]] = [2.0, 1.0]
+    df.loc[r, ["macd_hist"]] = [1.0]
+    df.loc[df.index[i - 1], "macd_hist"] = 0.2                     # expanding
+    df.loc[r, "macd"] = 2.0
+    df.loc[df.index[i - 1], "macd"] = 1.0                          # rising
+    df.loc[r, "rsi"] = 65.0
+    df.loc[r, ["adx", "plus_di", "minus_di"]] = [40.0, 45.0, 10.0]
+    df.loc[r, ["bb_upper", "bb_lower"]] = [9999.0, 0.0]
+    df.loc[r, "close"] = 2010.0
+    df.loc[r, "atr"] = 2.0
+    strong = st.evaluate(df, cfg, i).buy
+    ok &= check("a strong 3/3 all-confirmed setup scores high",
+                strong.count == 3 and strong.confirmed_count == 3 and strong.confidence >= 85,
+                f"marks={strong.marks()} score={strong.confidence:.1f}")
+
+    # the gate works and a veto zeroes the score
+    gated = TradeConfig(min_confidence=95.0)
+    blocked = sum(st.evaluate(df2, gated, i).direction is not None
+                  for df2 in frames for i in range(300, len(df2)))
+    ok &= check("a high min_confidence gate suppresses weak setups", blocked == 0,
+                f"{blocked} signals survive a 95% gate")
+    df.loc[r, "bb_upper"] = 2000.0        # price now at/above the upper band
+    vetoed = st.evaluate(df, cfg, i).buy
+    ok &= check("a Bollinger veto zeroes the score",
+                vetoed.vetoed and vetoed.confidence == 0.0,
+                f"score={vetoed.confidence:.1f}")
+    return bool(ok)
+
+
 def test_distances() -> bool:
     print("\nDistance / unit maths (XAUUSD, point = 0.01)")
     point = 0.01
@@ -324,6 +391,7 @@ def run() -> int:
         test_indicators(),
         test_confluences(),
         test_entry_rule(),
+        test_confidence(),
         test_distances(),
         test_trailing(),
     ]

@@ -32,6 +32,39 @@ no selling at/below the lower band, no matter how many confluences agree.
 Every bar logs the state, e.g. `BUY[T/M/S=Cyn 2/3 conf=1]` — `C` confirmed,
 `y` passed, `n` failed.
 
+### Confidence score (0–100)
+
+Every evaluation carries a **setup score** for each direction, logged each bar
+(`BUY[T/M/S=Cyn 2/3 conf=1 score=61%]`) and recorded in `logs/trades.csv`.
+
+Each confluence is worth a third of the score. Passing earns 60% of that
+third; the remaining 40% is earned continuously by how far *past* its
+confirmation threshold the indicator actually sits — so a barely-confirmed ADX
+of 28.1 scores well below an ADX of 40 with a wide DI spread.
+
+Measured over 276 qualifying signals:
+
+| Score | Signals | Meaning |
+|---|---|---|
+| 40–49 | 132 (48%) | the weakest setups that still qualify |
+| 50–59 | 101 (37%) | |
+| 60–69 | 23 (8%) | |
+| 70–79 | 18 (7%) | |
+| 80+ | 2 (1%) | rare, near-unanimous evidence |
+
+Floor is **40** (two passes, one barely confirmed — the minimum that qualifies)
+and the practical ceiling is mid-80s; a perfect 100 needs all three confluences
+confirmed *and* every indicator far past its threshold. Gate on it with
+`--min-confidence 60` (keeps ~16% of signals) or `min_confidence` in config.
+
+> ### ⚠️ What this score is NOT
+>
+> It is **not** a probability that the trade wins, and not an edge estimate.
+> It measures how strongly the indicators agree at entry — nothing more. A
+> 75% setup is not "75% likely to profit"; it means the evidence was strong
+> by this EA's own definition. Only a backtest on real tick data can produce
+> a win rate or expectancy, and none has been run — see "Honest notes".
+
 ### What dropping to 2/3 costs you
 
 Measured across five independent 900-bar synthetic series:
@@ -221,4 +254,15 @@ Output goes to `logs/trader.log` and every entry is appended to
   as the trade is 30 pips ($3.00) ahead, so many trades will exit near
   breakeven rather than running. That is the trade-off of a tight trail; widen
   `trail_start_units` if you would rather give winners more room.
+- **No profitability claim is being made, and no win rate is known.** Every
+  number in this README describes *behaviour* (how often it signals, how
+  strong the setups are), never profit. All of it was measured on synthetic
+  random-walk series, which are useful for verifying logic and frequency but
+  say nothing about whether the strategy makes money — a random walk has no
+  edge to find by construction.
+- To get a real figure, run the MT5 Strategy Tester on your broker's XAUUSD
+  with "Every tick based on real ticks" over several years, then read the
+  **Profit Factor**, **Expected Payoff**, **max drawdown** and trade count from
+  the report. Validate on a period you did not optimise over. That report is
+  the only trustworthy answer to "how confident should I be in this EA".
 - This is not a profitable-by-construction system. Demo-test it first.
