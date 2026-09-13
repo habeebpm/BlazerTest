@@ -60,6 +60,60 @@ a position slot is free. `python/simulate.py` reports the difference.
 simplest path, since the Python bot's `MetaTrader5` dependency is Windows-only.
 See `python/README.md` → "Running on a Mac".
 
+## Running on a laptop (MacBook Air included)
+
+**CPU is not the constraint.** Per price tick the EA makes roughly 18 cached
+terminal calls (account equity, one ATR value, a tick quote, a loop over at
+most four positions). The indicator math — eight handles across M5 and H4 —
+runs once per closed M5 bar, 288 times a day, and MetaTrader caches those
+buffers itself. MT5's own charting costs more than this EA does. A fanless
+MacBook Air runs it without noticing.
+
+**Sleep is the constraint.** This matters far more than hardware:
+
+| Protection | Where it lives | Survives sleep/quit/disconnect? |
+|---|---|---|
+| Stop-loss and take-profit | **Broker's server** | ✅ Yes |
+| Trailing stop, breakeven | EA, client-side | ❌ No |
+| Daily-loss breaker | EA, client-side | ❌ No |
+| Weekend flatten | EA, client-side | ❌ No |
+| New entries | EA, client-side | ❌ No |
+
+So if the lid closes with a position open, your $6.00 stop still protects you —
+the broker holds it — but the stop stops *trailing*, and locked-in profit stops
+being locked in. Nothing runs again until MT5 is back.
+
+To keep it running while the display is off:
+
+- System Settings → **Lock Screen** → "Turn display off on power adapter" is
+  fine, but System Settings → **Battery** → Options → "Prevent automatic
+  sleeping on power adapter when the display is off" must be **on**.
+- Or from Terminal: `caffeinate -dimsu` — keeps the machine awake until you
+  Ctrl-C it.
+- Keep it on the power adapter. A 13-hour session window (07:00–20:00 server
+  time) will not survive on battery.
+- For genuinely unattended 24/5 operation, a Windows VPS is the standard
+  answer — it also removes the sleep, Wi-Fi and reboot problems entirely.
+
+**Backtesting is where you will feel the machine.** Live trading is trivial;
+the Strategy Tester is not. "Every tick based on real ticks" over multiple
+years of M5 gold is genuinely heavy, MT5 for macOS runs under Wine, and a
+fanless Air will thermal-throttle on a long run. Practical approach:
+
+1. First pass with the **"1 minute OHLC"** model over 1–2 years — minutes, not
+   hours, and enough to see whether the equity curve is a disaster.
+2. Only then re-run the promising settings with **real ticks** over a shorter
+   window to get honest spread and fill behaviour.
+3. Avoid full **optimization** runs on the laptop — they multiply the work by
+   the number of parameter combinations and will take many hours.
+4. Real tick data for several years of XAUUSD is **several GB**; check you have
+   the disk space before starting a long download.
+
+**Other practical notes:** attach the EA to **one** chart only (a second
+instance trades against the first); close chart windows you are not using, as
+MT5's rendering costs more than the strategy; 8 GB of RAM is ample for live
+trading but the tester with tick data is the one thing that will push it.
+
 ## Confidence score
 
 Each evaluation produces a **0–100 setup score** per direction, shown live in
