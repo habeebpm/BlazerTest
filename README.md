@@ -52,8 +52,10 @@ Entries are evaluated on each closed **M5** bar and must also score at least
 At 2 of 3 the trend leg is optional, so entries against the H4 trend become
 possible — set `InpRequireTrendConfluence = true` to block them. Between the
 2-of-3 rule and M5 entries this evaluates far more setups than the original
-M15 version (~17/day before filtering), which the 50-point score gate trims to
-roughly **9 trades/day** in testing.
+M15 version (~17 signals/day before filtering), which the 50-point score gate
+trims to about 9 signals/day — roughly **4.4 actual fills per day**, since a
+signal only trades when a position slot is free. `python/simulate.py` reports
+the difference.
 
 **Running on a Mac?** MT5 for macOS runs this EA natively — that is the
 simplest path, since the Python bot's `MetaTrader5` dependency is Windows-only.
@@ -69,9 +71,9 @@ past its confirmation threshold the indicator sits. In testing the floor is
 
 **`InpMinConfidence = 50` — the EA only trades setups scoring 50 or higher.**
 The qualifying floor is 40, so this drops the weakest band of setups while
-leaving the 2-of-3 rule meaningful: it kept 52% of signals in testing (~9.2
-trades/day on M5, against 17.7 ungated), and 84% of those entries were 2-of-3
-setups. Raise it to 55 (19% kept) or 65 (9% kept, and mostly 3-of-3, since an
+leaving the 2-of-3 rule meaningful: it kept 52% of signals in testing (9.2
+signals/day on M5 against 17.7 ungated, or ~4.4 actual fills), and 84% of
+those entries were 2-of-3 setups. Raise it to 55 (19% kept) or 65 (9% kept, and mostly 3-of-3, since an
 unconfirmed leg is only worth 20 points) to trade less and more selectively,
 or 0 to disable the gate.
 

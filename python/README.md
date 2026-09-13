@@ -73,12 +73,18 @@ for 3-of-3 setups: at 65 only 6 of 26 survivors were 2-of-3, versus 121 of 144
 at 50. Pick the gate against how often you want to trade and how much you want
 the 2-of-3 rule to matter:
 
-| Gate | Signals kept | ≈ trades/day (M5) | 2-of-3 share of entries |
-|---|---|---|---|
-| off (0) | 100% | 17.7 | 92% |
-| **50 (shipped)** | **52%** | **9.2** | **84%** |
-| 55 | 19% | 3.4 | 57% |
-| 65 | 9% | 1.7 | 23% |
+| Gate | Signals kept | Signals/day | **Actual fills/day** | 2-of-3 share |
+|---|---|---|---|---|
+| off (0) | 100% | 17.7 | 6.3 | 92% |
+| **50 (shipped)** | **52%** | **9.2** | **4.4** | **84%** |
+| 55 | 19% | 3.4 | ~2 | 57% |
+| 65 | 9% | 1.7 | ~1 | 23% |
+
+**Signals are not trades.** A signal only becomes a fill when a position slot
+is free and nothing opposing is open, and slots stay occupied until the stop
+or trail is hit — about 41 M5 bars (3.4 hours) on average at the shipped
+distances. Roughly half of all qualifying signals never reach the market.
+`simulate.py` reports fills rather than signals; prefer its numbers.
 
 At 50 the qualifying floor of 40 means the gate drops the weakest band of
 setups while leaving the 2-of-3 rule doing real work. Raise it to 55 or 65 to
@@ -202,6 +208,8 @@ strategy, indicators and both test suites are pure pandas/numpy:
 pip install pandas numpy
 python trader.py --selftest      # strategy + entry-rule + distance checks
 python test_integration.py       # full order/trailing path against a mock MT5
+python simulate.py --compare     # fills/day, holding time and spread cost
+python simulate.py --csv bars.csv   # ...against your own exported M5 bars
 ```
 
 Those two cover the entry rule, the trailing-stop maths and the order
@@ -255,6 +263,7 @@ advised), `-v`.
 | `trader.py` | Main loop, guards, CLI |
 | `selftest.py` | Strategy/indicator/trailing checks |
 | `test_integration.py` | Drives the bot against a stub MetaTrader5 module |
+| `simulate.py` | Counts actual fills (not signals) under the position rules |
 
 `indicators.py` follows MT5's conventions, not the textbook ones, so the Python
 bot and the MQL5 EA agree: MACD's signal line is an **SMA**, ATR uses an **SMA**
@@ -269,8 +278,14 @@ Output goes to `logs/trader.log` and every entry is appended to
 - Trades are evaluated once per closed working-timeframe bar and use only
   closed-bar values — no repainting.
 - With `cross_lookback = 8`, the 2-of-3 rule and M5 entries, expect roughly
-  **17 signals per day** (about one per day under the original M15 3-of-3
-  rule). M5 is noisier, so more of those will be marginal.
+  **9 qualifying signals and ~4.4 actual fills per day**. The gap is the
+  position cap plus holding time; run `python simulate.py` to see it broken
+  down. M5 is noisier than M15, so more setups will be marginal.
+- **Trade frequency has a hard ceiling.** With the quality filters on, fills
+  asymptote at ~9.3/day however high you raise `max_open_positions` — signal
+  supply, not concurrency, is the limit. Targeting substantially more than
+  that means weakening the entry criteria, which is a different strategy
+  rather than a tuning change.
 - Two positions may be open at once, but only in the same direction; an
   opposing signal is skipped rather than hedged (`allow_opposite_positions`). Requiring the cross on the very last closed bar (the obvious reading)
   drops that to about **one signal per 2000 bars**, because ADX is still below
