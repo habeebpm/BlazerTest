@@ -54,8 +54,34 @@ Measured over 276 qualifying signals:
 
 Floor is **40** (two passes, one barely confirmed — the minimum that qualifies)
 and the practical ceiling is mid-80s; a perfect 100 needs all three confluences
-confirmed *and* every indicator far past its threshold. Gate on it with
-`--min-confidence 60` (keeps ~16% of signals) or `min_confidence` in config.
+confirmed *and* every indicator far past its threshold.
+
+**The shipped gate is `min_confidence = 65`** — entries below 65 are skipped.
+
+Score ceilings, which explain what a gate actually selects for:
+
+| Setup | Best possible score |
+|---|---|
+| 2/3 passing, 1 confirmed | 53.3 |
+| 3/3 passing, 0 confirmed | 60.0 |
+| 2/3 passing, 2 confirmed | 66.7 |
+| 3/3 passing, 1 confirmed | 73.3 |
+| 3/3 passing, 3 confirmed | 100.0 |
+
+Since an unconfirmed leg is worth only 20 points, **65 is unreachable for most
+2-of-3 setups** — a 2/3 entry must have *both* legs confirmed and strong. In
+testing 20 of the 26 survivors were 3/3. What each gate keeps:
+
+| Gate | Signals kept | ≈ trades/day (M5) |
+|---|---|---|
+| off (0) | 100% | 17.7 |
+| 50 | 52% | 9.2 |
+| 55 | 19% | 3.4 |
+| 60 | 16% | 2.8 |
+| **65 (shipped)** | **9%** | **1.7** |
+| 70 | 7% | 1.3 |
+
+Lower it to ~55 if you want strong 2-of-3 setups back in.
 
 > ### ⚠️ What this score is NOT
 >

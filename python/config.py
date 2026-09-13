@@ -92,11 +92,20 @@ class TradeConfig:
     # 2 of 3 - the trend leg then has to be one of the two.
     require_trend_confluence: bool = False
 
-    # Minimum setup-quality score (0-100) required to enter. 0 disables the
-    # gate. IMPORTANT: this score measures how strong the indicator agreement
-    # is, NOT the probability that a trade wins - nothing in this project
+    # Minimum setup-quality score (0-100) required to enter; a score exactly
+    # equal to this passes. 0 disables the gate.
+    #
+    # At 65 this is a demanding filter - it kept 9% of signals in testing
+    # (~1.7 trades/day on M5, down from ~17.7 ungated). Because an unconfirmed
+    # leg is only worth 20 points, 65 is out of reach for most 2-of-3 setups:
+    # a 2/3 entry has to have BOTH its legs confirmed and strong (ceiling
+    # 66.7), so most survivors are 3/3. Lower it to ~55 if you want strong
+    # 2-of-3 setups back.
+    #
+    # IMPORTANT: this score measures how strong the indicator agreement is,
+    # NOT the probability that a trade wins - nothing in this project
     # estimates a win rate. See the confidence notes in README.md.
-    min_confidence: float = 0.0
+    min_confidence: float = 65.0
 
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR

@@ -161,7 +161,9 @@ def test_confluences() -> bool:
 def test_entry_rule() -> bool:
     """The 2-of-3 rule with a confirmation requirement."""
     print("\nEntry rule (>= 2/3 with >= 1 confirmed)")
-    cfg = TradeConfig()
+    # These checks isolate the confluence rule, so the confidence gate is
+    # switched off here; the gate gets its own checks in test_confidence.
+    cfg = TradeConfig(min_confidence=0.0)
     ok = True
 
     frames = [build_frame(trending_series(900, 2000.0, d, seed=sd), cfg)
@@ -199,6 +201,7 @@ def test_entry_rule() -> bool:
         The indicator columns do not depend on the entry rule, so the frames
         built above are reused - rebuilding one per bar is needlessly slow.
         """
+        kw.setdefault("min_confidence", 0.0)
         c = TradeConfig(**kw)
         return sum(st.evaluate(df, c, i).direction is not None
                    for df in frames for i in range(300, len(df)))
@@ -237,14 +240,15 @@ def test_entry_rule() -> bool:
                 f"{side.count}/3 passes, {side.confirmed_count} confirmed -> "
                 f"{marginal.direction or 'no trade'}")
     ok &= check("same setup trades once confirmation is not required",
-                st.evaluate(df, TradeConfig(require_confirmation=False), i).direction == "buy")
+                st.evaluate(df, TradeConfig(require_confirmation=False,
+                                            min_confidence=0.0), i).direction == "buy")
     return bool(ok)
 
 
 def test_confidence() -> bool:
     """The 0-100 setup-quality score."""
     print("\nConfidence score (setup quality, not a win probability)")
-    cfg = TradeConfig()
+    cfg = TradeConfig(min_confidence=0.0)   # score every bar, gate tested below
     ok = True
 
     frames = [build_frame(trending_series(900, 2000.0, d, seed=sd), cfg)
@@ -305,6 +309,27 @@ def test_confidence() -> bool:
     ok &= check("a Bollinger veto zeroes the score",
                 vetoed.vetoed and vetoed.confidence == 0.0,
                 f"score={vetoed.confidence:.1f}")
+
+    # --- the shipped 65% gate ---
+    shipped = TradeConfig()
+    ok &= check("the shipped default gate is 65", shipped.min_confidence == 65.0)
+
+    ungated, gated_n, below = 0, 0, 0
+    for df2 in frames:
+        for i in range(300, len(df2)):
+            if st.evaluate(df2, TradeConfig(min_confidence=0.0), i).direction:
+                ungated += 1
+            sg = st.evaluate(df2, shipped, i)
+            if sg.direction:
+                gated_n += 1
+                side = sg.buy if sg.direction == "buy" else sg.sell
+                if side.confidence < 65.0:
+                    below += 1
+    ok &= check("no trade is taken below the 65 gate", below == 0, f"{below} leaked through")
+    ok &= check("the 65 gate materially reduces trading", gated_n < ungated * 0.25,
+                f"{gated_n} of {ungated} signals survive "
+                f"({100*gated_n/max(ungated,1):.0f}%)")
+    ok &= check("some setups still clear 65", gated_n > 0, f"{gated_n} signals")
     return bool(ok)
 
 

@@ -21,8 +21,17 @@
 //|                spread is at least InpConfirmDiGap wide.            |
 //|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
-//| least InpMinConfirmed of them confirmed (default 1). Requiring 2/3 |
-//| alone would let two barely-passing readings open a position.       |
+//| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
+//| score of at least InpMinConfidence (default 65 of 100).            |
+//|                                                                    |
+//| The score is demanding: an unconfirmed leg is worth only 20 points,|
+//| so 65 is out of reach for most 2-of-3 setups (a 2/3 entry needs    |
+//| BOTH legs confirmed and strong, ceiling 66.7). In testing it kept  |
+//| about 9% of signals. Lower it to ~55 to let strong 2-of-3 setups   |
+//| back in, or to 0 to disable the gate.                              |
+//|                                                                    |
+//| The score measures how strongly the indicators agree - it is NOT   |
+//| a probability that the trade wins.                                 |
 //|                                                                    |
 //| Bollinger Bands act as a VETO outside the vote (never buy at/above |
 //| the upper band, never sell at/below the lower band). ATR drives    |
@@ -95,7 +104,7 @@ input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI thi
 input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
 input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
 input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
-input double   InpMinConfidence     = 0.0;          // Min setup score 0-100 to enter (0 = off)
+input double   InpMinConfidence     = 65.0;         // Min setup score 0-100 to enter (0 = off)
 input bool     InpShowConfidence    = true;         // Show the live score in the chart comment
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="

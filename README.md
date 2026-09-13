@@ -45,15 +45,15 @@ confirmed** (`InpMinConfluences` / `InpMinConfirmed`), evaluated on the most
 recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
 as a veto rather than a vote.
 
-Entries are evaluated on each closed **M5** bar, with up to **2 positions open
-at a time** (same direction only) and **no daily trade cap**
-(`InpMaxTradesPerDay = 0`).
+Entries are evaluated on each closed **M5** bar and must also score at least
+**65/100** (`InpMinConfidence`), with up to **2 positions open at a time**
+(same direction only) and **no daily trade cap** (`InpMaxTradesPerDay = 0`).
 
 At 2 of 3 the trend leg is optional, so entries against the H4 trend become
 possible — set `InpRequireTrendConfluence = true` to block them. Between the
-2-of-3 rule and M5 entries this signals far more often than the original
-M15 3-of-3 version (~17 vs ~1 per day in testing), so the **daily-loss circuit
-breaker** and `InpMaxOpenPositions` are the main brakes.
+2-of-3 rule and M5 entries this evaluates far more setups than the original
+M15 version (~17/day before filtering), but the 65-point score gate cuts that
+to roughly **1.7 trades/day** in testing.
 
 **Running on a Mac?** MT5 for macOS runs this EA natively — that is the
 simplest path, since the Python bot's `MetaTrader5` dependency is Windows-only.
@@ -62,11 +62,17 @@ See `python/README.md` → "Running on a Mac".
 ## Confidence score
 
 Each evaluation produces a **0–100 setup score** per direction, shown live in
-the chart comment (`InpShowConfidence`), printed on entry, and usable as an
-entry gate via `InpMinConfidence`. Each confluence is worth a third: passing
-earns 60% of it, and the rest scales with how far past its confirmation
-threshold the indicator sits. In testing the floor is 40, the median 50 and
-the practical ceiling the mid-80s.
+the chart comment (`InpShowConfidence`) and printed on entry. Each confluence
+is worth a third: passing earns 60% of it, and the rest scales with how far
+past its confirmation threshold the indicator sits. In testing the floor is
+40, the median 50 and the practical ceiling the mid-80s.
+
+**`InpMinConfidence = 65` — the EA only trades setups scoring 65 or higher.**
+That is a demanding filter: it kept about 9% of signals in testing (~1.7
+trades/day on M5, down from ~17.7 ungated). Because an unconfirmed leg is worth
+only 20 points, 65 is out of reach for most 2-of-3 setups — a 2/3 entry needs
+both legs confirmed and strong (ceiling 66.7), so most survivors are 3/3.
+Lower it to ~55 to let strong 2-of-3 setups back in, or 0 to disable it.
 
 **This score is not a win probability.** It measures how strongly the
 indicators agree at entry, not the odds of profit. No win rate for this EA is
