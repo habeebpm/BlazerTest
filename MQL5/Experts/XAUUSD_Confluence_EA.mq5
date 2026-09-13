@@ -54,6 +54,7 @@ input int      InpTrendEmaPeriod    = 200;          // Trend EMA period
 input group "=== Entry Trigger (working timeframe EMA cross) ==="
 input int      InpEmaFastPeriod     = 20;           // Fast EMA period
 input int      InpEmaSlowPeriod     = 50;           // Slow EMA period
+input int      InpCrossLookbackBars = 8;            // Cross must be this fresh (bars); 0 = alignment only
 
 input group "=== Momentum Confirmation ==="
 input int      InpMacdFast          = 12;           // MACD fast EMA
@@ -355,7 +356,8 @@ struct SignalData
 {
    bool   valid;
    double trendEma, trendClose;
-   double emaFast1, emaFast2, emaSlow1, emaSlow2;
+   double emaFast1, emaSlow1;
+   bool   freshBullCross, freshBearCross;
    double macdMain1, macdSignal1, macdMain2, macdSignal2;
    double rsi1;
    double adx1, plusDi1, minusDi1;
@@ -382,14 +384,39 @@ bool GetSignalData(SignalData &d)
    if(CopyClose(_Symbol, InpTrendTF, 1, 1, closeBuf) < 1) return(false);
    d.trendClose = closeBuf[0];
 
-   // --- Working timeframe fast/slow EMA, last two closed bars ---
-   ArraySetAsSeries(buf, true);
-   if(CopyBuffer(hEmaFast, 0, 1, 2, buf) < 2) return(false);
-   d.emaFast1 = buf[0]; d.emaFast2 = buf[1];
+   // --- Working timeframe fast/slow EMA over the cross-lookback window ---
+   // At the exact bar the EMAs cross, ADX is still building and MACD has not
+   // confirmed yet, so requiring the cross on the very last closed bar means
+   // the three confluences almost never align. Accept a cross that happened
+   // within InpCrossLookbackBars closed bars instead.
+   int lookback = MathMax(0, InpCrossLookbackBars);
+   int need     = lookback + 1;
 
-   ArraySetAsSeries(buf, true);
-   if(CopyBuffer(hEmaSlow, 0, 1, 2, buf) < 2) return(false);
-   d.emaSlow1 = buf[0]; d.emaSlow2 = buf[1];
+   double fastArr[], slowArr[];
+   ArraySetAsSeries(fastArr, true);
+   ArraySetAsSeries(slowArr, true);
+   if(CopyBuffer(hEmaFast, 0, 1, need, fastArr) < need) return(false);
+   if(CopyBuffer(hEmaSlow, 0, 1, need, slowArr) < need) return(false);
+
+   d.emaFast1 = fastArr[0];
+   d.emaSlow1 = slowArr[0];
+
+   if(lookback == 0)
+   {
+      // no cross required - EMA alignment alone satisfies the trend trigger
+      d.freshBullCross = true;
+      d.freshBearCross = true;
+   }
+   else
+   {
+      d.freshBullCross = false;
+      d.freshBearCross = false;
+      for(int i = 0; i < lookback; i++)
+      {
+         if(fastArr[i+1] <= slowArr[i+1] && fastArr[i] > slowArr[i]) d.freshBullCross = true;
+         if(fastArr[i+1] >= slowArr[i+1] && fastArr[i] < slowArr[i]) d.freshBearCross = true;
+      }
+   }
 
    // --- MACD main(0)/signal(1) ---
    ArraySetAsSeries(buf, true);
@@ -451,8 +478,8 @@ void EvaluateSignals(const SignalData &d, bool &buySignal, bool &sellSignal)
    bool htfBullish = d.trendClose > d.trendEma;
    bool htfBearish = d.trendClose < d.trendEma;
 
-   bool bullishCross = (d.emaFast2 <= d.emaSlow2) && (d.emaFast1 > d.emaSlow1);
-   bool bearishCross = (d.emaFast2 >= d.emaSlow2) && (d.emaFast1 < d.emaSlow1);
+   bool bullishCross = d.freshBullCross && (d.emaFast1 > d.emaSlow1);
+   bool bearishCross = d.freshBearCross && (d.emaFast1 < d.emaSlow1);
 
    bool macdBullish = (d.macdMain1 > d.macdSignal1) && (d.macdMain1 > d.macdMain2);
    bool macdBearish = (d.macdMain1 < d.macdSignal1) && (d.macdMain1 < d.macdMain2);

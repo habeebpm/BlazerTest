@@ -1,0 +1,6 @@
+# The MetaTrader5 package is Windows-only (it drives a local MT5 terminal).
+# The marker lets `pip install -r requirements.txt` succeed on Linux/macOS so
+# the strategy logic and tests stay runnable everywhere.
+MetaTrader5>=5.0.45; sys_platform == "win32"
+pandas>=2.0
+numpy>=1.24

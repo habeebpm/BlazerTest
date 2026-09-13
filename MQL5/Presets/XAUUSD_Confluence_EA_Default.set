@@ -17,6 +17,7 @@ InpTrendTF=16388
 InpTrendEmaPeriod=200
 InpEmaFastPeriod=20
 InpEmaSlowPeriod=50
+InpCrossLookbackBars=8
 InpMacdFast=12
 InpMacdSlow=26
 InpMacdSignal=9
