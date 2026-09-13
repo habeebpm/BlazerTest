@@ -310,9 +310,10 @@ def test_confidence() -> bool:
                 vetoed.vetoed and vetoed.confidence == 0.0,
                 f"score={vetoed.confidence:.1f}")
 
-    # --- the shipped 65% gate ---
+    # --- the shipped score gate ---
     shipped = TradeConfig()
-    ok &= check("the shipped default gate is 65", shipped.min_confidence == 65.0)
+    gate = shipped.min_confidence
+    ok &= check("the shipped default gate is 50", gate == 50.0, f"{gate:.0f}")
 
     ungated, gated_n, below = 0, 0, 0
     for df2 in frames:
@@ -323,13 +324,27 @@ def test_confidence() -> bool:
             if sg.direction:
                 gated_n += 1
                 side = sg.buy if sg.direction == "buy" else sg.sell
-                if side.confidence < 65.0:
+                if side.confidence < gate:
                     below += 1
-    ok &= check("no trade is taken below the 65 gate", below == 0, f"{below} leaked through")
-    ok &= check("the 65 gate materially reduces trading", gated_n < ungated * 0.25,
+    ok &= check(f"no trade is taken below the {gate:.0f} gate", below == 0,
+                f"{below} leaked through")
+    ok &= check(f"the {gate:.0f} gate filters the weakest setups",
+                gated_n < ungated * 0.75,
                 f"{gated_n} of {ungated} signals survive "
                 f"({100*gated_n/max(ungated,1):.0f}%)")
-    ok &= check("some setups still clear 65", gated_n > 0, f"{gated_n} signals")
+    ok &= check(f"2-of-3 setups still clear {gate:.0f}", gated_n > 0, f"{gated_n} signals")
+
+    # at 50 the 2-of-3 rule must still carry most entries, unlike a 65 gate
+    two_of_three = 0
+    for df2 in frames:
+        for i in range(300, len(df2)):
+            sg = st.evaluate(df2, shipped, i)
+            if sg.direction:
+                side = sg.buy if sg.direction == "buy" else sg.sell
+                two_of_three += side.count == 2
+    share = 100 * two_of_three / max(gated_n, 1)
+    ok &= check("most survivors are 2-of-3 setups (the rule still matters)",
+                share > 50, f"{share:.0f}% of entries are 2/3")
     return bool(ok)
 
 

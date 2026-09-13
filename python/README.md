@@ -56,7 +56,7 @@ Floor is **40** (two passes, one barely confirmed — the minimum that qualifies
 and the practical ceiling is mid-80s; a perfect 100 needs all three confluences
 confirmed *and* every indicator far past its threshold.
 
-**The shipped gate is `min_confidence = 65`** — entries below 65 are skipped.
+**The shipped gate is `min_confidence = 50`** — entries below 50 are skipped.
 
 Score ceilings, which explain what a gate actually selects for:
 
@@ -68,20 +68,21 @@ Score ceilings, which explain what a gate actually selects for:
 | 3/3 passing, 1 confirmed | 73.3 |
 | 3/3 passing, 3 confirmed | 100.0 |
 
-Since an unconfirmed leg is worth only 20 points, **65 is unreachable for most
-2-of-3 setups** — a 2/3 entry must have *both* legs confirmed and strong. In
-testing 20 of the 26 survivors were 3/3. What each gate keeps:
+Since an unconfirmed leg is worth only 20 points, a high gate quietly selects
+for 3-of-3 setups: at 65 only 6 of 26 survivors were 2-of-3, versus 121 of 144
+at 50. Pick the gate against how often you want to trade and how much you want
+the 2-of-3 rule to matter:
 
-| Gate | Signals kept | ≈ trades/day (M5) |
-|---|---|---|
-| off (0) | 100% | 17.7 |
-| 50 | 52% | 9.2 |
-| 55 | 19% | 3.4 |
-| 60 | 16% | 2.8 |
-| **65 (shipped)** | **9%** | **1.7** |
-| 70 | 7% | 1.3 |
+| Gate | Signals kept | ≈ trades/day (M5) | 2-of-3 share of entries |
+|---|---|---|---|
+| off (0) | 100% | 17.7 | 92% |
+| **50 (shipped)** | **52%** | **9.2** | **84%** |
+| 55 | 19% | 3.4 | 57% |
+| 65 | 9% | 1.7 | 23% |
 
-Lower it to ~55 if you want strong 2-of-3 setups back in.
+At 50 the qualifying floor of 40 means the gate drops the weakest band of
+setups while leaving the 2-of-3 rule doing real work. Raise it to 55 or 65 to
+trade less and more selectively.
 
 > ### ⚠️ What this score is NOT
 >

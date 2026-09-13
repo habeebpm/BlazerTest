@@ -22,13 +22,13 @@
 //|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
 //| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
-//| score of at least InpMinConfidence (default 65 of 100).            |
+//| score of at least InpMinConfidence (default 50 of 100).            |
 //|                                                                    |
-//| The score is demanding: an unconfirmed leg is worth only 20 points,|
-//| so 65 is out of reach for most 2-of-3 setups (a 2/3 entry needs    |
-//| BOTH legs confirmed and strong, ceiling 66.7). In testing it kept  |
-//| about 9% of signals. Lower it to ~55 to let strong 2-of-3 setups   |
-//| back in, or to 0 to disable the gate.                              |
+//| The qualifying floor is 40, so a gate of 50 drops the weakest band |
+//| while leaving the 2-of-3 rule meaningful: it kept 52% of signals    |
+//| in testing (~9.2 trades/day on M5) and 84% of those were 2-of-3    |
+//| setups. Raise it to 55 (19% kept) or 65 (9% kept, mostly 3/3) to   |
+//| trade less and more selectively, or set 0 to disable the gate.     |
 //|                                                                    |
 //| The score measures how strongly the indicators agree - it is NOT   |
 //| a probability that the trade wins.                                 |
@@ -104,7 +104,7 @@ input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI thi
 input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
 input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
 input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
-input double   InpMinConfidence     = 65.0;         // Min setup score 0-100 to enter (0 = off)
+input double   InpMinConfidence     = 50.0;         // Min setup score 0-100 to enter (0 = off)
 input bool     InpShowConfidence    = true;         // Show the live score in the chart comment
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="

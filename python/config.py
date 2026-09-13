@@ -95,17 +95,17 @@ class TradeConfig:
     # Minimum setup-quality score (0-100) required to enter; a score exactly
     # equal to this passes. 0 disables the gate.
     #
-    # At 65 this is a demanding filter - it kept 9% of signals in testing
-    # (~1.7 trades/day on M5, down from ~17.7 ungated). Because an unconfirmed
-    # leg is only worth 20 points, 65 is out of reach for most 2-of-3 setups:
-    # a 2/3 entry has to have BOTH its legs confirmed and strong (ceiling
-    # 66.7), so most survivors are 3/3. Lower it to ~55 if you want strong
-    # 2-of-3 setups back.
+    # At 50 this drops the weakest half of qualifying setups: it kept 52% of
+    # signals in testing (~9.2 trades/day on M5, against 17.7 ungated). The
+    # qualifying floor is 40, so 50 filters the bottom band while leaving the
+    # 2-of-3 rule meaningful - 84% of survivors were 2-of-3 setups, versus 23%
+    # at a gate of 65. Raise it to 55 (19% kept) or 65 (9% kept, mostly 3/3)
+    # to trade less and more selectively.
     #
     # IMPORTANT: this score measures how strong the indicator agreement is,
     # NOT the probability that a trade wins - nothing in this project
     # estimates a win rate. See the confidence notes in README.md.
-    min_confidence: float = 65.0
+    min_confidence: float = 50.0
 
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR
