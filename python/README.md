@@ -4,8 +4,8 @@ Python port of the MQL5 EA. It watches XAUUSD and opens **0.01 lots** with a
 **60-pip stop-loss ($6.00)** and a **30-pip trailing stop ($3.00)**, but only
 when at least **2 of the 3 confluences** agree and **at least one of them is
 confirmed**. Entries are evaluated on every **M5 candle close**, with up to
-**4 positions open at a time** (same direction only) and **no daily trade
-cap** — tuned for roughly **10 fills per day**.
+**4 positions open at a time** (same direction only), **no daily trade cap**,
+and a **setup score of 50 or better** required — about **6.9 fills per day**.
 
 > **On a Mac?** The `MetaTrader5` Python package is Windows-only. See
 > [Running on a Mac](#running-on-a-mac) — the MQL5 EA is the simplest route.
@@ -57,11 +57,13 @@ Floor is **40** (two passes, one barely confirmed — the minimum that qualifies
 and the practical ceiling is mid-80s; a perfect 100 needs all three confluences
 confirmed *and* every indicator far past its threshold.
 
-**The shipped gate is `min_confidence = 0` (off)**, because reaching ~10
-fills/day required giving it up: with the gate at 50 the strategy tops out
-near 9.3 fills/day however high `max_open_positions` goes. Every other filter
-still applies, so this is the *unscored* version of the strategy, not an
-unfiltered one. The score is still computed and logged — it just doesn't gate.
+**The shipped gate is `min_confidence = 50`** — setups scoring below 50 are
+skipped. The qualifying floor is 40, so this drops the weakest band while
+leaving the 2-of-3 rule meaningful (84% of survivors are 2-of-3 setups).
+
+Note it caps frequency: **a gate of 50 cannot reach 10 fills/day at any
+position count**, topping out near 9.3 because signal supply rather than
+concurrency binds. At the shipped 4 positions it is ~6.9/day.
 
 Score ceilings, which explain what a gate actually selects for:
 
@@ -86,10 +88,9 @@ Fills per day by gate and position cap (all other filters on):
 | 45 | 5.6 | 7.3 | 8.5 | 9.5 | 10.1 |
 | **off (shipped)** | 6.4 | 8.4 | **10.0** | 11.2 | 12.0 |
 
-The shipped combination is **gate off + 4 positions = 10.0 fills/day**. For
-~10/day while keeping a gate, use **45 with 6 positions (10.1)** — at the cost
-of more correlated exposure. For the selective setting, **50 with 2 positions**
-returns ~4.7/day.
+The shipped combination is **gate 50 + 4 positions = 6.9 fills/day**. For
+~10/day, either drop the gate off entirely (10.0 at 4 positions) or use gate
+45 with 6 positions (10.1) — both trade quality for frequency.
 
 **Signals are not trades.** A signal only becomes a fill when a position slot
 is free and nothing opposing is open, and slots stay occupied until the stop
@@ -288,8 +289,8 @@ Output goes to `logs/trader.log` and every entry is appended to
 
 - Trades are evaluated once per closed working-timeframe bar and use only
   closed-bar values — no repainting.
-- With `cross_lookback = 8`, the 2-of-3 rule and M5 entries, expect roughly
-  **17.5 qualifying signals and ~10 actual fills per day**. The gap is the
+- With `cross_lookback = 8`, the 2-of-3 rule, M5 entries and the 50 gate,
+  expect roughly **9.3 qualifying signals and ~6.9 actual fills per day**. The gap is the
   position cap plus holding time; run `python simulate.py` to see it broken
   down. M5 is noisier than M15, so more setups will be marginal.
 - **Trade frequency has a hard ceiling.** With the quality filters on, fills
@@ -303,8 +304,8 @@ Output goes to `logs/trader.log` and every entry is appended to
   all of them together. One XAUUSD lot is 100oz, so $1 of price is $1 per 0.01
   lot: a $6.00 stop risks **$6 per trade, $24 across four positions**. The 3%
   daily-loss breaker allows 5 losing trades on a $1,000 account, 2.5 on $500.
-- At 10 fills/day the spread costs about **$2.50/day, ~$50/month** at a $0.25
-  spread and 0.01 lots. Run `python simulate.py` to recompute for your spread. Requiring the cross on the very last closed bar (the obvious reading)
+- At ~6.9 fills/day the spread costs about **$1.70/day, ~$35/month** at a
+  $0.25 spread and 0.01 lots. Run `python simulate.py` to recompute for your spread. Requiring the cross on the very last closed bar (the obvious reading)
   drops that to about **one signal per 2000 bars**, because ADX is still below
   its threshold at the moment the EMAs cross. That measurement is why the
   default is 8 in both this bot and the EA.

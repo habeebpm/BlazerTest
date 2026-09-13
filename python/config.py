@@ -95,12 +95,14 @@ class TradeConfig:
     # Minimum setup-quality score (0-100) required to enter; a score exactly
     # equal to this passes. 0 disables the gate.
     #
-    # Currently 0 (off) to reach a target of ~10 fills/day: with the gate at
-    # 50 the strategy tops out near 9.3 fills/day however high
-    # max_open_positions goes, so hitting 10 meant giving the gate up. Every
-    # other filter still applies - 2-of-3 confluences, at least one confirmed,
-    # a fresh EMA cross, ADX >= 22 and the Bollinger veto - so this is the
-    # unscored version of the same strategy, not an unfiltered one.
+    # Set to 50: only setups scoring 50 or better are traded. The qualifying
+    # floor is 40, so this drops the weakest band while leaving the 2-of-3 rule
+    # meaningful (84% of survivors are 2-of-3 setups).
+    #
+    # This costs frequency. With the gate at 50 the strategy cannot reach 10
+    # fills/day at all - it tops out near 9.3 however high max_open_positions
+    # goes, because signal supply rather than concurrency binds. At the shipped
+    # 4 positions it is about 6.9 fills/day.
     #
     # Measured fills/day by gate and position cap (all other filters on):
     #     gate 50: 4.7 (2 pos)  5.9 (3)  6.9 (4)  7.6 (5)  8.1 (6)
@@ -112,7 +114,7 @@ class TradeConfig:
     # IMPORTANT: this score measures how strong the indicator agreement is,
     # NOT the probability that a trade wins - nothing in this project
     # estimates a win rate. See the confidence notes in README.md.
-    min_confidence: float = 0.0
+    min_confidence: float = 50.0
 
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR
