@@ -33,6 +33,11 @@ not predict future results.
 - `MQL5/Presets/XAUUSD_MTF_RSI_MACD_BB_EA_MaxFrequency.set` — same signal
   quality bar, throttles relaxed to take more of the signals it already
   finds. See "Max frequency preset" below.
+- `python/simulate_mtf.py` — an execution simulator for
+  XAUUSD_MTF_RSI_MACD_BB_EA.mq5, same idea as `python/simulate.py` for the
+  Confluence EA: reimplements the exact scoring/combination logic on
+  synthetic random-walk bars to estimate signals/fills per day. No edge is
+  known for this strategy - only frequency is estimated, never profit.
 
 ## Strategy logic
 
@@ -459,3 +464,43 @@ reachable as before, just faster.
 As with the Confluence EA: no win rate, profit factor or drawdown is known
 or claimed for this strategy in advance. Backtest with tick data across
 multiple regimes, forward-test on demo, and only then consider live capital.
+
+### Estimated trade frequency
+
+No MT5 backtest exists for this EA yet, so `python/simulate_mtf.py`
+reimplements its exact scoring logic (same RSI/MACD/BB/swing criteria, same
+timeframe weights, same 55.0/2-of-3 entry gate) and runs it over ~139 days of
+synthetic random-walk M15/H1/H4 bars — the same style of estimate
+`python/simulate.py` already gives for the Confluence EA, with the same
+caveat: these bars have **no trading edge by construction**, so the numbers
+below say only "how often would this try to trade," never "would it profit."
+
+| | Default preset | Max-frequency preset |
+|---|---|---|
+| Qualifying signals | ~46/day | ~46/day (unchanged — same signal gate) |
+| Trades that actually fill | **~3/day** | ~3.5/day |
+| Blocked by the 4-position cap | the dominant blocker | the dominant blocker |
+| Blocked by an opposing position | secondary | none (`InpAllowOpposite=true`) |
+| Blocked by the session window | secondary (17h/day window) | none (24h) |
+
+**Why fills land so far below signals:** with no fixed take-profit
+(`InpUseTakeProfit=false`), a position lives or dies by its $6 stop or the $3
+trailing stop alone, and in the simulation the average winning/losing hold
+came out to **~99 bars (~25 hours)**. At that hold time, 4 positions fill up
+and stay filled for the better part of a day, so most of the ~46 qualifying
+signals arrive with no free slot and get blocked rather than traded — the
+4-position cap, not the signal gate, is what actually throttles this EA in
+practice. The Max-frequency preset barely moves the fill count (3.1→3.5/day)
+because it doesn't touch that cap; it only removes the opposite-direction
+block and the session window, both secondary blockers here.
+
+**Take this as a rough order of magnitude, not a forecast**: real gold
+doesn't move like a synthetic random walk (it trends, gaps, and reacts to
+news, which changes how fast RSI/MACD/BB line up across three timeframes and
+how long a position actually takes to hit $6 or trail out), and the broker's
+real session schedule and spread aren't modeled here — only a fixed manual
+window and a flat spread are. Run `python simulate_mtf.py --compare` yourself
+(add `--csv yourbars.csv` with exported M15 history for a market-shaped
+estimate instead of a synthetic one), and treat the MT5 Strategy Tester on
+real tick data as the only source that can speak to whether ~3/day of these
+trades would actually be profitable.
