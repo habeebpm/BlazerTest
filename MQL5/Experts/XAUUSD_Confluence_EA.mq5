@@ -43,6 +43,11 @@
 //| The score measures how strongly the indicators agree - it is NOT   |
 //| a probability that the trade wins.                                 |
 //|                                                                    |
+//| STOPS default to a FIXED 60 pips ($6.00 per 0.01 lot) with a 30    |
+//| pip trail, matching the Python bot. Set InpUseFixedStops = false    |
+//| for ATR-scaled stops instead (5.8x ATR is about the same distance   |
+//| at typical M5 volatility, but lets money risk move with the market).|
+//|                                                                    |
 //| Bollinger Bands act as a VETO outside the vote (never buy at/above |
 //| the upper band, never sell at/below the lower band). ATR drives    |
 //| stop-loss/take-profit distances and position sizing. Session,      |
@@ -130,17 +135,20 @@ input group "=== Risk Management ==="
 input bool     InpUseFixedLot       = true;          // Trade a fixed lot size (ignore risk %)
 input double   InpFixedLot          = 0.01;          // Fixed lot size when the above is true
 input double   InpRiskPercent       = 1.0;           // Risk per trade (% of equity), if not fixed
-input double   InpAtrSlMultiplier   = 1.8;            // Stop-loss = ATR * this multiplier
+input bool     InpUseFixedStops     = true;           // Fixed stop distances (ignore the ATR multipliers)
+input double   InpFixedStopPips     = 60.0;           // Fixed stop-loss, in pips (60 pips = $6.00)
+input double   InpFixedTrailPips    = 30.0;           // Fixed trailing distance, in pips
+input double   InpAtrSlMultiplier   = 5.8;            // ATR mode: stop = ATR * this (5.8 ~ $6.00 typical)
 input double   InpRiskRewardRatio   = 1.8;            // Take-profit = SL distance * this ratio
 input double   InpMaxLotSize        = 5.0;            // Hard cap on calculated lot size
 input double   InpMaxDailyLossPct   = 3.0;            // Stop new trades after this % equity loss in a day
 input int      InpMaxTradesPerDay   = 0;              // Max new entries per day (0 = unlimited)
 
 input group "=== Trade Management (breakeven / trailing) ==="
-input double   InpBreakevenAtrMult  = 1.0;            // Move SL to breakeven once profit >= ATR * this
+input double   InpBreakevenAtrMult  = 2.0;            // Move SL to breakeven once profit >= ATR * this
 input int      InpBreakevenBufferPts= 20;             // Points of buffer added at breakeven
-input double   InpTrailStartAtrMult = 1.5;            // Start trailing once profit >= ATR * this
-input double   InpTrailAtrMult      = 1.2;            // Trail distance = ATR * this
+input double   InpTrailStartAtrMult = 2.9;            // Start trailing once profit >= ATR * this
+input double   InpTrailAtrMult      = 2.9;            // Trail distance = ATR * this (2.9 ~ $3.00)
 
 input group "=== Session Filter (broker trading hours) ==="
 input bool     InpUseBrokerSession  = true;           // Use the broker's own trading hours for this symbol
@@ -187,6 +195,7 @@ bool           g_dailyLossHit     = false;
 // forward declarations: these are used before their definitions below
 datetime SessionZoneTime();
 datetime DateToDay(datetime t);
+double   PipSize();
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -223,6 +232,14 @@ int OnInit()
             "InpUseFixedLot is true.");
       return(INIT_PARAMETERS_INCORRECT);
    }
+   if(InpUseFixedStops)
+      PrintFormat("XAUUSD_Confluence_EA: fixed stops - %.0f pip SL (%.2f) / %.0f pip trail (%.2f).",
+                  InpFixedStopPips, InpFixedStopPips * PipSize(),
+                  InpFixedTrailPips, InpFixedTrailPips * PipSize());
+   else
+      PrintFormat("XAUUSD_Confluence_EA: ATR stops - %.1f x ATR SL / %.1f x ATR trail.",
+                  InpAtrSlMultiplier, InpTrailAtrMult);
+
    if(InpUseFixedLot)
    {
       double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -885,9 +902,39 @@ void EvaluateSignals(const SignalData &d, bool &buySignal, bool &sellSignal)
 //+------------------------------------------------------------------+
 //| Open a new position sized and protected per the risk settings     |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| One pip in price terms. A pip is ten broker points, so on a       |
+//| 2-digit gold feed (point 0.01) a pip is 0.10 and 60 pips is $6.00.|
+//+------------------------------------------------------------------+
+double PipSize()
+{
+   return(SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10.0);
+}
+
+//+------------------------------------------------------------------+
+//| Stop distance for a new trade: a fixed pip distance by default,   |
+//| or an ATR multiple when InpUseFixedStops is off.                  |
+//|                                                                    |
+//| Fixed keeps the MONEY risk constant ($6.00 per 0.01 lot) but lets  |
+//| the distance drift between 2.2x and 11.4x ATR as volatility moves. |
+//| ATR keeps the VOLATILITY distance constant but lets money risk     |
+//| swing (measured $2.15-$18.91 per trade across regimes at 0.01      |
+//| lots). Fixed is the default because the lot size is also fixed, so |
+//| bounded money risk is the more useful of the two guarantees.       |
+//+------------------------------------------------------------------+
+double StopDistance(const double atr)
+{
+   return(InpUseFixedStops ? InpFixedStopPips * PipSize() : atr * InpAtrSlMultiplier);
+}
+
+double TrailDistance(const double atr)
+{
+   return(InpUseFixedStops ? InpFixedTrailPips * PipSize() : atr * InpTrailAtrMult);
+}
+
 void OpenTrade(bool isBuy, double atr)
 {
-   double slDistance = atr * InpAtrSlMultiplier;
+   double slDistance = StopDistance(atr);
    double tpDistance = slDistance * InpRiskRewardRatio;
    if(slDistance <= 0.0) return;
 
@@ -960,15 +1007,16 @@ void ManageOpenPositions(double atr)
          double newSl  = currentSl;
 
          // Breakeven
-         if(profit >= InpBreakevenAtrMult * atr)
+         if(profit >= (InpUseFixedStops ? TrailDistance(atr) * 0.67
+                                        : InpBreakevenAtrMult * atr))
          {
             double beSl = openPrice + InpBreakevenBufferPts * point;
             if(beSl > newSl) newSl = beSl;
          }
          // Trailing
-         if(profit >= InpTrailStartAtrMult * atr)
+         if(profit >= TrailDistance(atr))
          {
-            double trailSl = tick.bid - InpTrailAtrMult * atr;
+            double trailSl = tick.bid - TrailDistance(atr);
             if(trailSl > newSl) newSl = trailSl;
          }
 
@@ -984,14 +1032,15 @@ void ManageOpenPositions(double atr)
          double newSl  = currentSl;
          bool   haveSl = currentSl > 0.0;
 
-         if(profit >= InpBreakevenAtrMult * atr)
+         if(profit >= (InpUseFixedStops ? TrailDistance(atr) * 0.67
+                                        : InpBreakevenAtrMult * atr))
          {
             double beSl = openPrice - InpBreakevenBufferPts * point;
             if(!haveSl || beSl < newSl) newSl = beSl;
          }
-         if(profit >= InpTrailStartAtrMult * atr)
+         if(profit >= TrailDistance(atr))
          {
-            double trailSl = tick.ask + InpTrailAtrMult * atr;
+            double trailSl = tick.ask + TrailDistance(atr);
             if(!haveSl || trailSl < newSl) newSl = trailSl;
          }
 
