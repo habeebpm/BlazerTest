@@ -141,7 +141,13 @@ input int     InpSwingScanBars      = 30;             // Bars to scan for the mo
 input int     InpSwingPivotWidth    = 2;              // Bars required on each side to confirm a pivot
 
 input group "=== Combining the 3 timeframes into one signal ==="
-input double  InpEntryThreshold     = 60.0;           // |combined score| (0-100) required to trade
+// 55.0 is deliberate, not rounded from 60: with the default weights below
+// (1.0 / 1.5 / 2.0) a full 4/4 agreement on ONLY the two lowest-weighted
+// timeframes (TF1+TF2) scores 55.6/100 - the weakest case that should still
+// satisfy InpMinAgreeingTF = 2. Raising this above ~55.6 silently excludes
+// that pairing even at full conviction; if you change the weights, re-check
+// 100 * 4*(lowestTwoWeights) / (4*totalWeight) still clears this threshold.
+input double  InpEntryThreshold     = 55.0;           // |combined score| (0-100) required to trade
 input int     InpMinAgreeingTF      = 2;              // Timeframes at 3-4/4 conviction required (1-3)
 input double  InpSwingBonusPoints   = 15.0;           // Bonus added when any TF confirms swing structure
 input bool    InpShowDashboard      = true;           // Show the full per-timeframe breakdown on chart
@@ -750,8 +756,8 @@ double PipSize()
 //+------------------------------------------------------------------+
 bool FindRecentSwingLow(const ENUM_TIMEFRAMES tf, double &swingLowPrice)
 {
-   int pivotWidth = MathMax(1, InpSwingPivotWidth);
-   int scanBars   = MathMax(pivotWidth + 1, InpSwingScanBars);
+   int pivotWidth = (InpSwingPivotWidth > 1) ? InpSwingPivotWidth : 1;
+   int scanBars   = (InpSwingScanBars > pivotWidth + 1) ? InpSwingScanBars : pivotWidth + 1;
    int need       = scanBars + pivotWidth; // shift1..shift(need)
 
    double lowArr[];
@@ -783,12 +789,14 @@ bool EvaluateTimeframe(const ENUM_TIMEFRAMES tf, const int hRsi, const int hMacd
 {
    s.valid = false;
 
+   int lookback = (InpRsiLookback > 1) ? InpRsiLookback : 1;
+
    double rsiArr[];
    ArraySetAsSeries(rsiArr, true);
-   int rsiNeed = MathMax(1, InpRsiLookback) + 1;
+   int rsiNeed = lookback + 1;
    if(CopyBuffer(hRsi, 0, 1, rsiNeed, rsiArr) < rsiNeed) return(false);
    s.rsiNow  = rsiArr[0];
-   s.rsiPrev = rsiArr[MathMax(1, InpRsiLookback)];
+   s.rsiPrev = rsiArr[lookback];
 
    double macdMain[], macdSignal[];
    ArraySetAsSeries(macdMain, true);

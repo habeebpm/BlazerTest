@@ -355,10 +355,20 @@ score:
 | 0–1 | no alignment | **NEUTRAL** |
 
 A trade fires only when **both** gates pass: `|combinedScore| >=
-InpEntryThreshold` (default 60) **and** `agreeingTF >= InpMinAgreeingTF`
+InpEntryThreshold` (default **55**) **and** `agreeingTF >= InpMinAgreeingTF`
 (default 2 of 3). `InpShowDashboard` prints the full per-timeframe RSI/MACD
 histogram/Bollinger/swing-low breakdown plus the combined score live on the
 chart, and every entry logs it to the Experts tab.
+
+**Why 55, not a round 60:** with the default weights (1.0/1.5/2.0), a clean
+4/4 agreement on only the two *lowest*-weighted timeframes (TF1+TF2, e.g.
+M15+H1, with TF3 neutral) scores **55.6/100** — the weakest case that should
+still satisfy `InpMinAgreeingTF = 2`. A threshold above ~55.6 silently shuts
+that pairing out even at full conviction, contradicting "2 of 3 agree ⇒
+moderate signal." If you change the timeframe weights, recheck that
+`100 × 4×(sum of the two lowest weights) / (4×total weight)` still clears
+whatever threshold you set — otherwise the two entry gates can end up
+inconsistent with each other.
 
 ### Risk management (same dollar figures as requested)
 
