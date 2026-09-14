@@ -25,6 +25,11 @@ not predict future results.
   MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
   See `python/README.md`.
+- `MQL5/Experts/XAUUSD_MTF_RSI_MACD_BB_EA.mq5` — a second, independent EA:
+  a multi-timeframe RSI/MACD/Bollinger Bands/swing-structure confluence
+  strategy. See "XAUUSD Multi-Timeframe RSI/MACD/BB EA" below.
+- `MQL5/Presets/XAUUSD_MTF_RSI_MACD_BB_EA_Default.set` — its matching input
+  preset.
 
 ## Strategy logic
 
@@ -281,3 +286,135 @@ only says what each one would imply. Measure it in the Strategy Tester first.
 5. Confirm your broker's XAUUSD contract specification (tick value, tick
    size, stops level, filling mode) matches the assumptions used for lot
    sizing and order placement.
+
+## XAUUSD Multi-Timeframe RSI/MACD/BB EA
+
+A second, independent Expert Advisor in this repo:
+`MQL5/Experts/XAUUSD_MTF_RSI_MACD_BB_EA.mq5`. It shares no signal logic with
+the Confluence EA above — same risk-management conventions (fixed lot,
+fixed-pip stop/trail, broker-session filter, daily-loss breaker), completely
+different entry decision.
+
+### Strategy logic
+
+Three timeframes (`InpTF1 < InpTF2 < InpTF3`, default **M15 / H1 / H4**) are
+each scored independently on the same four criteria, then combined into one
+weighted signal.
+
+**BUY, per timeframe (count how many of the 4 hold):**
+1. RSI above `InpRsiBuyLevel` (45–50) **and** rising vs. `InpRsiLookback`
+   bars back.
+2. MACD histogram positive (this also covers "just crossed up" — a fresh
+   cross makes the histogram positive on the bar it happens).
+3. Close above the Bollinger middle band.
+4. Close still above the most recent swing low — structure intact, no
+   breakdown.
+
+**SELL, per timeframe (count how many of the 4 hold):**
+1. RSI below `InpRsiSellLevel` (45–50) **and** falling.
+2. MACD histogram negative **and** expanding (more negative than the prior
+   closed bar).
+3. Close below the Bollinger middle band.
+4. **Confirmed** close below the most recent swing low — a wick through it
+   does not count, the bar must close through it.
+
+Each timeframe keeps a `buyCount` and a `sellCount` (0–4 each) and takes
+whichever side has more, giving a net score from **-4** (outright sell) to
+**+4** (outright buy). Swing structure is a simple fractal/pivot scan: over
+the last `InpSwingScanBars` closed bars, a bar counts as a pivot low when its
+low sits below the low of `InpSwingPivotWidth` bars on both sides of it; the
+most recent one found is "the most recent swing low" used by criterion 4 on
+**both** the buy and the sell side, exactly as specified — the sell side
+deliberately reuses the swing low (not a swing high) as its breakdown
+reference.
+
+### Combining the three timeframes
+
+```
+combinedScore = 100 x (net1*w1 + net2*w2 + net3*w3) / (4 x (w1+w2+w3))
+```
+
+a **-100..+100** scale, where ±100 means all three timeframes hit a clean
+4/4 in the same direction. Higher timeframes carry more weight by default
+(`InpWeightTF3 = 2.0 > InpWeightTF2 = 1.5 > InpWeightTF1 = 1.0`), so H4
+matters more than M15.
+
+Swing-structure confirmation (criterion 4) on **any** timeframe, in the
+direction the score already leans, is the strongest single piece of
+evidence: it adds `InpSwingBonusPoints` (default 15) to the combined score —
+the mechanism that upgrades a "leaning" score to a "confirmed" one.
+
+"Agreeing timeframes" counts how many of the three sit at conviction
+(`|net| >= 3`, i.e. 3 or 4 of 4 criteria) on the same side as the overall
+score:
+
+| Agreeing TFs | Meaning | Label |
+|---|---|---|
+| 3 | full alignment | **STRONG** Buy/Sell |
+| 2 | partial alignment | **MODERATE** Buy/Sell ("building"/"weakening") |
+| 0–1 | no alignment | **NEUTRAL** |
+
+A trade fires only when **both** gates pass: `|combinedScore| >=
+InpEntryThreshold` (default 60) **and** `agreeingTF >= InpMinAgreeingTF`
+(default 2 of 3). `InpShowDashboard` prints the full per-timeframe RSI/MACD
+histogram/Bollinger/swing-low breakdown plus the combined score live on the
+chart, and every entry logs it to the Experts tab.
+
+### Risk management (same dollar figures as requested)
+
+- **0.01 fixed lots** per position (`InpFixedLot`), up to **4 positions**
+  open at once (`InpMaxOpenPositions`) — four 0.01-lot positions, not one
+  4.00-lot position.
+- **$6.00 stop-loss** per position — `InpStopLossPips = 60` pips. One XAUUSD
+  lot is 100oz, so at 0.01 lots $1 of price is $1 of P/L: 60 pips (0.10
+  price per pip on a 2-digit gold feed) is a $6.00 stop.
+- **$3.00 trailing stop** — once a position is `InpTrailStartPips` (30 pips
+  = $3.00) in profit, the stop trails `InpTrailPips` (30 pips = $3.00)
+  behind price and only ever tightens. An optional breakeven step
+  (`InpUseBreakeven`) moves the stop to entry + buffer first, at a smaller
+  `InpBreakevenTriggerPips` (20 pips ≈ $2.00).
+- No fixed take-profit by default (`InpUseTakeProfit = false`) — the
+  position is meant to be managed by the trailing stop, letting profit run;
+  turn it on for a fixed `InpRiskRewardRatio`-based target instead.
+- Four positions open at once therefore risk up to **$24.00** combined
+  before any trailing has locked in profit — the same figure as the
+  Confluence EA above, for the same reason.
+- Every other protection (broker-session filter, spread filter, daily-loss
+  circuit breaker, profit lock, flatten-before-close, manual session
+  fallback) is identical in behavior to the Confluence EA's — see "Risk &
+  trade management" above for the full explanation of each.
+
+### Key inputs
+
+- `InpTF1` / `InpTF2` / `InpTF3`, `InpWeightTF1/2/3` — the three timeframes
+  and their weight in the combined score. **`InpTF1` must be the shortest**
+  — it drives entry timing (evaluated once per closed `InpTF1` bar).
+- `InpRsiPeriod`, `InpRsiLookback`, `InpRsiBuyLevel`, `InpRsiSellLevel` —
+  criterion 1.
+- `InpMacdFast/Slow/Signal` — criterion 2.
+- `InpBandsPeriod`, `InpBandsDeviation` — criterion 3.
+- `InpSwingScanBars`, `InpSwingPivotWidth` — criterion 4 / swing detection.
+- `InpEntryThreshold`, `InpMinAgreeingTF`, `InpSwingBonusPoints` — how the
+  three timeframes combine into a trade decision.
+- `InpUseFixedLot`, `InpFixedLot`, `InpRiskPercent`, `InpMaxLotSize` —
+  sizing (fixed 0.01 lots by default; switch to risk-% sizing the same way
+  as the Confluence EA).
+- `InpStopLossPips`, `InpUseTakeProfit`, `InpRiskRewardRatio` — stop/target.
+- `InpUseBreakeven`, `InpBreakevenTriggerPips`, `InpBreakevenBufferPts`,
+  `InpTrailStartPips`, `InpTrailPips` — trade management.
+- `InpMaxOpenPositions`, `InpAllowOpposite`, `InpMaxTradesPerDay` —
+  trade-frequency guards.
+- `InpMaxDailyLossPct`, `InpUseDailyTarget`, `InpDailyTargetPct`,
+  `InpCloseOnTarget`, `InpLockDailyGains`, `InpLockAfterPct`,
+  `InpGiveBackPct` — the daily frame (identical semantics to the Confluence
+  EA's).
+- `InpUseBrokerSession`, `InpEntryOpenBufferMin`, `InpEntryCloseBufferMin`,
+  `InpFlattenBeforeClose`, `InpFlattenBeforeCloseMin`,
+  `InpUseSessionFilter`, `InpSessionGmtOffset`, `InpSessionStartHour/Min`,
+  `InpSessionEndHour/Min`, `InpCloseBeforeWeekend`, `InpWeekendCloseHour` —
+  session timing.
+- `InpMaxSpreadPoints` — spread guard.
+
+As with the Confluence EA: no win rate, profit factor or drawdown is known
+or claimed for this strategy in advance. Backtest with tick data across
+multiple regimes, forward-test on demo, and only then consider live capital.

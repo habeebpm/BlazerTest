@@ -1,0 +1,71 @@
+; XAUUSD_MTF_RSI_MACD_BB_EA - default preset
+; In MT5: Strategy Tester > Expert Advisor: XAUUSD_MTF_RSI_MACD_BB_EA > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; Note: InpTF1/InpTF2/InpTF3 are stored below as raw ENUM_TIMEFRAMES values
+; (15 = M15, 16385 = H1, 16388 = H4). If your MT5 build does not accept these
+; lines for the timeframe inputs, just set them manually in the Inputs tab:
+;   InpTF1 -> M15
+;   InpTF2 -> H1
+;   InpTF3 -> H4
+;
+InpMagicNumber=20260914
+InpSlippagePoints=30
+InpTradeXAUUSDOnly=true
+InpMaxOpenPositions=4
+InpAllowOpposite=false
+InpTF1=15
+InpTF2=16385
+InpTF3=16388
+InpWeightTF1=1.0
+InpWeightTF2=1.5
+InpWeightTF3=2.0
+InpRsiPeriod=14
+InpRsiLookback=2
+InpRsiBuyLevel=47.0
+InpRsiSellLevel=47.0
+InpMacdFast=12
+InpMacdSlow=26
+InpMacdSignal=9
+InpBandsPeriod=20
+InpBandsDeviation=2.0
+InpSwingScanBars=30
+InpSwingPivotWidth=2
+InpEntryThreshold=60.0
+InpMinAgreeingTF=2
+InpSwingBonusPoints=15.0
+InpShowDashboard=true
+InpUseFixedLot=true
+InpFixedLot=0.01
+InpRiskPercent=0.2
+InpStopLossPips=60.0
+InpUseTakeProfit=false
+InpRiskRewardRatio=1.8
+InpMaxLotSize=5.0
+InpMaxDailyLossPct=1.0
+InpUseDailyTarget=false
+InpDailyTargetPct=0.5
+InpCloseOnTarget=true
+InpLockDailyGains=true
+InpLockAfterPct=0.5
+InpGiveBackPct=50.0
+InpMaxTradesPerDay=0
+InpUseBreakeven=true
+InpBreakevenTriggerPips=20.0
+InpBreakevenBufferPts=20
+InpTrailStartPips=30.0
+InpTrailPips=30.0
+InpUseBrokerSession=true
+InpEntryOpenBufferMin=5
+InpEntryCloseBufferMin=30
+InpFlattenBeforeClose=true
+InpFlattenBeforeCloseMin=10
+InpUseSessionFilter=true
+InpSessionGmtOffset=4.0
+InpSessionStartHour=6
+InpSessionStartMin=0
+InpSessionEndHour=23
+InpSessionEndMin=0
+InpCloseBeforeWeekend=true
+InpWeekendCloseHour=20
+InpMaxSpreadPoints=350
