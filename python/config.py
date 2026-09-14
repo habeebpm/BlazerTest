@@ -140,7 +140,13 @@ class TradeConfig:
     # simultaneous buy and sell pays the spread twice and nets to nothing on a
     # netting account, so an opposing signal is skipped while a position is open.
     allow_opposite_positions: bool = False
-    max_daily_loss_pct: float = 3.0
+    # Daily frame. Keep the target and the loss cap proportionate: a 0.5%
+    # target against a 3% cap needs 86% of days to be winners just to break
+    # even; at 2:1 it needs 67%.
+    max_daily_loss_pct: float = 1.0
+    use_daily_target: bool = True
+    daily_target_pct: float = 0.5
+    close_on_target: bool = True        # bank the day rather than leave it floating
     max_spread_points: int = 350        # always in broker points
     use_session_filter: bool = True
     # Session hours are expressed in GMT + this offset, NOT broker server time,

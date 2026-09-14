@@ -249,6 +249,42 @@ assert not _buf.can_enter(_near_close), "the close buffer must block late entrie
 assert _buf.minutes_to_close(_near_close) <= _buf.flatten_before_close_min, \
     "10 minutes out must be inside the flatten window"
 
+print("\n=== 7c. daily profit target and loss cap ===")
+_dt = trader.Bot(cfg2, dry_run=True)
+_dt.start(probe_market=False)
+print(f"   frame: target +{cfg2.daily_target_pct:g}% / cap -{cfg2.max_daily_loss_pct:g}% "
+      f"(ratio {cfg2.max_daily_loss_pct/cfg2.daily_target_pct:.1f}:1, "
+      f"break-even needs {100*cfg2.max_daily_loss_pct/(cfg2.daily_target_pct+cfg2.max_daily_loss_pct):.0f}% winning days)")
+_dt.day_start_equity = 10000.0
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10050.0, currency="USD", trade_allowed=True)
+_dt.roll_day()
+print(f"   equity +0.50% -> target hit: {_dt.daily_target_hit}, "
+      f"entry_blocked: {_dt.entry_blocked()}")
+assert _dt.daily_target_hit, "a +0.5% day must trip the target"
+assert _dt.entry_blocked() is not None, "no entries after the target"
+
+_dl = trader.Bot(cfg2, dry_run=True)
+_dl.start(probe_market=False)
+_dl.day_start_equity = 10000.0
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=9900.0, currency="USD", trade_allowed=True)
+_dl.roll_day()
+print(f"   equity -1.00% -> loss cap hit: {_dl.daily_loss_hit}, "
+      f"entry_blocked: {_dl.entry_blocked()}")
+assert _dl.daily_loss_hit, "a -1.0% day must trip the loss cap"
+
+# a small move trips neither
+_ok = trader.Bot(cfg2, dry_run=True); _ok.start(probe_market=False)
+_ok.day_start_equity = 10000.0
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10020.0, currency="USD", trade_allowed=True)
+_ok.roll_day()
+print(f"   equity +0.20% -> neither tripped: target={_ok.daily_target_hit} loss={_ok.daily_loss_hit}")
+assert not _ok.daily_target_hit and not _ok.daily_loss_hit
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10000.0, currency="USD", trade_allowed=True)
+
 print("\n=== 8. market closed (quotes frozen) ===")
 import mt5_client as _mc
 MARKET_OPEN = False

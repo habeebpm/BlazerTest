@@ -76,6 +76,7 @@ class Bot:
         self.day_start_equity = 0.0
         self.trades_today = 0
         self.daily_loss_hit = False
+        self.daily_target_hit = False
         self.running = True
         self.quotes = mc.QuoteMonitor()
         self.market_open = True
@@ -111,14 +112,30 @@ class Bot:
             self.day_start_equity = mc.account_equity()
             self.trades_today = 0
             self.daily_loss_hit = False
+            self.daily_target_hit = False
             log.info("New trading day - counters reset (equity %.2f)", self.day_start_equity)
 
-        if not self.daily_loss_hit and self.day_start_equity > 0:
-            equity = mc.account_equity()
-            loss_pct = (self.day_start_equity - equity) / self.day_start_equity * 100.0
-            if loss_pct >= self.cfg.max_daily_loss_pct:
-                self.daily_loss_hit = True
-                log.warning("Daily loss limit hit (%.2f%%) - no new entries today.", loss_pct)
+        if self.day_start_equity <= 0:
+            return
+
+        equity = mc.account_equity()
+        move_pct = (equity - self.day_start_equity) / self.day_start_equity * 100.0
+
+        if not self.daily_loss_hit and -move_pct >= self.cfg.max_daily_loss_pct:
+            self.daily_loss_hit = True
+            log.warning("Daily loss limit hit (%.2f%%) - no new entries today.", move_pct)
+
+        # Daily target: bank the day once it is made. Measured on equity, so
+        # floating profit counts - hence close_on_target realises it by default.
+        if (self.cfg.use_daily_target and not self.daily_target_hit
+                and move_pct >= self.cfg.daily_target_pct):
+            self.daily_target_hit = True
+            log.info("Daily profit target reached (+%.2f%% >= +%.2f%%) - done for today.",
+                     move_pct, self.cfg.daily_target_pct)
+            if self.cfg.close_on_target:
+                for pos in mc.get_positions(self.cfg):
+                    log.info("Banking the day: closing ticket %s", pos.ticket)
+                    mc.close_position(self.cfg, self.spec, pos, self.dry_run)
 
     def entry_blocked(self) -> str | None:
         """Return a reason string if new entries are not allowed right now."""
@@ -129,6 +146,8 @@ class Bot:
             return "market is closed"
         if self.daily_loss_hit:
             return "daily loss limit reached"
+        if self.daily_target_hit:
+            return f"daily profit target (+{self.cfg.daily_target_pct:g}%) already reached"
         if cfg.max_trades_per_day > 0 and self.trades_today >= cfg.max_trades_per_day:
             return f"max trades/day reached ({self.trades_today})"
         if len(mc.get_positions(cfg)) >= cfg.max_open_positions:
@@ -328,6 +347,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="max positions open at once (default 2)")
     parser.add_argument("--max-trades-per-day", type=int, dest="max_trades_per_day",
                         help="0 = unlimited (the default)")
+    parser.add_argument("--daily-target", type=float, dest="daily_target",
+                        help="daily profit target in %% of the day's opening equity (0 = off)")
+    parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
+                        help="daily loss cap in %% of the day's opening equity")
     parser.add_argument("--sl-units", type=float, dest="sl_units",
                         help="override stop-loss distance, in --unit units")
     parser.add_argument("--trail-units", type=float, dest="trail_units",
@@ -371,6 +394,11 @@ def main(argv: list[str] | None = None) -> int:
         overrides["max_open_positions"] = args.max_positions
     if args.max_trades_per_day is not None:
         overrides["max_trades_per_day"] = args.max_trades_per_day
+    if args.daily_target is not None:
+        overrides["daily_target_pct"] = args.daily_target
+        overrides["use_daily_target"] = args.daily_target > 0
+    if args.max_daily_loss is not None:
+        overrides["max_daily_loss_pct"] = args.max_daily_loss
     if args.min_confluences:
         overrides["min_confluences"] = args.min_confluences
     if args.no_confirmation:

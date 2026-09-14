@@ -20,6 +20,11 @@
 //|                confirmed: ADX >= InpConfirmAdxLevel AND the DI     |
 //|                spread is at least InpConfirmDiGap wide.            |
 //|                                                                    |
+//| DAILY FRAME: the EA stops for the day at +InpDailyTargetPct (0.5%) |
+//| and at -InpMaxDailyLossPct (1.0%). Keeping those proportionate      |
+//| matters: a 0.5% target against a 3% loss cap needs 86% of days to   |
+//| be winners just to break even, while 2:1 needs 67%.                 |
+//|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
 //| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
 //| score of at least InpMinConfidence (50 of 100).                     |
@@ -141,7 +146,10 @@ input double   InpFixedTrailPips    = 30.0;           // Fixed trailing distance
 input double   InpAtrSlMultiplier   = 5.8;            // ATR mode: stop = ATR * this (5.8 ~ $6.00 typical)
 input double   InpRiskRewardRatio   = 1.8;            // Take-profit = SL distance * this ratio
 input double   InpMaxLotSize        = 5.0;            // Hard cap on calculated lot size
-input double   InpMaxDailyLossPct   = 3.0;            // Stop new trades after this % equity loss in a day
+input double   InpMaxDailyLossPct   = 1.0;            // Stop new trades after this % equity loss in a day
+input bool     InpUseDailyTarget    = true;           // Stop for the day once the profit target is reached
+input double   InpDailyTargetPct    = 0.5;            // Daily profit target, % of the day's opening equity
+input bool     InpCloseOnTarget     = true;           // Close open positions when the target is reached
 input int      InpMaxTradesPerDay   = 0;              // Max new entries per day (0 = unlimited)
 
 input group "=== Trade Management (breakeven / trailing) ==="
@@ -191,11 +199,14 @@ datetime       g_currentDay       = 0;
 double         g_dayStartEquity   = 0.0;
 int            g_tradesToday      = 0;
 bool           g_dailyLossHit     = false;
+bool           g_dailyTargetHit   = false;
 
 // forward declarations: these are used before their definitions below
 datetime SessionZoneTime();
 datetime DateToDay(datetime t);
 double   PipSize();
+int      CountOpenPositions(int direction);
+void     CloseAllPositions();
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -345,17 +356,35 @@ void UpdateDailyTracking()
       g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
       g_tradesToday    = 0;
       g_dailyLossHit   = false;
+      g_dailyTargetHit = false;
    }
 
-   if(!g_dailyLossHit && g_dayStartEquity > 0.0)
+   if(g_dayStartEquity <= 0.0) return;
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double movePct = (equity - g_dayStartEquity) / g_dayStartEquity * 100.0;
+
+   if(!g_dailyLossHit && -movePct >= InpMaxDailyLossPct)
    {
-      double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
-      double lossPct  = (g_dayStartEquity - equity) / g_dayStartEquity * 100.0;
-      if(lossPct >= InpMaxDailyLossPct)
+      g_dailyLossHit = true;
+      PrintFormat("XAUUSD_Confluence_EA: daily loss limit reached (%.2f%% <= -%.2f%%). "
+                  "New entries suspended until next day.", movePct, InpMaxDailyLossPct);
+   }
+
+   // Daily profit target: bank the day once it is made rather than giving it
+   // back. Measured on equity, so floating profit counts - which is why
+   // InpCloseOnTarget closes the open positions by default, turning that
+   // floating gain into a realised one instead of leaving it exposed.
+   if(InpUseDailyTarget && !g_dailyTargetHit && movePct >= InpDailyTargetPct)
+   {
+      g_dailyTargetHit = true;
+      PrintFormat("XAUUSD_Confluence_EA: daily profit target reached (+%.2f%% >= +%.2f%%). "
+                  "No further entries today.", movePct, InpDailyTargetPct);
+      if(InpCloseOnTarget && CountOpenPositions(-1) > 0)
       {
-         g_dailyLossHit = true;
-         Print("XAUUSD_Confluence_EA: daily loss limit reached (", DoubleToString(lossPct,2),
-               "% >= ", DoubleToString(InpMaxDailyLossPct,2), "%). New entries suspended until next day.");
+         PrintFormat("XAUUSD_Confluence_EA: closing %d position(s) to bank the day.",
+                     CountOpenPositions(-1));
+         CloseAllPositions();
       }
    }
 }
@@ -1073,6 +1102,7 @@ void OnTick()
 
    if(sessionCloseBlock) return;
    if(g_dailyLossHit) return;
+   if(g_dailyTargetHit) return;
    if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay) return;
    if(!IsWithinSession()) return;
    if(!SpreadIsAcceptable()) return;

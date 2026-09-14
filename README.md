@@ -158,9 +158,13 @@ known — see "Before going live" for how to measure one.
 - **ATR trailing stop** — once profit passes `InpTrailStartAtrMult × ATR`,
   the stop trails at `InpTrailAtrMult × ATR` behind price (only ever
   tightens).
-- **Daily loss circuit breaker** — new entries stop for the rest of the
-  calendar day once the account has drawn down `InpMaxDailyLossPct` % of the
-  equity recorded at the start of that day.
+- **Daily frame — target +0.5%, cap −1.0%.** Trading stops for the day at
+  either edge: `InpDailyTargetPct` banks the day once made (closing open
+  positions when `InpCloseOnTarget` is set, so the gain is realised rather
+  than left floating), and `InpMaxDailyLossPct` halts it on the downside.
+  Keep the two proportionate — a 0.5% target against a 3% loss cap needs
+  **86% of days to be winners** just to break even, while the shipped 2:1
+  needs 67%.
 - **Max trades/day** and **max concurrent positions** caps to prevent
   over-trading.
 - **Spread filter** — skips new entries when the current spread exceeds
@@ -197,10 +201,33 @@ so they can be optimized in the Strategy Tester:
 - `InpAdxPeriod`, `InpAdxMinLevel` — trend-strength filter.
 - `InpAtrPeriod`, `InpBandsPeriod`, `InpBandsDeviation` — volatility filters.
 - `InpUseFixedLot`, `InpFixedLot`, `InpRiskPercent`, `InpAtrSlMultiplier`, `InpRiskRewardRatio`, `InpMaxLotSize` — sizing/stops.
-- `InpMaxDailyLossPct`, `InpMaxTradesPerDay`, `InpMaxOpenPositions` — trade-frequency guards.
+- `InpUseDailyTarget`, `InpDailyTargetPct`, `InpCloseOnTarget`, `InpMaxDailyLossPct` — the daily frame.
+- `InpMaxTradesPerDay`, `InpMaxOpenPositions` — trade-frequency guards.
 - `InpUseBrokerSession`, `InpEntryOpenBufferMin`, `InpEntryCloseBufferMin`, `InpFlattenBeforeClose`, `InpFlattenBeforeCloseMin` — broker-session timing.
 - `InpUseSessionFilter`, `InpSessionGmtOffset`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — manual-window fallback.
 - `InpMaxSpreadPoints` — spread guard.
+
+## Sizing for a daily percentage
+
+At the broker minimum of 0.01 lots you cannot size down, only up the account,
+so **account size sets the daily percentage**. Per-day return at 4.8 fills, a
+$6 stop and 1.8R targets, *if* the strategy proves to have an edge:
+
+| Win rate | $/day | $1,000 | $2,000 | $3,000 | $5,000 |
+|---|---|---|---|---|---|
+| 45% | +$6.29 | 0.63% | 0.31% | 0.21% | 0.13% |
+| 50% | +$10.32 | 1.03% | 0.52% | 0.34% | 0.21% |
+| 55% | +$14.35 | 1.44% | 0.72% | 0.48% | 0.29% |
+| 60% | +$18.38 | 1.84% | 0.92% | 0.61% | 0.37% |
+
+A 0.5%/day target is the natural output of 0.01 lots on roughly a **$2,900**
+account at a 55% win rate. On a smaller account the same lot size aims higher
+and carries proportionally more risk — which is what the daily target is for:
+below about $2,000, a single winner at 1.8R ($10.80) already exceeds 0.5% of
+the account, so the EA becomes a "one good trade and stop" system.
+
+**None of these rows is a prediction.** The win rate is the unknown; the table
+only says what each one would imply. Measure it in the Strategy Tester first.
 
 ## Before going live
 
