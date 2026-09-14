@@ -77,6 +77,8 @@ class Bot:
         self.trades_today = 0
         self.daily_loss_hit = False
         self.daily_target_hit = False
+        self.daily_lock_hit = False
+        self.day_peak_equity = 0.0
         self.running = True
         self.quotes = mc.QuoteMonitor()
         self.market_open = True
@@ -113,6 +115,8 @@ class Bot:
             self.trades_today = 0
             self.daily_loss_hit = False
             self.daily_target_hit = False
+            self.daily_lock_hit = False
+            self.day_peak_equity = self.day_start_equity
             log.info("New trading day - counters reset (equity %.2f)", self.day_start_equity)
 
         if self.day_start_equity <= 0:
@@ -120,6 +124,21 @@ class Bot:
 
         equity = mc.account_equity()
         move_pct = (equity - self.day_start_equity) / self.day_start_equity * 100.0
+
+        self.day_peak_equity = max(self.day_peak_equity, self.day_start_equity, equity)
+        peak_pct = (self.day_peak_equity - self.day_start_equity) / self.day_start_equity * 100.0
+
+        # Profit lock - protects a day that ran up without capping it
+        if (self.cfg.lock_daily_gains and not self.daily_lock_hit
+                and peak_pct >= self.cfg.lock_after_pct):
+            floor_pct = peak_pct * (1.0 - self.cfg.give_back_pct / 100.0)
+            if move_pct <= floor_pct:
+                self.daily_lock_hit = True
+                log.info("Profit lock: peaked at +%.2f%%, gave back to +%.2f%% "
+                         "(floor +%.2f%%) - done for today.", peak_pct, move_pct, floor_pct)
+                if self.cfg.close_on_target:
+                    for pos in mc.get_positions(self.cfg):
+                        mc.close_position(self.cfg, self.spec, pos, self.dry_run)
 
         if not self.daily_loss_hit and -move_pct >= self.cfg.max_daily_loss_pct:
             self.daily_loss_hit = True
@@ -148,6 +167,8 @@ class Bot:
             return "daily loss limit reached"
         if self.daily_target_hit:
             return f"daily profit target (+{self.cfg.daily_target_pct:g}%) already reached"
+        if self.daily_lock_hit:
+            return "profit lock triggered - the day gave back too much of its peak"
         if cfg.max_trades_per_day > 0 and self.trades_today >= cfg.max_trades_per_day:
             return f"max trades/day reached ({self.trades_today})"
         if len(mc.get_positions(cfg)) >= cfg.max_open_positions:
@@ -348,7 +369,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-trades-per-day", type=int, dest="max_trades_per_day",
                         help="0 = unlimited (the default)")
     parser.add_argument("--daily-target", type=float, dest="daily_target",
-                        help="daily profit target in %% of the day's opening equity (0 = off)")
+                        help="hard daily profit target in %% (0 = off, the default)")
+    parser.add_argument("--give-back", type=float, dest="give_back",
+                        help="%% of the day's peak gain that may be given back before "
+                             "trading stops (100 = lock off)")
     parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
                         help="daily loss cap in %% of the day's opening equity")
     parser.add_argument("--sl-units", type=float, dest="sl_units",
@@ -399,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
         overrides["use_daily_target"] = args.daily_target > 0
     if args.max_daily_loss is not None:
         overrides["max_daily_loss_pct"] = args.max_daily_loss
+    if args.give_back is not None:
+        overrides["give_back_pct"] = args.give_back
+        overrides["lock_daily_gains"] = args.give_back < 100
     if args.min_confluences:
         overrides["min_confluences"] = args.min_confluences
     if args.no_confirmation:

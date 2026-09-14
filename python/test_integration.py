@@ -9,6 +9,7 @@ stop and the entry guards - by injecting a stub into sys.modules.
 """
 import pathlib
 import sys, types, time
+from dataclasses import replace
 from datetime import datetime, timedelta
 import numpy as np, pandas as pd
 
@@ -250,11 +251,13 @@ assert _buf.minutes_to_close(_near_close) <= _buf.flatten_before_close_min, \
     "10 minutes out must be inside the flatten window"
 
 print("\n=== 7c. daily profit target and loss cap ===")
-_dt = trader.Bot(cfg2, dry_run=True)
+# the hard target ships OFF (the profit lock replaces it), so enable it here
+_tgt_cfg = replace(cfg2, use_daily_target=True, lock_daily_gains=False)
+_dt = trader.Bot(_tgt_cfg, dry_run=True)
 _dt.start(probe_market=False)
-print(f"   frame: target +{cfg2.daily_target_pct:g}% / cap -{cfg2.max_daily_loss_pct:g}% "
-      f"(ratio {cfg2.max_daily_loss_pct/cfg2.daily_target_pct:.1f}:1, "
-      f"break-even needs {100*cfg2.max_daily_loss_pct/(cfg2.daily_target_pct+cfg2.max_daily_loss_pct):.0f}% winning days)")
+print(f"   frame: target +{_tgt_cfg.daily_target_pct:g}% / cap -{_tgt_cfg.max_daily_loss_pct:g}% "
+      f"(ratio {_tgt_cfg.max_daily_loss_pct/_tgt_cfg.daily_target_pct:.1f}:1, "
+      f"break-even needs {100*_tgt_cfg.max_daily_loss_pct/(_tgt_cfg.daily_target_pct+_tgt_cfg.max_daily_loss_pct):.0f}% winning days)")
 _dt.day_start_equity = 10000.0
 m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
                                                equity=10050.0, currency="USD", trade_allowed=True)
@@ -264,7 +267,7 @@ print(f"   equity +0.50% -> target hit: {_dt.daily_target_hit}, "
 assert _dt.daily_target_hit, "a +0.5% day must trip the target"
 assert _dt.entry_blocked() is not None, "no entries after the target"
 
-_dl = trader.Bot(cfg2, dry_run=True)
+_dl = trader.Bot(_tgt_cfg, dry_run=True)
 _dl.start(probe_market=False)
 _dl.day_start_equity = 10000.0
 m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
@@ -275,7 +278,7 @@ print(f"   equity -1.00% -> loss cap hit: {_dl.daily_loss_hit}, "
 assert _dl.daily_loss_hit, "a -1.0% day must trip the loss cap"
 
 # a small move trips neither
-_ok = trader.Bot(cfg2, dry_run=True); _ok.start(probe_market=False)
+_ok = trader.Bot(_tgt_cfg, dry_run=True); _ok.start(probe_market=False)
 _ok.day_start_equity = 10000.0
 m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
                                                equity=10020.0, currency="USD", trade_allowed=True)
@@ -284,6 +287,28 @@ print(f"   equity +0.20% -> neither tripped: target={_ok.daily_target_hit} loss=
 assert not _ok.daily_target_hit and not _ok.daily_loss_hit
 m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
                                                equity=10000.0, currency="USD", trade_allowed=True)
+
+print("\n=== 7d. profit lock (keeps trading, protects a run-up) ===")
+def _equity(v):
+    m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo",
+        balance=10000.0, equity=v, currency="USD", trade_allowed=True)
+
+_lk = trader.Bot(cfg2, dry_run=True); _lk.start(probe_market=False)
+_lk.day_start_equity = 10000.0; _lk.day_peak_equity = 10000.0
+print(f"   lock arms above +{cfg2.lock_after_pct:g}%, stops on giving back "
+      f"{cfg2.give_back_pct:g}% of the peak")
+for eq, note in [(10050.0, "+0.50% - arms, keeps trading"),
+                 (10200.0, "+2.00% - new peak, keeps trading"),
+                 (10150.0, "+1.50% - above the +1.00% floor")]:
+    _equity(eq); _lk.roll_day()
+    print(f"   equity {note:<34} lock={_lk.daily_lock_hit} blocked={_lk.entry_blocked() is not None}")
+    assert not _lk.daily_lock_hit, f"lock must not fire at {note}"
+
+_equity(10100.0); _lk.roll_day()     # back to +1.00% = exactly the floor of a 2% peak
+print(f"   equity +1.00% - hits the floor of a +2.00% peak   lock={_lk.daily_lock_hit}")
+assert _lk.daily_lock_hit, "the lock must fire when half the peak gain is given back"
+assert _lk.entry_blocked() is not None
+_equity(10000.0)
 
 print("\n=== 8. market closed (quotes frozen) ===")
 import mt5_client as _mc

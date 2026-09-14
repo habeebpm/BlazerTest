@@ -144,9 +144,17 @@ class TradeConfig:
     # target against a 3% cap needs 86% of days to be winners just to break
     # even; at 2:1 it needs 67%.
     max_daily_loss_pct: float = 1.0
-    use_daily_target: bool = True
+    use_daily_target: bool = False      # hard stop at the target; off by default
     daily_target_pct: float = 0.5
     close_on_target: bool = True        # bank the day rather than leave it floating
+
+    # Profit lock: unlike the hard target this does NOT stop a winning day. It
+    # arms once the day peaks above lock_after_pct and halts only if that peak
+    # gain is given back by give_back_pct, so upside stays open while a day
+    # that ran up cannot round-trip to the loss cap.
+    lock_daily_gains: bool = True
+    lock_after_pct: float = 0.5
+    give_back_pct: float = 50.0
     max_spread_points: int = 350        # always in broker points
     use_session_filter: bool = True
     # Session hours are expressed in GMT + this offset, NOT broker server time,

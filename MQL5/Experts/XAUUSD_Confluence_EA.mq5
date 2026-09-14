@@ -20,10 +20,13 @@
 //|                confirmed: ADX >= InpConfirmAdxLevel AND the DI     |
 //|                spread is at least InpConfirmDiGap wide.            |
 //|                                                                    |
-//| DAILY FRAME: the EA stops for the day at +InpDailyTargetPct (0.5%) |
-//| and at -InpMaxDailyLossPct (1.0%). Keeping those proportionate      |
-//| matters: a 0.5% target against a 3% loss cap needs 86% of days to   |
-//| be winners just to break even, while 2:1 needs 67%.                 |
+//| DAILY FRAME: the downside stops at -InpMaxDailyLossPct (1.0%). The |
+//| upside is NOT capped - InpUseDailyTarget is off, so a good day runs |
+//| on. What protects it is InpLockDailyGains: once the day peaks above |
+//| +0.5% the EA stops if half that peak gain is given back, so a day   |
+//| that reached +2.0% floors at +1.0% instead of round-tripping to the |
+//| loss cap. Turn InpUseDailyTarget on for a hard stop at +0.5%        |
+//| instead, which trades magnitude for consistency.                    |
 //|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
 //| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
@@ -147,9 +150,12 @@ input double   InpAtrSlMultiplier   = 5.8;            // ATR mode: stop = ATR * 
 input double   InpRiskRewardRatio   = 1.8;            // Take-profit = SL distance * this ratio
 input double   InpMaxLotSize        = 5.0;            // Hard cap on calculated lot size
 input double   InpMaxDailyLossPct   = 1.0;            // Stop new trades after this % equity loss in a day
-input bool     InpUseDailyTarget    = true;           // Stop for the day once the profit target is reached
+input bool     InpUseDailyTarget    = false;          // Hard stop for the day at the profit target
 input double   InpDailyTargetPct    = 0.5;            // Daily profit target, % of the day's opening equity
 input bool     InpCloseOnTarget     = true;           // Close open positions when the target is reached
+input bool     InpLockDailyGains    = true;           // Keep trading, but protect a day that has run up
+input double   InpLockAfterPct      = 0.5;            // Arm the lock once the day peaks above this %
+input double   InpGiveBackPct       = 50.0;           // Stop if this % of the peak gain is given back
 input int      InpMaxTradesPerDay   = 0;              // Max new entries per day (0 = unlimited)
 
 input group "=== Trade Management (breakeven / trailing) ==="
@@ -200,6 +206,8 @@ double         g_dayStartEquity   = 0.0;
 int            g_tradesToday      = 0;
 bool           g_dailyLossHit     = false;
 bool           g_dailyTargetHit   = false;
+bool           g_dailyLockHit     = false;
+double         g_dayPeakEquity    = 0.0;
 
 // forward declarations: these are used before their definitions below
 datetime SessionZoneTime();
@@ -357,6 +365,8 @@ void UpdateDailyTracking()
       g_tradesToday    = 0;
       g_dailyLossHit   = false;
       g_dailyTargetHit = false;
+      g_dailyLockHit   = false;
+      g_dayPeakEquity  = g_dayStartEquity;
    }
 
    if(g_dayStartEquity <= 0.0) return;
@@ -364,11 +374,34 @@ void UpdateDailyTracking()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double movePct = (equity - g_dayStartEquity) / g_dayStartEquity * 100.0;
 
+   if(g_dayPeakEquity < g_dayStartEquity) g_dayPeakEquity = g_dayStartEquity;
+   if(equity > g_dayPeakEquity) g_dayPeakEquity = equity;
+   double peakPct = (g_dayPeakEquity - g_dayStartEquity) / g_dayStartEquity * 100.0;
+
    if(!g_dailyLossHit && -movePct >= InpMaxDailyLossPct)
    {
       g_dailyLossHit = true;
       PrintFormat("XAUUSD_Confluence_EA: daily loss limit reached (%.2f%% <= -%.2f%%). "
                   "New entries suspended until next day.", movePct, InpMaxDailyLossPct);
+   }
+
+   // Daily profit lock: unlike the hard target this does NOT stop a winning
+   // day. It arms once the day has peaked above InpLockAfterPct and only
+   // halts trading if that peak gain is given back by InpGiveBackPct, so the
+   // upside stays open while a day that ran up cannot round-trip to the loss
+   // cap. A day peaking at +2.0% with 50% give-back floors at +1.0%.
+   if(InpLockDailyGains && !g_dailyLockHit && peakPct >= InpLockAfterPct)
+   {
+      double floorPct = peakPct * (1.0 - InpGiveBackPct / 100.0);
+      if(movePct <= floorPct)
+      {
+         g_dailyLockHit = true;
+         PrintFormat("XAUUSD_Confluence_EA: profit lock triggered - the day peaked at "
+                     "+%.2f%% and gave back to +%.2f%% (floor +%.2f%%). Done for today.",
+                     peakPct, movePct, floorPct);
+         if(InpCloseOnTarget && CountOpenPositions(-1) > 0)
+            CloseAllPositions();
+      }
    }
 
    // Daily profit target: bank the day once it is made rather than giving it
@@ -1103,6 +1136,7 @@ void OnTick()
    if(sessionCloseBlock) return;
    if(g_dailyLossHit) return;
    if(g_dailyTargetHit) return;
+   if(g_dailyLockHit) return;
    if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay) return;
    if(!IsWithinSession()) return;
    if(!SpreadIsAcceptable()) return;

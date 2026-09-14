@@ -158,13 +158,15 @@ known — see "Before going live" for how to measure one.
 - **ATR trailing stop** — once profit passes `InpTrailStartAtrMult × ATR`,
   the stop trails at `InpTrailAtrMult × ATR` behind price (only ever
   tightens).
-- **Daily frame — target +0.5%, cap −1.0%.** Trading stops for the day at
-  either edge: `InpDailyTargetPct` banks the day once made (closing open
-  positions when `InpCloseOnTarget` is set, so the gain is realised rather
-  than left floating), and `InpMaxDailyLossPct` halts it on the downside.
-  Keep the two proportionate — a 0.5% target against a 3% loss cap needs
-  **86% of days to be winners** just to break even, while the shipped 2:1
-  needs 67%.
+- **Daily frame — downside capped, upside open.** `InpMaxDailyLossPct` (1.0%)
+  halts a losing day. The upside is **not** capped: `InpUseDailyTarget` ships
+  **off**, so a good day keeps running.
+- **Profit lock** — what protects a day that has run up, without capping it.
+  Once the day peaks above `InpLockAfterPct` (0.5%), trading stops if
+  `InpGiveBackPct` (50%) of that peak gain is handed back. A day reaching
+  +2.0% floors at +1.0% instead of round-tripping to the loss cap; a day
+  reaching +5% floors at +2.5%. Set `InpUseDailyTarget = true` for a hard stop
+  at +0.5% instead, trading magnitude for consistency.
 - **Max trades/day** and **max concurrent positions** caps to prevent
   over-trading.
 - **Spread filter** — skips new entries when the current spread exceeds
