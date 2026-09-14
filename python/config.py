@@ -95,14 +95,16 @@ class TradeConfig:
     # Minimum setup-quality score (0-100) required to enter; a score exactly
     # equal to this passes. 0 disables the gate.
     #
-    # Set to 50: only setups scoring 50 or better are traded. The qualifying
-    # floor is 40, so this drops the weakest band while leaving the 2-of-3 rule
-    # meaningful (84% of survivors are 2-of-3 setups).
+    # Set to 45: setups scoring 45 or better are traded. The qualifying floor
+    # is 40, so this trims only the weakest band and keeps the 2-of-3 rule
+    # doing most of the work. Measured at about 8.5 fills/day with the shipped
+    # 4 positions (50 gave 6.9, the gate off gives 10.0).
     #
-    # This costs frequency. With the gate at 50 the strategy cannot reach 10
-    # fills/day at all - it tops out near 9.3 however high max_open_positions
-    # goes, because signal supply rather than concurrency binds. At the shipped
-    # 4 positions it is about 6.9 fills/day.
+    # Note every confirmation test is evaluated on the working timeframe (M5):
+    # the EMA gap uses the M5 EMAs and M5 ATR, the MACD histogram and RSI are
+    # M5, and the ADX/DI spread is M5. Only the EMA(200) macro bias reads the
+    # higher timeframe (trend_timeframe, H4), and that feeds the trend
+    # confluence's PASS test, not its confirmation.
     #
     # Measured fills/day by gate and position cap (all other filters on):
     #     gate 50: 4.7 (2 pos)  5.9 (3)  6.9 (4)  7.6 (5)  8.1 (6)
@@ -114,7 +116,7 @@ class TradeConfig:
     # IMPORTANT: this score measures how strong the indicator agreement is,
     # NOT the probability that a trade wins - nothing in this project
     # estimates a win rate. See the confidence notes in README.md.
-    min_confidence: float = 50.0
+    min_confidence: float = 45.0
 
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR

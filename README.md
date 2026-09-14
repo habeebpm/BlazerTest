@@ -46,14 +46,18 @@ recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
 as a veto rather than a vote.
 
 Entries are evaluated on each closed **M5** bar and must score at least
-**50/100** (`InpMinConfidence`), with up to **4 positions open at a time**
+**45/100** (`InpMinConfidence`), with up to **4 positions open at a time**
 (same direction only) and **no daily trade cap** (`InpMaxTradesPerDay = 0`) —
-about **6.9 fills per day**.
+about **8.5 fills per day**.
+
+**Every confluence and every confirmation is computed on M5.** The only
+higher-timeframe input is the EMA(200) macro bias on `InpTrendTF` (H4), which
+feeds the trend confluence's *pass* test, not its confirmation.
 
 At 2 of 3 the trend leg is optional, so entries against the H4 trend become
 possible — set `InpRequireTrendConfluence = true` to block them. Between the
-2-of-3 rule, M5 entries and the 50-point gate this produces ~9.3 qualifying
-signals/day, of which roughly **6.9 actually fill** — a signal only trades when
+2-of-3 rule, M5 entries and the 45-point gate this produces ~13.0 qualifying
+signals/day, of which roughly **8.5 actually fill** — a signal only trades when
 a position slot is free. `python/simulate.py` reports the difference.
 
 **Running on a Mac?** MT5 for macOS runs this EA natively — that is the
@@ -122,20 +126,18 @@ is worth a third: passing earns 60% of it, and the rest scales with how far
 past its confirmation threshold the indicator sits. In testing the floor is
 40, the median 50 and the practical ceiling the mid-80s.
 
-**`InpMinConfidence = 50` — only setups scoring 50 or better are traded.**
-The qualifying floor is 40, so this drops the weakest band while leaving the
-2-of-3 rule meaningful. It does cap frequency: a gate of 50 tops out near 9.3
-fills/day however high `InpMaxOpenPositions` goes, so **10/day is not
-reachable with it**. Measured fills/day:
+**`InpMinConfidence = 45` — only setups scoring 45 or better are traded.**
+The qualifying floor is 40, so this trims only the weakest band and leaves the
+2-of-3 rule doing most of the work. Measured fills/day:
 
 | Gate | 2 pos | 4 pos | 6 pos |
 |---|---|---|---|
-| **50 (shipped)** | 4.7 | **6.9** | 8.1 |
-| 45 | 5.6 | 8.5 | 10.1 |
+| 50 | 4.7 | 6.9 | 8.1 |
+| **45 (shipped)** | 5.6 | **8.5** | 10.1 |
 | off | 6.4 | 10.0 | 12.0 |
 
-Drop the gate to 45 (with 6 positions) or off (with 4) if ~10 fills/day
-matters more than entry quality.
+Raise to 50 for fewer, more selective entries; 45 with 6 positions reaches
+~10/day if frequency matters more.
 
 **This score is not a win probability.** It measures how strongly the
 indicators agree at entry, not the odds of profit. No win rate for this EA is

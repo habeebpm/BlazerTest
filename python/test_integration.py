@@ -107,7 +107,10 @@ for p in problems: print("   *", p)
 assert problems, "preflight MUST reject a 6-point stop against a 25-point spread"
 
 print("\n=== 2. preflight accepts the shipped default (60 pips / 30 pips) ===")
-cfg2 = TradeConfig()
+# The session and weekend filters read the wall clock, which would make every
+# later assertion depend on what time the suite happens to run. They get their
+# own explicit checks in step 7b; disable them for the deterministic path.
+cfg2 = TradeConfig(use_session_filter=False, close_before_weekend=False)
 print(f"   SL {cfg2.stop_loss_units:g} {cfg2.distance_unit} = ${cfg2.sl_distance(0.01):.2f}, "
       f"trail {cfg2.trailing_stop_units:g} {cfg2.distance_unit} = ${cfg2.trail_distance(0.01):.2f}")
 bot2 = trader.Bot(cfg2, dry_run=True)
@@ -200,6 +203,31 @@ assert live.entry_blocked() is None, "max_trades_per_day=0 must mean unlimited"
 live.trades_today = 0
 for pos in extra:
     POSITIONS.remove(pos)
+
+print("\n=== 7b. session filter (explicit, clock-independent) ===")
+from datetime import datetime as _dt
+_hour = _dt.now().hour
+# a window that definitely excludes the current hour
+_closed = TradeConfig(use_session_filter=True,
+                      session_start_hour=(_hour + 2) % 24,
+                      session_end_hour=(_hour + 3) % 24,
+                      close_before_weekend=False)
+_bot = trader.Bot(_closed, dry_run=True)
+_bot.start(probe_market=False)
+print(f"   hour {_hour}, window {_closed.session_start_hour}-{_closed.session_end_hour}"
+      f" -> entry_blocked: {_bot.entry_blocked()}")
+assert _bot.entry_blocked() is not None, "outside its window the session filter must block"
+
+# a window that definitely includes it
+_open_cfg = TradeConfig(use_session_filter=True,
+                        session_start_hour=_hour,
+                        session_end_hour=(_hour + 1) % 24 or 24,
+                        close_before_weekend=False)
+_bot2 = trader.Bot(_open_cfg, dry_run=True)
+_bot2.start(probe_market=False)
+print(f"   hour {_hour}, window {_open_cfg.session_start_hour}-{_open_cfg.session_end_hour}"
+      f" -> entry_blocked: {_bot2.entry_blocked()}")
+assert _bot2.entry_blocked() is None, "inside its window the session filter must allow"
 
 print("\n=== 8. market closed (quotes frozen) ===")
 import mt5_client as _mc

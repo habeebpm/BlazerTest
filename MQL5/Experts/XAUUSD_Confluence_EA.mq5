@@ -22,16 +22,19 @@
 //|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
 //| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
-//| score of at least InpMinConfidence (50 of 100).                     |
+//| score of at least InpMinConfidence (45 of 100).                     |
 //|                                                                    |
-//| The qualifying floor is 40, so a gate of 50 drops the weakest band |
-//| while leaving the 2-of-3 rule meaningful. It costs frequency:       |
-//| measured fills/day, by gate and position cap -                      |
-//|   gate 50: 4.7 (2 positions) 6.9 (4) 8.1 (6) - tops out near 9.3    |
-//|   gate 45: 5.6               8.5     10.1                          |
+//| The qualifying floor is 40, so a gate of 45 trims only the weakest |
+//| band. Measured fills/day, by gate and position cap -                |
+//|   gate 50: 4.7 (2 positions) 6.9 (4) 8.1 (6)                        |
+//|   gate 45: 5.6               8.5     10.1   <- shipped at 4         |
 //|   gate off:6.4              10.0     12.0                          |
-//| A gate of 50 therefore cannot reach 10 fills/day at any position    |
-//| count; drop it to 45 or 0 if frequency matters more than quality.   |
+//|                                                                    |
+//| EVERY confirmation test runs on the working timeframe (M5): the EMA |
+//| gap uses the M5 EMAs and M5 ATR, the MACD histogram and RSI are M5, |
+//| and the ADX/DI spread is M5. Only the EMA(200) macro bias reads     |
+//| InpTrendTF (H4), and it feeds the trend confluence PASS test, not   |
+//| its confirmation.                                                   |
 //|                                                                    |
 //| Positions are correlated (same symbol and direction), so four at    |
 //| 0.01 lots with a $6.00 stop risk about $24 together ($6 each: one   |
@@ -111,7 +114,7 @@ input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI thi
 input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
 input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
 input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
-input double   InpMinConfidence     = 50.0;         // Min setup score 0-100 to enter (0 = off)
+input double   InpMinConfidence     = 45.0;         // Min setup score 0-100 to enter (0 = off)
 input bool     InpShowConfidence    = true;         // Show the live score in the chart comment
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="
