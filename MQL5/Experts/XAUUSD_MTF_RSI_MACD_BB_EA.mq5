@@ -74,13 +74,27 @@
 //| RISK: fixed 0.01 lots (InpFixedLot) per position, up to              |
 //| InpMaxOpenPositions = 4 positions open at once (four 0.01-lot        |
 //| positions, not a single 4.00-lot position). Each position carries a  |
-//| fixed $6.00 stop-loss (InpStopLossPips = 60 pips) and, once in       |
-//| $3.00 profit (InpTrailStartPips = 30 pips), a $3.00 trailing stop    |
-//| (InpTrailPips) that only ever tightens. One XAUUSD lot is 100oz, so  |
-//| at 0.01 lots $1 of price is $1 of P/L - 60 pips (=$6.00 price        |
-//| distance on a 2-digit gold feed) is therefore a $6.00 stop and 30    |
-//| pips a $3.00 trail, per 0.01-lot position. Four positions open at    |
-//| once therefore risk up to $24.00 combined.                          |
+//| fixed $6.00 stop-loss (InpStopLossPips = 60 pips), a fixed $10.00    |
+//| take-profit (InpTakeProfitPips = 100 pips, InpUseTakeProfit) that    |
+//| closes the trade the moment price reaches it via a broker-held TP   |
+//| order, and, once in $3.00 profit (InpTrailStartPips = 30 pips), a   |
+//| $3.00 trailing stop (InpTrailPips) that only ever tightens. The     |
+//| trail and the take-profit both stay live at once - whichever the    |
+//| market reaches first closes the position, so a pullback after the   |
+//| trail has tightened can close a trade before it reaches the full    |
+//| $10 target. One XAUUSD lot is 100oz, so at 0.01 lots $1 of price is  |
+//| $1 of P/L - 60 pips (=$6.00 price distance on a 2-digit gold feed)   |
+//| is therefore a $6.00 stop, 100 pips a $10.00 target, and 30 pips a   |
+//| $3.00 trail, per 0.01-lot position. Four positions open at once      |
+//| therefore risk up to $24.00 combined.                                |
+//|                                                                    |
+//| TIMING: entries are still evaluated once per closed InpTF1 (M15)    |
+//| bar - the criteria all read CLOSED M15/H1/H4 data, which cannot     |
+//| change more often than that regardless of polling rate. What        |
+//| InpTimerSeconds (default 60) adds is a heartbeat: OnTimer() re-runs |
+//| the same checks - position management, the daily/session state, a  |
+//| freshly closed bar - at least that often even if price ticks are    |
+//| unusually sparse, on top of the normal per-tick checks in OnTick(). |
 //|                                                                    |
 //| Everything else (session filter using the broker's own trading      |
 //| hours, spread filter, daily-loss circuit breaker, profit lock,       |
@@ -112,6 +126,7 @@ input int     InpSlippagePoints     = 30;           // Max slippage (points)
 input bool    InpTradeXAUUSDOnly    = true;         // Require chart symbol to contain "XAU"
 input int     InpMaxOpenPositions   = 4;            // Max simultaneous open positions (this EA/symbol)
 input bool    InpAllowOpposite      = false;        // Allow a buy and a sell open at the same time
+input int     InpTimerSeconds       = 60;           // Heartbeat: re-check state at least this often (0 = tick-only)
 
 input group "=== Timeframes (TF1 must be the SHORTEST - it drives entry timing) ==="
 input ENUM_TIMEFRAMES InpTF1        = PERIOD_M15;   // Timeframe 1 (lowest / entry-timing)
@@ -157,8 +172,8 @@ input bool    InpUseFixedLot        = true;           // Trade a fixed lot size 
 input double  InpFixedLot           = 0.01;           // Fixed lot size when the above is true
 input double  InpRiskPercent        = 0.2;            // Risk per trade (% of equity), if not fixed
 input double  InpStopLossPips       = 60.0;           // Stop-loss, in pips (60 pips = $6.00 @ 0.01 lot)
-input bool    InpUseTakeProfit      = false;          // Attach a fixed take-profit as well as the trail
-input double  InpRiskRewardRatio    = 1.8;            // Take-profit = SL distance * this ratio, if used
+input bool    InpUseTakeProfit      = true;           // Attach a fixed take-profit; hitting it closes the trade
+input double  InpTakeProfitPips     = 100.0;          // Fixed take-profit, in pips (100 pips = $10.00 @ 0.01 lot)
 input double  InpMaxLotSize         = 5.0;            // Hard cap on calculated lot size
 input double  InpMaxDailyLossPct    = 1.0;            // Stop new trades after this % equity loss in a day
 input bool    InpUseDailyTarget     = false;          // Hard stop for the day at the profit target
@@ -374,6 +389,18 @@ int OnInit()
    g_tradesToday    = 0;
    g_dailyLossHit   = false;
 
+   if(InpTimerSeconds > 0)
+   {
+      EventSetTimer(InpTimerSeconds);
+      PrintFormat("XAUUSD_MTF_RSI_MACD_BB_EA: heartbeat timer armed - state is re-checked at "
+                  "least every %d second(s) even between price ticks.", InpTimerSeconds);
+   }
+
+   if(InpUseTakeProfit)
+      PrintFormat("XAUUSD_MTF_RSI_MACD_BB_EA: fixed take-profit %.0f pips (~$%.2f @ 0.01 lot) - "
+                  "hitting it closes the position via the broker-held TP order.",
+                  InpTakeProfitPips, InpTakeProfitPips * PipSize());
+
    return(INIT_SUCCEEDED);
 }
 
@@ -382,6 +409,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    if(hRsi1   != INVALID_HANDLE) IndicatorRelease(hRsi1);
    if(hMacd1  != INVALID_HANDLE) IndicatorRelease(hMacd1);
    if(hBands1 != INVALID_HANDLE) IndicatorRelease(hBands1);
@@ -993,7 +1021,7 @@ void OpenTrade(bool isBuy, const MtfResult &r)
    double tp    = 0.0;
    if(InpUseTakeProfit)
    {
-      double tpDistance = slDistance * InpRiskRewardRatio;
+      double tpDistance = InpTakeProfitPips * PipSize();
       tp = isBuy ? price + tpDistance : price - tpDistance;
    }
 
@@ -1098,9 +1126,18 @@ void ManageOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function                                              |
+//| Core evaluation loop, shared by OnTick() and OnTimer(). A price   |
+//| tick is what normally drives this (ticks arrive constantly for    |
+//| XAUUSD during real trading hours), but OnTimer() also calls it    |
+//| once a minute (InpTimerSeconds) so nothing - position management, |
+//| the daily/session bookkeeping, a fresh bar just after it closes - |
+//| goes stale for longer than that even through an unusually quiet   |
+//| tick stream. It does NOT make the signal itself check more often  |
+//| than once per closed InpTF1 bar: every criterion is computed from |
+//| CLOSED M15/H1/H4 bars, which do not change between one closed     |
+//| InpTF1 bar and the next regardless of how often this runs.        |
 //+------------------------------------------------------------------+
-void OnTick()
+void ProcessTick()
 {
    UpdateDailyTracking();
 
@@ -1152,5 +1189,24 @@ void OnTick()
       else
          OpenTrade(false, r);
    }
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function - fires on every incoming price tick.        |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   ProcessTick();
+}
+
+//+------------------------------------------------------------------+
+//| Timer heartbeat - fires every InpTimerSeconds regardless of tick  |
+//| flow, so the EA still checks a bar close, manages open positions  |
+//| and re-evaluates the daily/session state during a quiet market    |
+//| where OnTick() would otherwise go a while without firing.         |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   ProcessTick();
 }
 //+------------------------------------------------------------------+

@@ -65,6 +65,8 @@ class MtfConfig:
     sl_pips: float = 60.0                    # InpStopLossPips ($6.00)
     trail_start_pips: float = 30.0           # InpTrailStartPips ($3.00)
     trail_pips: float = 30.0                 # InpTrailPips ($3.00)
+    use_take_profit: bool = True             # InpUseTakeProfit
+    tp_pips: float = 100.0                   # InpTakeProfitPips ($10.00)
     lots: float = 0.01                       # InpFixedLot
     use_session_filter: bool = True          # manual-window stand-in for the
     session_start_hour: float = 6.0          # broker-session filter (real
@@ -79,6 +81,9 @@ class MtfConfig:
 
     def trail_distance(self) -> float:
         return self.trail_pips * PIP
+
+    def tp_distance(self) -> float:
+        return self.tp_pips * PIP if self.use_take_profit else 0.0
 
     def in_session(self, hour: int) -> bool:
         if not self.use_session_filter:
@@ -241,12 +246,14 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
 
     sl_dist, trail_start, trail_dist = (cfg.sl_distance(), cfg.trail_start_distance(),
                                         cfg.trail_distance())
+    tp_dist = cfg.tp_distance()
 
     warmup_m15 = max(warmup_h4_bars * 16, cfg.bb_period + cfg.swing_scan_bars + 5)
     n = len(df15)
 
     positions: list[dict] = []
     fills = signals = blocked_cap = blocked_opposite = blocked_session = 0
+    tp_exits = sl_exits = 0
     holds: list[int] = []
     eligible_bars = session_bars = 0
 
@@ -254,20 +261,29 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
         bar = df15.iloc[i]
         high, low, close = bar["high"], bar["low"], bar["close"]
 
-        # manage open positions against this bar first
+        # manage open positions against this bar first. Stop/trail is
+        # checked before the take-profit within the same bar - a common,
+        # slightly conservative simplification when only OHLC (not tick)
+        # data is available to tell which was actually touched first.
         still_open = []
         for pos in positions:
             if pos["dir"] == "buy":
                 if close - pos["entry"] >= trail_start:
                     pos["sl"] = max(pos["sl"], close - trail_dist)
                 if low <= pos["sl"]:
-                    holds.append(i - pos["bar"])
+                    holds.append(i - pos["bar"]); sl_exits += 1
+                    continue
+                if tp_dist > 0.0 and high >= pos["entry"] + tp_dist:
+                    holds.append(i - pos["bar"]); tp_exits += 1
                     continue
             else:
                 if pos["entry"] - close >= trail_start:
                     pos["sl"] = min(pos["sl"], close + trail_dist)
                 if high >= pos["sl"]:
-                    holds.append(i - pos["bar"])
+                    holds.append(i - pos["bar"]); sl_exits += 1
+                    continue
+                if tp_dist > 0.0 and low <= pos["entry"] - tp_dist:
+                    holds.append(i - pos["bar"]); tp_exits += 1
                     continue
             still_open.append(pos)
         positions = still_open
@@ -311,6 +327,7 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
         "fills": fills, "signals": signals,
         "blocked_cap": blocked_cap, "blocked_opposite": blocked_opposite,
         "blocked_session": blocked_session,
+        "tp_exits": tp_exits, "sl_exits": sl_exits,
         "eligible_bars": eligible_bars,
         "session_share": session_bars / eligible_bars if eligible_bars else 0.0,
         "fills_per_day": M15_PER_DAY * fills / eligible_bars if eligible_bars else 0.0,
@@ -321,11 +338,12 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
 
 def simulate_many(frames: list[pd.DataFrame], cfg: MtfConfig, spread: float) -> dict:
     agg = {"fills": 0, "signals": 0, "blocked_cap": 0, "blocked_opposite": 0,
-          "blocked_session": 0, "eligible_bars": 0, "holds": []}
+          "blocked_session": 0, "tp_exits": 0, "sl_exits": 0,
+          "eligible_bars": 0, "holds": []}
     for df in frames:
         r = simulate(df, cfg, spread)
         for k in ("fills", "signals", "blocked_cap", "blocked_opposite",
-                 "blocked_session", "eligible_bars"):
+                 "blocked_session", "tp_exits", "sl_exits", "eligible_bars"):
             agg[k] += r[k]
         if r["avg_hold_bars"]:
             agg["holds"].append(r["avg_hold_bars"])
@@ -349,15 +367,22 @@ def report(name: str, cfg: MtfConfig, res: dict, spread: float) -> None:
     print(f"  blocked        {res['blocked_cap']} by the 4-position cap, "
           f"{res['blocked_opposite']} by an opposing position, "
           f"{res['blocked_session']} outside the session")
+    exits = res['tp_exits'] + res['sl_exits']
+    tp_share = 100.0 * res['tp_exits'] / exits if exits else 0.0
+    print(f"  exits          {res['tp_exits']} take-profit ({tp_share:.0f}%), "
+          f"{res['sl_exits']} stop/trail ({100.0-tp_share:.0f}%)"
+          if exits else "  exits          none yet")
     print(f"  avg hold       {res['avg_hold_bars']:>6.0f} bars "
           f"({res['avg_hold_bars']*15/60:.1f} hours)"
-          if res['avg_hold_bars'] else "  avg hold       n/a (no stop/trail exits yet)")
+          if res['avg_hold_bars'] else "  avg hold       n/a (no exits yet)")
     print(f"  session        {cfg.session_start_hour:g}:00-{cfg.session_end_hour:g}:00 "
           f"GMT{cfg.session_gmt_offset:+g} = {(cfg.session_end_hour-cfg.session_start_hour)%24 or 24:.0f}h/day"
           if cfg.use_session_filter else "  session        filter off (24h)")
     print(f"  spread cost    ${cost:.2f}/trade -> ${cost*res['fills_per_day']:.2f}/day, "
           f"${cost*res['fills_per_day']*20:.2f}/month at {spread:.2f} spread")
-    print(f"  $6/$3 risk     ${cfg.sl_pips*PIP:.2f} stop, ${cfg.trail_pips*PIP:.2f} trail "
+    tp_line = f", ${cfg.tp_pips*PIP:.2f} target" if cfg.use_take_profit else " (no take-profit)"
+    print(f"  $6/$3{'/$10' if cfg.use_take_profit else ''} risk   "
+          f"${cfg.sl_pips*PIP:.2f} stop, ${cfg.trail_pips*PIP:.2f} trail{tp_line} "
           f"(per {cfg.lots:.2f}-lot position, up to {cfg.max_open_positions} at once)")
 
 
@@ -379,6 +404,10 @@ def main() -> int:
           simulate_many(frames, default_cfg, args.spread), args.spread)
 
     if args.compare:
+        no_tp_cfg = replace(default_cfg, use_take_profit=False)
+        report("same, but no take-profit (trail-only, for comparison)", no_tp_cfg,
+              simulate_many(frames, no_tp_cfg, args.spread), args.spread)
+
         max_freq_cfg = replace(default_cfg, allow_opposite=True,
                                use_session_filter=True,
                                session_start_hour=0.0, session_end_hour=0.0)
