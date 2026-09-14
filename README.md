@@ -386,19 +386,24 @@ inconsistent with each other.
 - **$6.00 stop-loss** per position — `InpStopLossPips = 60` pips. One XAUUSD
   lot is 100oz, so at 0.01 lots $1 of price is $1 of P/L: 60 pips (0.10
   price per pip on a 2-digit gold feed) is a $6.00 stop.
-- **$3.00 trailing stop** — once a position is `InpTrailStartPips` (30 pips
-  = $3.00) in profit, the stop trails `InpTrailPips` (30 pips = $3.00)
+- **$5.00 trailing stop** — once a position is `InpTrailStartPips` (50 pips
+  = $5.00) in profit, the stop trails `InpTrailPips` (50 pips = $5.00)
   behind price and only ever tightens. An optional breakeven step
   (`InpUseBreakeven`) moves the stop to entry + buffer first, at a smaller
   `InpBreakevenTriggerPips` (20 pips ≈ $2.00).
-- **$10.00 fixed take-profit**, on by default (`InpUseTakeProfit = true`,
-  `InpTakeProfitPips = 100` pips) — a broker-held TP order that closes the
+- **$5.00 fixed take-profit**, on by default (`InpUseTakeProfit = true`,
+  `InpTakeProfitPips = 50` pips) — a broker-held TP order that closes the
   position the instant price reaches it, no extra logic needed. It runs
-  *alongside* the trailing stop, not instead of it: whichever the market
-  reaches first closes the trade, so a pullback after the trail has already
-  tightened can close a position before it reaches the full $10 — see
-  "Estimated trade frequency" below for how often that actually happens in
-  simulation. Set `InpUseTakeProfit = false` to go back to trail-only.
+  *alongside* the trailing stop, not instead of it — but with the trail
+  distance equal to the take-profit distance, the take-profit almost always
+  wins that race: the trail only starts moving the stop once profit reaches
+  the same $5 the TP already closes at, so in practice the trail rarely gets
+  the chance to act first. Its job is the tail case (price stalls just under
+  $5 and reverses hard); `InpUseBreakeven` (armed earlier, at
+  `InpBreakevenTriggerPips`) does most of the everyday profit protection
+  below $5. See "Estimated trade frequency" below for why the trail and the
+  take-profit are set to move together, not independently. Set
+  `InpUseTakeProfit = false` to go back to trail-only.
 - **Heartbeat timer** (`InpTimerSeconds = 60`) — `OnTimer()` re-runs the same
   checks as a normal price tick (position management, the daily/session
   state, a freshly closed bar) at least once a minute even if ticks are
@@ -462,9 +467,10 @@ stop an already-valid signal from filling:
 
 `InpMaxTradesPerDay` is already unlimited (0) in both. **Deliberately left
 alone:** `InpFixedLot` (0.01), `InpMaxOpenPositions` (4), `InpStopLossPips`
-($6.00), `InpTrailPips` ($3.00), `InpMaxDailyLossPct` (1.0%), and the profit
-lock — those are risk controls tied to the $ figures originally specified
-for this EA, not entry throttles, and this preset does not touch them.
+($6.00), `InpTrailPips`/`InpTakeProfitPips` ($5.00 each), `InpMaxDailyLossPct`
+(1.0%), and the profit lock — those are risk controls tied to the $ figures
+originally specified for this EA, not entry throttles, and this preset does
+not touch them.
 
 This gets you more of the trades the strategy *already finds* — not more
 signals. It also raises average cost per trade: a wider spread cap means
@@ -480,46 +486,64 @@ multiple regimes, forward-test on demo, and only then consider live capital.
 ### Estimated trade frequency
 
 No MT5 backtest exists for this EA yet, so `python/simulate_mtf.py`
-reimplements its exact scoring logic (same RSI/MACD/BB/swing criteria, same
-timeframe weights, same 55.0/2-of-3 entry gate) and runs it over ~139 days of
-synthetic random-walk M15/H1/H4 bars — the same style of estimate
-`python/simulate.py` already gives for the Confluence EA, with the same
-caveat: these bars have **no trading edge by construction**, so the numbers
-below say only "how often would this try to trade," never "would it profit."
+reimplements its exact scoring and trade-management logic (same
+RSI/MACD/BB/swing criteria, same timeframe weights, same 55.0/2-of-3 entry
+gate, same breakeven/trailing/take-profit ratchet as `ManageOpenPositions()`)
+and runs it over ~139 days of synthetic random-walk M15/H1/H4 bars — the
+same style of estimate `python/simulate.py` already gives for the Confluence
+EA, with the same caveat: these bars have **no trading edge by
+construction**, so the numbers below say only "how often would this try to
+trade," never "would it profit."
 
-| | No take-profit (trail only) | **Default preset ($10 TP + trail)** | Max-frequency preset |
+**Finding: widening the trail alone makes fills *worse*, not better** — a
+wider trail gives price more room before the stop tightens, which means
+positions sit open *longer*, which saturates the 4-position cap (still the
+real bottleneck, not the signal gate) faster. Getting both a $5 trail and
+more fills requires the take-profit to tighten to match it, so exits happen
+on the target instead of waiting for the wider trail to eventually catch up:
+
+| | Shipped before this change ($3 trail / $10 TP) | Widen trail alone to $5, leave $10 TP | **Shipped now: $5 trail + $5 TP** |
 |---|---|---|---|
 | Qualifying signals | ~46/day | ~46/day | ~46/day (unchanged — same signal gate) |
-| Trades that actually fill | ~3.1/day | **~3.4/day** | ~4.0/day |
-| Exits via the $10 take-profit | 0% | **~19%** | ~17% |
-| Exits via the $6 stop / $3 trail | 100% | ~81% | ~83% |
-| Blocked by the 4-position cap | dominant | dominant | dominant |
-| Blocked by an opposing position | secondary | secondary | none (`InpAllowOpposite=true`) |
-| Blocked by the session window | secondary (17h/day) | secondary (17h/day) | none (24h) |
+| Trades that actually fill | ~4.2/day | ~3.7/day (**worse**) | **~5.3/day** |
+| Avg hold time | ~17.7h | ~20.6h (longer) | **~14.2h** (shorter) |
+| Exits via the take-profit | ~14% | ~22% | ~42% |
+| Exits via the $6 stop / trail | ~86% | ~78% | ~58% |
 
-**Adding the $10 take-profit moved fills less than you might expect
-(3.1→3.4/day, ~10%)** — and the reason is itself useful: in simulation, only
-about **1 exit in 5** actually reaches the $10 target before the $3 trailing
-stop closes it first. The trail arms at just $3 of profit and then tightens
-on every pullback, so on a choppy or slow-drifting path (most of what these
-synthetic bars produce) it typically exits a winning trade well before price
-travels the full $10 to the fixed target. **If the goal is to turn the
-4-position cap over faster** — the actual bottleneck, not the signal gate —
-the trailing-stop settings matter more than the take-profit does: a wider
-`InpTrailStartPips`/`InpTrailPips` (let it run further before trailing
-kicks in) would let more trades reach $10 and close on the target instead of
-on the trail, at the cost of giving back more profit on the trades that
-reverse instead. Happy to model that trade-off if you want a specific
-combination sized up.
+(The "shipped before" column is slightly higher than an earlier estimate
+posted for this EA — the simulator originally didn't model the breakeven
+step, which meaningfully shortens some holds; it now mirrors
+`ManageOpenPositions()`'s full stop/breakeven/trail ratchet.)
+
+**Why the trail and target have to move together:** with the trail distance
+equal to the take-profit distance ($5 = $5), the take-profit almost always
+wins the race to close a winning trade — the trail only starts moving the
+stop once profit reaches the same $5 the TP order already closes at, so in
+practice the trail rarely gets the chance to act first (its job is really
+the tail case: price stalls just under $5 and reverses hard). Breakeven
+(armed earlier, at `InpBreakevenTriggerPips` = $2) covers the everyday
+protection below that. This is also why "widen the trail alone" backfires:
+a $5 trail paired with the old $10 target just means positions ride further
+before *either* exit fires, which is strictly more time occupying one of
+the 4 slots.
+
+Max-frequency preset (adds `InpAllowOpposite=true` + 24h session on top of
+the same $5/$5) reaches **~6.2/day** in this simulation. Pushing the signal
+gate itself wide open (`InpEntryThreshold=0`, 1-of-3 agreement — not a
+recommended configuration, shown only as an upper bound) tops out at
+**~6.0/day** even with double the qualifying signals, because the
+4-position cap caps it regardless of how loose the gate is.
 
 **Take this as a rough order of magnitude, not a forecast**: real gold
 doesn't move like a synthetic random walk (it trends, gaps, and reacts to
-news, which changes how fast RSI/MACD/BB line up across three timeframes,
-how often price reaches $10 before pulling back, and how the $3 trail
-performs), and the broker's real session schedule and spread aren't modeled
-here — only a fixed manual window and a flat spread are. Run
-`python simulate_mtf.py --compare` yourself (add `--csv yourbars.csv` with
-exported M15 history for a market-shaped estimate instead of a synthetic
-one), and treat the MT5 Strategy Tester on real tick data as the only source
-that can speak to whether ~3-4/day of these trades would actually be
-profitable.
+news, which changes how often price reaches $5 before pulling back and how
+the trail/breakeven interact), and the broker's real session schedule and
+spread aren't modeled here — only a fixed manual window and a flat spread
+are. Run `python simulate_mtf.py --compare` yourself (add `--csv
+yourbars.csv` with exported M15 history for a market-shaped estimate instead
+of a synthetic one), and treat the MT5 Strategy Tester on real tick data as
+the only source that can speak to whether ~5/day of these trades — each now
+targeting a smaller $5 win instead of $10 — would actually be profitable.
+The trade-off this configuration makes explicit: more, smaller-target trades
+instead of fewer, larger-target ones. Which is better is a question about
+this market's actual behavior, not something frequency alone answers.

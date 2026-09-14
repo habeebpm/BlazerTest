@@ -63,10 +63,13 @@ class MtfConfig:
     max_open_positions: int = 4              # InpMaxOpenPositions
     allow_opposite: bool = False             # InpAllowOpposite
     sl_pips: float = 60.0                    # InpStopLossPips ($6.00)
-    trail_start_pips: float = 30.0           # InpTrailStartPips ($3.00)
-    trail_pips: float = 30.0                 # InpTrailPips ($3.00)
+    trail_start_pips: float = 50.0           # InpTrailStartPips ($5.00)
+    trail_pips: float = 50.0                 # InpTrailPips ($5.00)
     use_take_profit: bool = True             # InpUseTakeProfit
-    tp_pips: float = 100.0                   # InpTakeProfitPips ($10.00)
+    tp_pips: float = 50.0                    # InpTakeProfitPips ($5.00)
+    use_breakeven: bool = True               # InpUseBreakeven
+    be_trigger_pips: float = 20.0            # InpBreakevenTriggerPips
+    be_buffer_points: float = 20.0           # InpBreakevenBufferPts (points, not pips)
     lots: float = 0.01                       # InpFixedLot
     use_session_filter: bool = True          # manual-window stand-in for the
     session_start_hour: float = 6.0          # broker-session filter (real
@@ -84,6 +87,12 @@ class MtfConfig:
 
     def tp_distance(self) -> float:
         return self.tp_pips * PIP if self.use_take_profit else 0.0
+
+    def be_trigger_distance(self) -> float:
+        return self.be_trigger_pips * PIP
+
+    def be_buffer_distance(self) -> float:
+        return self.be_buffer_points * POINT
 
     def in_session(self, hour: int) -> bool:
         if not self.use_session_filter:
@@ -247,6 +256,7 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
     sl_dist, trail_start, trail_dist = (cfg.sl_distance(), cfg.trail_start_distance(),
                                         cfg.trail_distance())
     tp_dist = cfg.tp_distance()
+    be_trigger, be_buffer = cfg.be_trigger_distance(), cfg.be_buffer_distance()
 
     warmup_m15 = max(warmup_h4_bars * 16, cfg.bb_period + cfg.swing_scan_bars + 5)
     n = len(df15)
@@ -261,14 +271,20 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
         bar = df15.iloc[i]
         high, low, close = bar["high"], bar["low"], bar["close"]
 
-        # manage open positions against this bar first. Stop/trail is
-        # checked before the take-profit within the same bar - a common,
-        # slightly conservative simplification when only OHLC (not tick)
-        # data is available to tell which was actually touched first.
+        # manage open positions against this bar first. The stop only ever
+        # tightens: each bar it becomes the best of {current stop, breakeven
+        # candidate, trailing candidate}, mirroring ManageOpenPositions() in
+        # the .mq5 file. Stop/trail is checked before the take-profit within
+        # the same bar - a common, slightly conservative simplification when
+        # only OHLC (not tick) data is available to tell which was actually
+        # touched first.
         still_open = []
         for pos in positions:
+            profit = close - pos["entry"] if pos["dir"] == "buy" else pos["entry"] - close
             if pos["dir"] == "buy":
-                if close - pos["entry"] >= trail_start:
+                if cfg.use_breakeven and profit >= be_trigger:
+                    pos["sl"] = max(pos["sl"], pos["entry"] + be_buffer)
+                if profit >= trail_start:
                     pos["sl"] = max(pos["sl"], close - trail_dist)
                 if low <= pos["sl"]:
                     holds.append(i - pos["bar"]); sl_exits += 1
@@ -277,7 +293,9 @@ def simulate(df15: pd.DataFrame, cfg: MtfConfig, spread: float = 0.30,
                     holds.append(i - pos["bar"]); tp_exits += 1
                     continue
             else:
-                if pos["entry"] - close >= trail_start:
+                if cfg.use_breakeven and profit >= be_trigger:
+                    pos["sl"] = min(pos["sl"], pos["entry"] - be_buffer)
+                if profit >= trail_start:
                     pos["sl"] = min(pos["sl"], close + trail_dist)
                 if high >= pos["sl"]:
                     holds.append(i - pos["bar"]); sl_exits += 1
@@ -381,8 +399,7 @@ def report(name: str, cfg: MtfConfig, res: dict, spread: float) -> None:
     print(f"  spread cost    ${cost:.2f}/trade -> ${cost*res['fills_per_day']:.2f}/day, "
           f"${cost*res['fills_per_day']*20:.2f}/month at {spread:.2f} spread")
     tp_line = f", ${cfg.tp_pips*PIP:.2f} target" if cfg.use_take_profit else " (no take-profit)"
-    print(f"  $6/$3{'/$10' if cfg.use_take_profit else ''} risk   "
-          f"${cfg.sl_pips*PIP:.2f} stop, ${cfg.trail_pips*PIP:.2f} trail{tp_line} "
+    print(f"  risk           ${cfg.sl_pips*PIP:.2f} stop, ${cfg.trail_pips*PIP:.2f} trail{tp_line} "
           f"(per {cfg.lots:.2f}-lot position, up to {cfg.max_open_positions} at once)")
 
 
@@ -407,6 +424,13 @@ def main() -> int:
         no_tp_cfg = replace(default_cfg, use_take_profit=False)
         report("same, but no take-profit (trail-only, for comparison)", no_tp_cfg,
               simulate_many(frames, no_tp_cfg, args.spread), args.spread)
+
+        wide_trail_only_cfg = replace(default_cfg, tp_pips=100.0)
+        report("pitfall: widen the trail alone, leave a wide $10 target "
+              "(FEWER fills - the trail just holds positions open longer; "
+              "the trail and target need to move together)",
+              wide_trail_only_cfg, simulate_many(frames, wide_trail_only_cfg, args.spread),
+              args.spread)
 
         max_freq_cfg = replace(default_cfg, allow_opposite=True,
                                use_session_filter=True,

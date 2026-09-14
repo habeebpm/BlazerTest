@@ -74,19 +74,26 @@
 //| RISK: fixed 0.01 lots (InpFixedLot) per position, up to              |
 //| InpMaxOpenPositions = 4 positions open at once (four 0.01-lot        |
 //| positions, not a single 4.00-lot position). Each position carries a  |
-//| fixed $6.00 stop-loss (InpStopLossPips = 60 pips), a fixed $10.00    |
-//| take-profit (InpTakeProfitPips = 100 pips, InpUseTakeProfit) that    |
+//| fixed $6.00 stop-loss (InpStopLossPips = 60 pips), a fixed $5.00     |
+//| take-profit (InpTakeProfitPips = 50 pips, InpUseTakeProfit) that     |
 //| closes the trade the moment price reaches it via a broker-held TP   |
-//| order, and, once in $3.00 profit (InpTrailStartPips = 30 pips), a   |
-//| $3.00 trailing stop (InpTrailPips) that only ever tightens. The     |
+//| order, and, once in $5.00 profit (InpTrailStartPips = 50 pips), a   |
+//| $5.00 trailing stop (InpTrailPips) that only ever tightens. The     |
 //| trail and the take-profit both stay live at once - whichever the    |
-//| market reaches first closes the position, so a pullback after the   |
-//| trail has tightened can close a trade before it reaches the full    |
-//| $10 target. One XAUUSD lot is 100oz, so at 0.01 lots $1 of price is  |
-//| $1 of P/L - 60 pips (=$6.00 price distance on a 2-digit gold feed)   |
-//| is therefore a $6.00 stop, 100 pips a $10.00 target, and 30 pips a   |
-//| $3.00 trail, per 0.01-lot position. Four positions open at once      |
-//| therefore risk up to $24.00 combined.                                |
+//| market reaches first closes the position - but with the trail       |
+//| distance equal to the take-profit distance here, the take-profit    |
+//| almost always wins that race: the trail only starts moving the stop |
+//| once profit reaches the same $5 the TP order closes at, so in       |
+//| practice the trail rarely gets a chance to act before the TP does.  |
+//| Its real job in this configuration is the tail case where price     |
+//| stalls just under $5 and reverses hard without a fresh push -       |
+//| InpUseBreakeven (armed earlier, at InpBreakevenTriggerPips) does     |
+//| most of the everyday profit protection below $5. One XAUUSD lot is  |
+//| 100oz, so at 0.01 lots $1 of price is $1 of P/L - 60 pips (=$6.00    |
+//| price distance on a 2-digit gold feed) is therefore a $6.00 stop,   |
+//| and 50 pips is both the $5.00 target and the $5.00 trail, per       |
+//| 0.01-lot position. Four positions open at once therefore risk up to |
+//| $24.00 combined.                                                     |
 //|                                                                    |
 //| TIMING: entries are still evaluated once per closed InpTF1 (M15)    |
 //| bar - the criteria all read CLOSED M15/H1/H4 data, which cannot     |
@@ -173,7 +180,7 @@ input double  InpFixedLot           = 0.01;           // Fixed lot size when the
 input double  InpRiskPercent        = 0.2;            // Risk per trade (% of equity), if not fixed
 input double  InpStopLossPips       = 60.0;           // Stop-loss, in pips (60 pips = $6.00 @ 0.01 lot)
 input bool    InpUseTakeProfit      = true;           // Attach a fixed take-profit; hitting it closes the trade
-input double  InpTakeProfitPips     = 100.0;          // Fixed take-profit, in pips (100 pips = $10.00 @ 0.01 lot)
+input double  InpTakeProfitPips     = 50.0;           // Fixed take-profit, in pips (50 pips = $5.00 @ 0.01 lot)
 input double  InpMaxLotSize         = 5.0;            // Hard cap on calculated lot size
 input double  InpMaxDailyLossPct    = 1.0;            // Stop new trades after this % equity loss in a day
 input bool    InpUseDailyTarget     = false;          // Hard stop for the day at the profit target
@@ -188,8 +195,8 @@ input group "=== Trade Management (breakeven / trailing) ==="
 input bool    InpUseBreakeven       = true;           // Move SL to breakeven once in enough profit
 input double  InpBreakevenTriggerPips= 20.0;          // Move to breakeven once profit >= this many pips
 input int     InpBreakevenBufferPts = 20;              // Points of buffer added at breakeven
-input double  InpTrailStartPips     = 30.0;            // Start trailing once profit >= this many pips ($3)
-input double  InpTrailPips          = 30.0;            // Trail distance, in pips (30 pips = $3.00)
+input double  InpTrailStartPips     = 50.0;            // Start trailing once profit >= this many pips ($5)
+input double  InpTrailPips          = 50.0;            // Trail distance, in pips (50 pips = $5.00)
 
 input group "=== Session Filter (broker trading hours) ==="
 input bool    InpUseBrokerSession   = true;            // Use the broker's own trading hours for this symbol

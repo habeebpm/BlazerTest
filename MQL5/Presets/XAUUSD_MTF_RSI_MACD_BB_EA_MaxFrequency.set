@@ -31,10 +31,11 @@
 ;
 ; DELIBERATELY UNCHANGED - these are risk controls, not throttles, and this
 ; preset does not touch them: InpFixedLot (0.01), InpMaxOpenPositions (4),
-; InpStopLossPips (60 = $6.00), InpTrailPips (30 = $3.00),
-; InpMaxDailyLossPct (1.0%), InpLockDailyGains / InpLockAfterPct /
-; InpGiveBackPct (the profit lock). Those are the $-risk figures that were
-; specified for this EA and stay in force regardless of how often it trades.
+; InpStopLossPips (60 = $6.00), InpTrailPips (50 = $5.00),
+; InpTakeProfitPips (50 = $5.00), InpMaxDailyLossPct (1.0%),
+; InpLockDailyGains / InpLockAfterPct / InpGiveBackPct (the profit lock).
+; Those are the $-risk figures that were specified for this EA and stay in
+; force regardless of how often it trades.
 ;
 ; NET EFFECT: more of the signals this EA already finds get taken - not more
 ; signals. A wider spread cap and same-symbol opposite trades both increase
@@ -79,7 +80,7 @@ InpFixedLot=0.01
 InpRiskPercent=0.2
 InpStopLossPips=60.0
 InpUseTakeProfit=true
-InpTakeProfitPips=100.0
+InpTakeProfitPips=50.0
 InpMaxLotSize=5.0
 InpMaxDailyLossPct=1.0
 InpUseDailyTarget=false
@@ -92,8 +93,8 @@ InpMaxTradesPerDay=0
 InpUseBreakeven=true
 InpBreakevenTriggerPips=20.0
 InpBreakevenBufferPts=20
-InpTrailStartPips=30.0
-InpTrailPips=30.0
+InpTrailStartPips=50.0
+InpTrailPips=50.0
 InpUseBrokerSession=true
 InpEntryOpenBufferMin=1
 InpEntryCloseBufferMin=5
