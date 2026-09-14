@@ -20,6 +20,16 @@
 //|                confirmed: ADX >= InpConfirmAdxLevel AND the DI     |
 //|                spread is at least InpConfirmDiGap wide.            |
 //|                                                                    |
+//| SIZING: InpUseFixedLot ships true at 0.01 lots. To let the size    |
+//| grow with the account instead, set it false - InpRiskPercent (0.2%) |
+//| then sizes every trade from equity and the stop distance, so the    |
+//| lot rises as the balance does and falls back after a drawdown.      |
+//| 0.2% is not arbitrary: it is the 1.0% daily cap divided by five, so |
+//| five losing trades are absorbed before the day halts. At ~5 trades  |
+//| a day, a cap that only absorbs one or two would halt on ordinary    |
+//| variance instead of on a bad day. The startup log reports the       |
+//| actual figure for your account and warns when it is below three.    |
+//|                                                                    |
 //| DAILY FRAME: the downside stops at -InpMaxDailyLossPct (1.0%). The |
 //| upside is NOT capped - InpUseDailyTarget is off, so a good day runs |
 //| on. What protects it is InpLockDailyGains: once the day peaks above |
@@ -142,7 +152,7 @@ input double   InpBandsDeviation    = 2.0;            // Bollinger Bands deviati
 input group "=== Risk Management ==="
 input bool     InpUseFixedLot       = true;          // Trade a fixed lot size (ignore risk %)
 input double   InpFixedLot          = 0.01;          // Fixed lot size when the above is true
-input double   InpRiskPercent       = 1.0;           // Risk per trade (% of equity), if not fixed
+input double   InpRiskPercent       = 0.2;           // Risk per trade (% of equity), if not fixed
 input bool     InpUseFixedStops     = true;           // Fixed stop distances (ignore the ATR multipliers)
 input double   InpFixedStopPips     = 60.0;           // Fixed stop-loss, in pips (60 pips = $6.00)
 input double   InpFixedTrailPips    = 30.0;           // Fixed trailing distance, in pips
@@ -252,9 +262,45 @@ int OnInit()
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpUseFixedStops)
+   {
       PrintFormat("XAUUSD_Confluence_EA: fixed stops - %.0f pip SL (%.2f) / %.0f pip trail (%.2f).",
                   InpFixedStopPips, InpFixedStopPips * PipSize(),
                   InpFixedTrailPips, InpFixedTrailPips * PipSize());
+
+      // Risk audit: how many losing trades does the daily cap actually absorb?
+      // Sizing up without checking this is how the breaker quietly becomes the
+      // strategy - it halts the day on ordinary variance rather than on a bad one.
+      double equity    = AccountInfoDouble(ACCOUNT_EQUITY);
+      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double stopDist  = InpFixedStopPips * PipSize();
+      if(equity > 0.0 && tickValue > 0.0 && tickSize > 0.0)
+      {
+         double lots = InpUseFixedLot ? InpFixedLot
+                                      : (equity * InpRiskPercent / 100.0)
+                                        / ((stopDist / tickSize) * tickValue);
+         double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         if(lots < minLot) lots = minLot;
+         double riskMoney = lots * (stopDist / tickSize) * tickValue;
+         double riskPct   = 100.0 * riskMoney / equity;
+         double capMoney  = equity * InpMaxDailyLossPct / 100.0;
+         double losses    = (riskMoney > 0.0) ? capMoney / riskMoney : 0.0;
+
+         PrintFormat("XAUUSD_Confluence_EA: risk audit - %.2f lots risks %.2f (%.2f%% of "
+                     "%.2f equity); the %.1f%% daily cap absorbs %.1f losing trades.",
+                     lots, riskMoney, riskPct, equity, InpMaxDailyLossPct, losses);
+         if(losses < 3.0)
+            PrintFormat("XAUUSD_Confluence_EA: WARNING - the daily cap stops trading after only "
+                        "%.1f losses. At ~5 trades a day that will halt on ordinary variance. "
+                        "Reduce the lot size, raise InpMaxDailyLossPct, or fund the account to "
+                        "about %.0f for this lot size.",
+                        losses, riskMoney * 5.0 / (InpMaxDailyLossPct / 100.0));
+         if(losses > 20.0)
+            PrintFormat("XAUUSD_Confluence_EA: note - the daily cap absorbs %.0f losses, so it "
+                        "will rarely bind. Sizing up is available via InpUseFixedLot = false "
+                        "with InpRiskPercent.", losses);
+      }
+   }
    else
       PrintFormat("XAUUSD_Confluence_EA: ATR stops - %.1f x ATR SL / %.1f x ATR trail.",
                   InpAtrSlMultiplier, InpTrailAtrMult);

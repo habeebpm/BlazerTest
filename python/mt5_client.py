@@ -341,6 +341,26 @@ def _pick_filling_mode(spec: SymbolSpec):
     return m.ORDER_FILLING_RETURN
 
 
+def position_size(cfg: TradeConfig, spec: SymbolSpec, sl_distance: float) -> float:
+    """Fixed lots, or a size derived from equity when use_risk_percent is set.
+
+    Risk-percent sizing grows the lot with the account and shrinks it after a
+    drawdown, which is what keeps risk per trade a constant fraction of the
+    daily loss cap as the balance changes.
+    """
+    if not cfg.use_risk_percent:
+        return float(cfg.lots)
+    equity = account_equity()
+    if equity <= 0 or spec.tick_size <= 0 or spec.tick_value <= 0 or sl_distance <= 0:
+        return float(cfg.lots)
+    loss_per_lot = (sl_distance / spec.tick_size) * spec.tick_value
+    lots = (equity * cfg.risk_percent / 100.0) / loss_per_lot
+    step = spec.volume_step or 0.01
+    lots = (lots // step) * step
+    lots = max(spec.volume_min, min(lots, spec.volume_max, cfg.max_lot_size))
+    return round(lots, 2)
+
+
 def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: bool):
     """Send a market order with the configured SL (and optional TP)."""
     m = mt5()
@@ -350,6 +370,7 @@ def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: b
     is_buy = direction == "buy"
     price = tick.ask if is_buy else tick.bid
     sl_dist = cfg.sl_distance(point)
+    lots = position_size(cfg, spec, sl_dist)
     tp_dist = cfg.tp_distance(point)
 
     sl = round(price - sl_dist if is_buy else price + sl_dist, spec.digits)
@@ -360,7 +381,7 @@ def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: b
     request = {
         "action": m.TRADE_ACTION_DEAL,
         "symbol": cfg.symbol,
-        "volume": float(cfg.lots),
+        "volume": float(lots),
         "type": m.ORDER_TYPE_BUY if is_buy else m.ORDER_TYPE_SELL,
         "price": price,
         "sl": sl,
@@ -375,7 +396,7 @@ def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: b
     if dry_run:
         log.info(
             "[DRY-RUN] would send %s %.2f %s @ %.*f sl=%.*f tp=%s",
-            direction.upper(), cfg.lots, cfg.symbol, spec.digits, price,
+            direction.upper(), lots, cfg.symbol, spec.digits, price,
             spec.digits, sl, f"{tp:.{spec.digits}f}" if tp else "none",
         )
         return None

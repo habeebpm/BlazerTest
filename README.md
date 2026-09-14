@@ -209,6 +209,39 @@ so they can be optimized in the Strategy Tester:
 - `InpUseSessionFilter`, `InpSessionGmtOffset`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — manual-window fallback.
 - `InpMaxSpreadPoints` — spread guard.
 
+## Scaling the lot size
+
+**Let the size follow the account rather than adjusting it by hand.** Set
+`InpUseFixedLot = false` and the EA sizes every trade from equity and the stop
+distance via `InpRiskPercent` (0.2%) — the lot rises as the balance does and
+falls back after a drawdown, so risk stays a constant fraction of the account.
+
+**0.2% is not arbitrary.** It is the 1.0% daily loss cap divided by five, so
+five losing trades are absorbed before the day halts. That matters more than it
+sounds: at ~5 trades a day, a size whose cap only absorbs one or two losses
+turns the breaker into the strategy — it halts on ordinary variance instead of
+on a bad day.
+
+| Account | 0.01 lots risks | = % of account | Losses before the cap halts |
+|---|---|---|---|
+| $1,000 | $6.00 | 0.60% | **1.7** — halts most days |
+| $2,000 | $6.00 | 0.30% | 3.3 |
+| **$3,000** | $6.00 | **0.20%** | **5.0** — healthy |
+| $10,000 | $18.00 (0.03 lots) | 0.18% | 5.6 |
+
+Below about $3,000 the broker's 0.01 minimum forces more than 0.2% — you
+cannot size down further, so small accounts necessarily run hotter.
+
+The EA audits this at startup and warns you when the cap absorbs fewer than
+three losses:
+
+```
+risk audit - 0.01 lots risks 6.00 (0.60% of 1000.00 equity);
+the 1.0% daily cap absorbs 1.7 losing trades.
+WARNING - the daily cap stops trading after only 1.7 losses. At ~5 trades a
+day that will halt on ordinary variance.
+```
+
 ## Sizing for a daily percentage
 
 At the broker minimum of 0.01 lots you cannot size down, only up the account,

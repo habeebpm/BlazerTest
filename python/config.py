@@ -36,6 +36,12 @@ class TradeConfig:
     # ---------------- what the user asked for ----------------
     symbol: str = "XAUUSD"
     lots: float = 0.01
+    # Set use_risk_percent to size from equity instead, so the lot grows with
+    # the account. 0.2% is the 1.0% daily cap divided by five, so five losing
+    # trades are absorbed before the day halts.
+    use_risk_percent: bool = False
+    risk_percent: float = 0.2
+    max_lot_size: float = 5.0   # hard cap on a risk-sized lot
     stop_loss_units: float = 60.0       # SL distance, in `distance_unit`
     trailing_stop_units: float = 30.0   # trail distance, in `distance_unit`
     distance_unit: str = "pip"          # "point" | "pip" | "usd"  (see module docstring)

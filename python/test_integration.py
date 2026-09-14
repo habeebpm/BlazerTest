@@ -250,6 +250,28 @@ assert not _buf.can_enter(_near_close), "the close buffer must block late entrie
 assert _buf.minutes_to_close(_near_close) <= _buf.flatten_before_close_min, \
     "10 minutes out must be inside the flatten window"
 
+print("\n=== 7b2. risk-percent sizing scales the lot with equity ===")
+import mt5_client as _mc2
+_rp = replace(cfg2, use_risk_percent=True, risk_percent=0.2)
+_spec = _mc2.get_symbol_spec(_rp)
+_sl = _rp.sl_distance(_spec.point)
+print(f"   risking {_rp.risk_percent}% per trade with a ${_sl:.2f} stop:")
+_prev = 0.0
+for eq in (1000.0, 3000.0, 10000.0, 30000.0):
+    m.account_info = lambda e=eq: types.SimpleNamespace(login=123, server="Mock-Demo",
+        balance=e, equity=e, currency="USD", trade_allowed=True)
+    lots = _mc2.position_size(_rp, _spec, _sl)
+    risk = lots * (_sl / _spec.tick_size) * _spec.tick_value
+    print(f"     ${eq:>8,.0f} equity -> {lots:.2f} lots, risking ${risk:.2f} ({100*risk/eq:.2f}%)")
+    assert lots >= _prev, "lot size must not shrink as equity grows"
+    assert lots >= _spec.volume_min
+    _prev = lots
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10000.0, currency="USD", trade_allowed=True)
+# fixed mode is unaffected
+assert _mc2.position_size(cfg2, _spec, _sl) == cfg2.lots, "fixed mode must ignore equity"
+print(f"   fixed mode still returns {cfg2.lots} lots regardless of equity")
+
 print("\n=== 7c. daily profit target and loss cap ===")
 # the hard target ships OFF (the profit lock replaces it), so enable it here
 _tgt_cfg = replace(cfg2, use_daily_target=True, lock_daily_gains=False)

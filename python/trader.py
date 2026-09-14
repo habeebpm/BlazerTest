@@ -252,7 +252,7 @@ class Bot:
             "confirmed": side.confirmed_count,
             "score": side.confidence,
             "marks": side.marks(),
-            "lots": self.cfg.lots,
+            "lots": getattr(result, "volume", self.cfg.lots),
             "price": getattr(result, "price", sig.close),
             "sl_units": self.cfg.stop_loss_units,
             "trail_units": self.cfg.trailing_stop_units,
@@ -362,7 +362,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the strategy self-test (no MT5 required)")
     parser.add_argument("--unit", choices=["point", "pip", "usd"],
                         help="override distance_unit for SL/trailing distances")
-    parser.add_argument("--lots", type=float, help="override lot size")
+    parser.add_argument("--lots", type=float, help="override the fixed lot size")
+    parser.add_argument("--risk-percent", type=float, dest="risk_percent",
+                        help="size from equity instead of a fixed lot, risking this %% per trade")
     parser.add_argument("--timeframe", help="working timeframe for entries (default M5)")
     parser.add_argument("--max-positions", type=int, dest="max_positions",
                         help="max positions open at once (default 2)")
@@ -412,6 +414,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.trail_units:
         overrides["trailing_stop_units"] = args.trail_units
         overrides["trail_start_units"] = args.trail_units
+    if args.risk_percent is not None:
+        overrides["risk_percent"] = args.risk_percent
+        overrides["use_risk_percent"] = args.risk_percent > 0
     if args.timeframe:
         overrides["working_timeframe"] = args.timeframe.upper()
     if args.max_positions is not None:
