@@ -1,0 +1,109 @@
+; XAUUSD_MTF_RSI_MACD_BB_EA - "max frequency" preset
+; In MT5: Strategy Tester > Expert Advisor: XAUUSD_MTF_RSI_MACD_BB_EA > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; WHAT THIS CHANGES vs. the Default preset - and what it deliberately does NOT:
+;
+; Same signal quality bar as Default (InpEntryThreshold=55.0,
+; InpMinAgreeingTF=2, all indicator settings unchanged) - a trade still needs
+; the same 2-of-3-timeframes-at-conviction evidence to fire. What changes is
+; everything that can block an otherwise-VALID signal from actually filling:
+;
+;   InpAllowOpposite       false -> true   (a fresh signal can open against
+;                                            an already-open opposite position
+;                                            instead of being skipped)
+;   InpEntryOpenBufferMin  5 -> 1           (barely any dead time after the
+;                                            session opens)
+;   InpEntryCloseBufferMin 30 -> 5          (entries allowed almost up to the
+;                                            session close)
+;   InpFlattenBeforeCloseMin 10 -> 5        (flattens later, closer to the
+;                                            actual session end)
+;   InpSessionStartHour/Min,                24h manual-fallback window (only
+;   InpSessionEndHour/Min  6-23 -> 0-0      matters if InpUseBrokerSession is
+;                                            switched off - 0/0/0/0 is this
+;                                            EA's "always" sentinel)
+;   InpMaxSpreadPoints     350 -> 800       lets entries through in far wider
+;                                            spread conditions (still capped,
+;                                            so a genuine broker/feed outage
+;                                            with an extreme spread is still
+;                                            blocked)
+;   InpMaxTradesPerDay     0 (unchanged)    already unlimited in Default
+;
+; DELIBERATELY UNCHANGED - these are risk controls, not throttles, and this
+; preset does not touch them: InpFixedLot (0.01), InpMaxOpenPositions (4),
+; InpStopLossPips (60 = $6.00), InpTrailPips (30 = $3.00),
+; InpMaxDailyLossPct (1.0%), InpLockDailyGains / InpLockAfterPct /
+; InpGiveBackPct (the profit lock). Those are the $-risk figures that were
+; specified for this EA and stay in force regardless of how often it trades.
+;
+; NET EFFECT: more of the signals this EA already finds get taken - not more
+; signals. A wider spread cap and same-symbol opposite trades both increase
+; average cost per trade (worse average fill on a wide spread; an opposite
+; entry pays the spread twice while largely netting against the existing
+; position) - expect more trades AND a higher cost drag per trade. The daily
+; loss cap and 4-position ceiling are exactly as reachable, just faster.
+;
+; Note: InpTF1/InpTF2/InpTF3 are stored below as raw ENUM_TIMEFRAMES values
+; (15 = M15, 16385 = H1, 16388 = H4). If your MT5 build does not accept these
+; lines for the timeframe inputs, just set them manually in the Inputs tab.
+;
+InpMagicNumber=20260914
+InpSlippagePoints=30
+InpTradeXAUUSDOnly=true
+InpMaxOpenPositions=4
+InpAllowOpposite=true
+InpTF1=15
+InpTF2=16385
+InpTF3=16388
+InpWeightTF1=1.0
+InpWeightTF2=1.5
+InpWeightTF3=2.0
+InpRsiPeriod=14
+InpRsiLookback=2
+InpRsiBuyLevel=47.0
+InpRsiSellLevel=47.0
+InpMacdFast=12
+InpMacdSlow=26
+InpMacdSignal=9
+InpBandsPeriod=20
+InpBandsDeviation=2.0
+InpSwingScanBars=30
+InpSwingPivotWidth=2
+InpEntryThreshold=55.0
+InpMinAgreeingTF=2
+InpSwingBonusPoints=15.0
+InpShowDashboard=true
+InpUseFixedLot=true
+InpFixedLot=0.01
+InpRiskPercent=0.2
+InpStopLossPips=60.0
+InpUseTakeProfit=false
+InpRiskRewardRatio=1.8
+InpMaxLotSize=5.0
+InpMaxDailyLossPct=1.0
+InpUseDailyTarget=false
+InpDailyTargetPct=0.5
+InpCloseOnTarget=true
+InpLockDailyGains=true
+InpLockAfterPct=0.5
+InpGiveBackPct=50.0
+InpMaxTradesPerDay=0
+InpUseBreakeven=true
+InpBreakevenTriggerPips=20.0
+InpBreakevenBufferPts=20
+InpTrailStartPips=30.0
+InpTrailPips=30.0
+InpUseBrokerSession=true
+InpEntryOpenBufferMin=1
+InpEntryCloseBufferMin=5
+InpFlattenBeforeClose=true
+InpFlattenBeforeCloseMin=5
+InpUseSessionFilter=true
+InpSessionGmtOffset=4.0
+InpSessionStartHour=0
+InpSessionStartMin=0
+InpSessionEndHour=0
+InpSessionEndMin=0
+InpCloseBeforeWeekend=true
+InpWeekendCloseHour=20
+InpMaxSpreadPoints=800

@@ -30,6 +30,9 @@ not predict future results.
   strategy. See "XAUUSD Multi-Timeframe RSI/MACD/BB EA" below.
 - `MQL5/Presets/XAUUSD_MTF_RSI_MACD_BB_EA_Default.set` — its matching input
   preset.
+- `MQL5/Presets/XAUUSD_MTF_RSI_MACD_BB_EA_MaxFrequency.set` — same signal
+  quality bar, throttles relaxed to take more of the signals it already
+  finds. See "Max frequency preset" below.
 
 ## Strategy logic
 
@@ -424,6 +427,34 @@ inconsistent with each other.
   `InpSessionEndHour/Min`, `InpCloseBeforeWeekend`, `InpWeekendCloseHour` —
   session timing.
 - `InpMaxSpreadPoints` — spread guard.
+
+### "Max frequency" preset
+
+`MQL5/Presets/XAUUSD_MTF_RSI_MACD_BB_EA_MaxFrequency.set` trades the same
+signal (same `InpEntryThreshold = 55.0`, `InpMinAgreeingTF = 2` — no change
+to how good a setup has to be) but relaxes everything that can otherwise
+stop an already-valid signal from filling:
+
+| Input | Default | Max frequency |
+|---|---|---|
+| `InpAllowOpposite` | false | **true** — a fresh signal can open against an already-open opposite position |
+| `InpEntryOpenBufferMin` | 5 min | **1 min** after session open |
+| `InpEntryCloseBufferMin` | 30 min | **5 min** before session close |
+| `InpFlattenBeforeCloseMin` | 10 min | **5 min** before close |
+| `InpMaxSpreadPoints` | 350 | **800** |
+
+`InpMaxTradesPerDay` is already unlimited (0) in both. **Deliberately left
+alone:** `InpFixedLot` (0.01), `InpMaxOpenPositions` (4), `InpStopLossPips`
+($6.00), `InpTrailPips` ($3.00), `InpMaxDailyLossPct` (1.0%), and the profit
+lock — those are risk controls tied to the $ figures originally specified
+for this EA, not entry throttles, and this preset does not touch them.
+
+This gets you more of the trades the strategy *already finds* — not more
+signals. It also raises average cost per trade: a wider spread cap means
+worse average fills in choppy conditions, and an opposite-direction entry
+pays the spread twice while mostly netting against the position already
+open. The 1%/day loss cap and the 4-position ceiling are exactly as
+reachable as before, just faster.
 
 As with the Confluence EA: no win rate, profit factor or drawdown is known
 or claimed for this strategy in advance. Backtest with tick data across
