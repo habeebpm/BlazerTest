@@ -142,9 +142,16 @@ input int      InpBreakevenBufferPts= 20;             // Points of buffer added 
 input double   InpTrailStartAtrMult = 1.5;            // Start trailing once profit >= ATR * this
 input double   InpTrailAtrMult      = 1.2;            // Trail distance = ATR * this
 
-input group "=== Session Filter ==="
-input bool     InpUseSessionFilter  = true;           // Enable session filter
-input double   InpSessionGmtOffset  = 4.0;            // Session hours are in GMT+this (Oman = 4)
+input group "=== Session Filter (broker trading hours) ==="
+input bool     InpUseBrokerSession  = true;           // Use the broker's own trading hours for this symbol
+input int      InpEntryOpenBufferMin = 5;             // No new entries for N min after the session opens
+input int      InpEntryCloseBufferMin= 30;            // No new entries in the last N min before it closes
+input bool     InpFlattenBeforeClose = true;          // Close every position before the session closes
+input int      InpFlattenBeforeCloseMin = 10;         // How many minutes before the close to flatten
+
+input group "=== Session Filter (manual fallback, used when InpUseBrokerSession = false) ==="
+input bool     InpUseSessionFilter  = true;           // Enable the manual session window
+input double   InpSessionGmtOffset  = 4.0;            // Manual hours are in GMT+this (Oman = 4)
 input int      InpSessionStartHour  = 6;              // Session start hour (in the zone above)
 input int      InpSessionStartMin   = 0;               // Session start minute
 input int      InpSessionEndHour    = 23;              // Session end hour (in the zone above)
@@ -168,13 +175,18 @@ int            hAtr        = INVALID_HANDLE;
 int            hBands      = INVALID_HANDLE;
 
 datetime       g_lastBarTime      = 0;
+datetime       g_sessionCacheDay  = 0;      // broker session cache, refreshed daily
+bool           g_sessionCacheValid= false;
+int            g_sessionCacheFrom = 0;
+int            g_sessionCacheTo   = 0;
 datetime       g_currentDay       = 0;
 double         g_dayStartEquity   = 0.0;
 int            g_tradesToday      = 0;
 bool           g_dailyLossHit     = false;
 
-// forward declaration: OnInit reports the session mapping before this is defined
+// forward declarations: these are used before their definitions below
 datetime SessionZoneTime();
+datetime DateToDay(datetime t);
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -239,7 +251,24 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.LogLevel(LOG_LEVEL_ERRORS);
 
-   if(InpUseSessionFilter)
+   if(InpUseBrokerSession)
+   {
+      int fromSec, toSec;
+      double serverOffset = (double)(TimeCurrent() - TimeGMT()) / 3600.0;
+      if(BrokerSessionToday(fromSec, toSec))
+         PrintFormat("XAUUSD_Confluence_EA: broker session for %s today is "
+                     "%02d:%02d-%02d:%02d server time (GMT%+.1f). Entries "
+                     "%d min after the open until %d min before the close; "
+                     "positions flattened %d min before it.",
+                     _Symbol, fromSec / 3600, (fromSec % 3600) / 60,
+                     toSec / 3600, (toSec % 3600) / 60, serverOffset,
+                     InpEntryOpenBufferMin, InpEntryCloseBufferMin,
+                     InpFlattenBeforeCloseMin);
+      else
+         PrintFormat("XAUUSD_Confluence_EA: %s does not trade today per the broker's "
+                     "schedule - no entries until it reopens.", _Symbol);
+   }
+   else if(InpUseSessionFilter)
    {
       MqlDateTime zs, ss;
       TimeToStruct(SessionZoneTime(), zs);
@@ -332,6 +361,68 @@ bool IsNewBar()
 //| Session / weekday filter                                          |
 //+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
+//| Seconds elapsed today in SERVER time.                             |
+//+------------------------------------------------------------------+
+int ServerSecondsOfDay()
+{
+   MqlDateTime s;
+   TimeToStruct(TimeCurrent(), s);
+   return(s.hour * 3600 + s.min * 60 + s.sec);
+}
+
+//+------------------------------------------------------------------+
+//| The broker's own trading hours for this symbol today.             |
+//| Returns false when the symbol does not trade at all today (the    |
+//| weekend). Sessions are reported by the broker in server time as   |
+//| seconds from midnight, so this automatically tracks the broker's  |
+//| GMT offset, its DST changes, gold's daily break and the early     |
+//| close on Friday - none of which a fixed window can follow.        |
+//| Where a day has several sessions, the earliest open and the       |
+//| latest close are used.                                            |
+//+------------------------------------------------------------------+
+bool BrokerSessionToday(int &startSec, int &endSec)
+{
+   MqlDateTime s;
+   TimeToStruct(TimeCurrent(), s);
+
+   // The schedule only changes at the day boundary, and this is consulted on
+   // every tick, so cache it rather than re-querying the terminal each time.
+   datetime today = DateToDay(TimeCurrent());
+   if(today == g_sessionCacheDay)
+   {
+      startSec = g_sessionCacheFrom;
+      endSec   = g_sessionCacheTo;
+      return(g_sessionCacheValid);
+   }
+
+   ENUM_DAY_OF_WEEK dow = (ENUM_DAY_OF_WEEK)s.day_of_week;
+
+   bool found = false;
+   int  lo = 0, hi = 0;
+   for(uint i = 0; i < 8; i++)
+   {
+      datetime from, to;
+      if(!SymbolInfoSessionTrade(_Symbol, dow, i, from, to)) break;
+      int f = (int)from, t = (int)to;
+      if(!found) { lo = f; hi = t; found = true; }
+      else
+      {
+         if(f < lo) lo = f;
+         if(t > hi) hi = t;
+      }
+   }
+   g_sessionCacheDay   = today;
+   g_sessionCacheValid = found;
+   g_sessionCacheFrom  = lo;
+   g_sessionCacheTo    = hi;
+
+   if(!found) return(false);
+   startSec = lo;
+   endSec   = hi;
+   return(true);
+}
+
+//+------------------------------------------------------------------+
 //| Current time in the zone the session hours are expressed in.      |
 //| Derived from GMT rather than server time, so the window means the |
 //| same wall-clock hours whatever offset the broker runs on and      |
@@ -344,6 +435,17 @@ datetime SessionZoneTime()
 
 bool IsWithinSession()
 {
+   if(InpUseBrokerSession)
+   {
+      int fromSec, toSec;
+      if(!BrokerSessionToday(fromSec, toSec))
+         return(false);                       // the symbol does not trade today
+
+      int now = ServerSecondsOfDay();
+      return(now >= fromSec + InpEntryOpenBufferMin * 60 &&
+             now <  toSec   - InpEntryCloseBufferMin * 60);
+   }
+
    if(!InpUseSessionFilter) return(true);
 
    MqlDateTime s;
@@ -408,10 +510,40 @@ void CloseAllPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Weekend flatten check (Friday close protection)                   |
+//| Close-before-market-close protection.                             |
+//|                                                                    |
+//| With InpUseBrokerSession the EA flattens everything shortly before |
+//| the broker's own session end for today. That covers the daily      |
+//| close, gold's daily break and the weekly close on Friday with one  |
+//| rule, because the broker reports Friday's earlier end itself.      |
+//| Returns true when new entries should also be blocked.              |
 //+------------------------------------------------------------------+
-bool HandleWeekendFlatten()
+bool HandleSessionClose()
 {
+   if(InpUseBrokerSession)
+   {
+      int fromSec, toSec;
+      if(!BrokerSessionToday(fromSec, toSec))
+         return(true);        // no session today - block entries, nothing to close
+
+      if(!InpFlattenBeforeClose) return(false);
+
+      int now = ServerSecondsOfDay();
+      if(now >= toSec - InpFlattenBeforeCloseMin * 60 && now < toSec)
+      {
+         if(CountOpenPositions(-1) > 0)
+         {
+            PrintFormat("XAUUSD_Confluence_EA: flattening %d position(s) - the session "
+                        "closes in %d minute(s).",
+                        CountOpenPositions(-1), (toSec - now) / 60);
+            CloseAllPositions();
+         }
+         return(true);        // and take nothing new into the close
+      }
+      return(false);
+   }
+
+   // ---- manual fallback: Friday-only weekend flatten ----
    if(!InpCloseBeforeWeekend) return(false);
 
    MqlDateTime s;
@@ -423,7 +555,7 @@ bool HandleWeekendFlatten()
          Print("XAUUSD_Confluence_EA: flattening all positions ahead of the weekend.");
          CloseAllPositions();
       }
-      return(true); // block new entries after weekend-close hour on Fridays
+      return(true);
    }
    return(false);
 }
@@ -885,12 +1017,12 @@ void OnTick()
    if(CopyBuffer(hAtr, 0, 0, 1, atrBuf) == 1)
       ManageOpenPositions(atrBuf[0]);
 
-   bool weekendBlock = HandleWeekendFlatten();
+   bool sessionCloseBlock = HandleSessionClose();
 
    // Only look for new entries once per new working-timeframe bar.
    if(!IsNewBar()) return;
 
-   if(weekendBlock) return;
+   if(sessionCloseBlock) return;
    if(g_dailyLossHit) return;
    if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay) return;
    if(!IsWithinSession()) return;

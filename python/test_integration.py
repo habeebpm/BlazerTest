@@ -220,15 +220,34 @@ print(f"   zone hour {_hour}, window {_closed.session_start_hour}-{_closed.sessi
 assert _bot.entry_blocked() is not None, "outside its window the session filter must block"
 
 # a window that definitely includes it
+# a window that opened an hour ago and closes in an hour, so we are clear of
+# both the open buffer and the close buffer
 _open_cfg = TradeConfig(use_session_filter=True,
-                        session_start_hour=_hour,
-                        session_end_hour=(_hour + 1) if _hour < 23 else 24,
+                        session_start_hour=(_hour - 1) % 24,
+                        session_end_hour=(_hour + 2) % 24,
                         close_before_weekend=False)
 _bot2 = trader.Bot(_open_cfg, dry_run=True)
 _bot2.start(probe_market=False)
 print(f"   zone hour {_hour}, window {_open_cfg.session_start_hour}-{_open_cfg.session_end_hour}"
       f" -> entry_blocked: {_bot2.entry_blocked()}")
 assert _bot2.entry_blocked() is None, "inside its window the session filter must allow"
+
+# the entry buffers: no entries in the first N minutes or the last N minutes
+_buf = TradeConfig(use_session_filter=True, session_start_hour=_hour,
+                   session_end_hour=(_hour + 2) % 24, close_before_weekend=False)
+_at_open = _buf.session_now().replace(hour=_hour, minute=1, second=0)
+_mid = _buf.session_now().replace(hour=_hour, minute=30, second=0)
+_near_close = _buf.session_now().replace(hour=(_hour + 1) % 24, minute=50, second=0)
+print(f"   open buffer  ({_buf.entry_open_buffer_min} min): "
+      f"1 min in -> can_enter={_buf.can_enter(_at_open)}")
+print(f"   mid-session: can_enter={_buf.can_enter(_mid)}")
+print(f"   close buffer ({_buf.entry_close_buffer_min} min): "
+      f"10 min to close -> can_enter={_buf.can_enter(_near_close)}")
+assert not _buf.can_enter(_at_open), "the open buffer must block early entries"
+assert _buf.can_enter(_mid), "mid-session entries must be allowed"
+assert not _buf.can_enter(_near_close), "the close buffer must block late entries"
+assert _buf.minutes_to_close(_near_close) <= _buf.flatten_before_close_min, \
+    "10 minutes out must be inside the flatten window"
 
 print("\n=== 8. market closed (quotes frozen) ===")
 import mt5_client as _mc

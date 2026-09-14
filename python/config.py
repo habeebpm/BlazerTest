@@ -150,7 +150,16 @@ class TradeConfig:
     session_start_hour: int = 6         # 06:00 Oman = 02:00 GMT
     session_end_hour: int = 23          # 23:00 Oman = 19:00 GMT
     close_before_weekend: bool = True
-    weekend_close_hour: int = 20        # Friday, server time
+    weekend_close_hour: int = 20        # Friday, session zone
+
+    # Close-before-market-close. The MetaTrader5 Python API exposes no session
+    # schedule (the MQL5 EA reads the broker's real hours via
+    # SymbolInfoSessionTrade; Python cannot), so these work off the configured
+    # window end instead.
+    entry_open_buffer_min: int = 5      # no entries for N min after the window opens
+    entry_close_buffer_min: int = 30    # no entries in the last N min
+    flatten_before_close: bool = True   # close everything before the window ends
+    flatten_before_close_min: int = 10  # how many minutes before
 
     # ---------------- execution ----------------
     magic: int = 20260908
@@ -193,6 +202,35 @@ class TradeConfig:
         """Current time in the zone the session hours are expressed in."""
         from datetime import datetime, timedelta, timezone
         return datetime.now(timezone.utc) + timedelta(hours=self.session_gmt_offset)
+
+    def minutes_to_close(self, when=None) -> float:
+        """Minutes until the session window ends (inf when the filter is off)."""
+        if not self.use_session_filter:
+            return float("inf")
+        t = when if when is not None else self.session_now()
+        minutes = t.hour * 60 + t.minute + t.second / 60.0
+        end = self.session_end_hour * 60 + self.session_end_min_or_zero()
+        delta = end - minutes
+        if delta < 0:
+            delta += 24 * 60          # window ends after midnight
+        return delta
+
+    def session_end_min_or_zero(self) -> int:
+        return 0
+
+    def can_enter(self, when=None) -> bool:
+        """In session AND clear of the open/close buffers."""
+        if not self.in_session(when):
+            return False
+        t = when if when is not None else self.session_now()
+        minutes = t.hour * 60 + t.minute
+        start = self.session_start_hour * 60
+        since_open = minutes - start
+        if since_open < 0:
+            since_open += 24 * 60
+        if since_open < self.entry_open_buffer_min:
+            return False
+        return self.minutes_to_close(when) > self.entry_close_buffer_min
 
     def in_session(self, when=None) -> bool:
         """Is `when` (default: now) inside the configured session window?"""

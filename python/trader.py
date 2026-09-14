@@ -133,10 +133,14 @@ class Bot:
             return f"max trades/day reached ({self.trades_today})"
         if len(mc.get_positions(cfg)) >= cfg.max_open_positions:
             return f"max open positions reached ({cfg.max_open_positions})"
-        if not cfg.in_session():
+        if not cfg.can_enter():
             zone = cfg.session_now()
-            return (f"outside session {cfg.session_start_hour}:00-{cfg.session_end_hour}:00 "
-                    f"GMT{cfg.session_gmt_offset:+g} (now {zone:%H:%M} there)")
+            if not cfg.in_session():
+                return (f"outside session {cfg.session_start_hour}:00-"
+                        f"{cfg.session_end_hour}:00 GMT{cfg.session_gmt_offset:+g} "
+                        f"(now {zone:%H:%M} there)")
+            return (f"inside the session but within an entry buffer "
+                    f"({cfg.minutes_to_close():.0f} min to close)")
         now = cfg.session_now()
         if cfg.close_before_weekend and now.weekday() == 4 and now.hour >= cfg.weekend_close_hour:
             return "weekend close window"
@@ -265,16 +269,29 @@ class Bot:
                     continue
             mc.modify_stop(cfg, pos, new_sl, spec.digits, self.dry_run)
 
-    def flatten_for_weekend(self) -> None:
-        now = self.cfg.session_now()
+    def flatten_before_close(self) -> None:
+        """Close everything shortly before the session window ends, and before
+        the weekend. The MQL5 EA does this off the broker's real session end;
+        here it works off the configured window."""
+        cfg = self.cfg
         if not self.market_open:
             return
-        if not (self.cfg.close_before_weekend and now.weekday() == 4
-                and now.hour >= self.cfg.weekend_close_hour):
-            return
-        for pos in mc.get_positions(self.cfg):
-            log.info("Weekend flatten: closing ticket %s", pos.ticket)
-            mc.close_position(self.cfg, self.spec, pos, self.dry_run)
+        now = cfg.session_now()
+
+        if cfg.flatten_before_close and cfg.use_session_filter:
+            remaining = cfg.minutes_to_close()
+            if 0 <= remaining <= cfg.flatten_before_close_min:
+                for pos in mc.get_positions(cfg):
+                    log.info("Session close in %.0f min: closing ticket %s",
+                             remaining, pos.ticket)
+                    mc.close_position(cfg, self.spec, pos, self.dry_run)
+                return
+
+        if (cfg.close_before_weekend and now.weekday() == 4
+                and now.hour >= cfg.weekend_close_hour):
+            for pos in mc.get_positions(cfg):
+                log.info("Weekend flatten: closing ticket %s", pos.ticket)
+                mc.close_position(cfg, self.spec, pos, self.dry_run)
 
     # ---------------- main loop ----------------
     def run(self) -> None:
@@ -285,7 +302,7 @@ class Bot:
                 self.roll_day()
                 self.refresh_market_state()
                 self.manage_trailing()
-                self.flatten_for_weekend()
+                self.flatten_before_close()
                 self.check_for_entry()
             except Exception:
                 log.exception("Cycle failed; retrying after %.0fs", self.cfg.poll_seconds)

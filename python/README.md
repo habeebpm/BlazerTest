@@ -6,7 +6,13 @@ when at least **2 of the 3 confluences** agree and **at least one of them is
 confirmed**. Entries are evaluated on every **M5 candle close**, with up to
 **4 positions open at a time** (same direction only), **no daily trade cap**,
 and a **setup score of 50 or better** required, inside a **06:00–23:00 Oman
-(GMT+4)** session — about **4.6 fills per day**.
+(GMT+4)** session — about **4.6 fills per day**. Positions are closed shortly
+before the session ends, so nothing is carried through a market close.
+
+> **Session note:** the MQL5 EA reads the broker's *real* trading hours via
+> `SymbolInfoSessionTrade` (tracking broker DST, gold's daily break and
+> Friday's early close automatically). The MetaTrader5 Python API exposes no
+> session schedule, so this bot uses the configured GMT-offset window instead.
 
 > **On a Mac?** The `MetaTrader5` Python package is Windows-only. See
 > [Running on a Mac](#running-on-a-mac) — the MQL5 EA is the simplest route.

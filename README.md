@@ -46,9 +46,11 @@ recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
 as a veto rather than a vote.
 
 Entries are evaluated on each closed **M5** bar and must score at least
-**50/100** (`InpMinConfidence`), inside a **06:00–23:00 Oman (GMT+4)** session,
-with up to **4 positions open at a time** (same direction only) and **no daily
-trade cap** (`InpMaxTradesPerDay = 0`) — about **4.6 fills per day**.
+**50/100** (`InpMinConfidence`), within **the broker's own trading hours** for
+the symbol, with up to **4 positions open at a time** (same direction only) and
+**no daily trade cap** (`InpMaxTradesPerDay = 0`). Every position is closed
+shortly **before the session closes**, so nothing is held through a market
+close or over the weekend.
 
 **Every confluence and every confirmation is computed on M5.** The only
 higher-timeframe input is the EMA(200) macro bias on `InpTrendTF` (H4), which
@@ -163,13 +165,24 @@ known — see "Before going live" for how to measure one.
   over-trading.
 - **Spread filter** — skips new entries when the current spread exceeds
   `InpMaxSpreadPoints`.
-- **Session filter** — restricts new entries to a configurable window,
-  defaulting to **06:00–23:00 Oman (GMT+4)**. The hours are interpreted in
-  `InpSessionGmtOffset` hours from GMT, **not** broker server time, so the
-  window means the same wall-clock hours whatever offset your broker runs on
-  and regardless of broker DST. The EA logs the mapping at startup.
-- **Weekend flatten** — optionally closes all open positions ahead of the
-  Friday close to avoid weekend gap risk.
+- **Session filter — the broker's own trading hours.** With
+  `InpUseBrokerSession` (default on) the EA reads the real session schedule for
+  your symbol via `SymbolInfoSessionTrade`, so it tracks the broker's GMT
+  offset, its DST changes, gold's daily break and the early close on Friday
+  without any of it being configured. Entries are held off for
+  `InpEntryOpenBufferMin` after the open (avoiding the wide opening spread) and
+  stop `InpEntryCloseBufferMin` before the close. The schedule is logged at
+  startup and cached per day.
+  Set `InpUseBrokerSession = false` to fall back to a manual window, which is
+  interpreted in `InpSessionGmtOffset` hours from GMT (default 06:00–23:00
+  Oman) rather than broker time.
+- **Flatten before the close** — `InpFlattenBeforeClose` closes every position
+  `InpFlattenBeforeCloseMin` minutes before the session ends. Because the
+  broker reports Friday's earlier end itself, one rule covers the daily close,
+  the daily break and the weekend — nothing is carried through a close or over
+  a weekend gap.
+- **Weekend flatten** — retained for the manual-window fallback; the broker
+  session path handles it through the flatten-before-close rule above.
 
 ## Key inputs
 
@@ -185,7 +198,8 @@ so they can be optimized in the Strategy Tester:
 - `InpAtrPeriod`, `InpBandsPeriod`, `InpBandsDeviation` — volatility filters.
 - `InpUseFixedLot`, `InpFixedLot`, `InpRiskPercent`, `InpAtrSlMultiplier`, `InpRiskRewardRatio`, `InpMaxLotSize` — sizing/stops.
 - `InpMaxDailyLossPct`, `InpMaxTradesPerDay`, `InpMaxOpenPositions` — trade-frequency guards.
-- `InpUseSessionFilter`, `InpSessionGmtOffset`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — timing filters.
+- `InpUseBrokerSession`, `InpEntryOpenBufferMin`, `InpEntryCloseBufferMin`, `InpFlattenBeforeClose`, `InpFlattenBeforeCloseMin` — broker-session timing.
+- `InpUseSessionFilter`, `InpSessionGmtOffset`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — manual-window fallback.
 - `InpMaxSpreadPoints` — spread guard.
 
 ## Before going live
