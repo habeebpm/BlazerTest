@@ -95,10 +95,11 @@ class TradeConfig:
     # Minimum setup-quality score (0-100) required to enter; a score exactly
     # equal to this passes. 0 disables the gate.
     #
-    # Set to 45: setups scoring 45 or better are traded. The qualifying floor
-    # is 40, so this trims only the weakest band and keeps the 2-of-3 rule
-    # doing most of the work. Measured at about 8.5 fills/day with the shipped
-    # 4 positions (50 gave 6.9, the gate off gives 10.0).
+    # Set to 50: only setups scoring 50 or better are traded. The qualifying
+    # floor is 40, so this drops the weakest band. Measured at about 6.9
+    # fills/day over 24h with the shipped 4 positions (45 gave 8.5, the gate
+    # off gives 10.0); the session filter trims that further - see
+    # simulate.py, which applies the window.
     #
     # Note every confirmation test is evaluated on the working timeframe (M5):
     # the EMA gap uses the M5 EMAs and M5 ATR, the MACD histogram and RSI are
@@ -116,7 +117,7 @@ class TradeConfig:
     # IMPORTANT: this score measures how strong the indicator agreement is,
     # NOT the probability that a trade wins - nothing in this project
     # estimates a win rate. See the confidence notes in README.md.
-    min_confidence: float = 45.0
+    min_confidence: float = 50.0
 
     # Confirmation thresholds - the stronger version of each confluence
     confirm_ema_gap_atr: float = 0.25   # trend:    EMA separation >= this x ATR
@@ -142,8 +143,12 @@ class TradeConfig:
     max_daily_loss_pct: float = 3.0
     max_spread_points: int = 350        # always in broker points
     use_session_filter: bool = True
-    session_start_hour: int = 7         # broker/server time
-    session_end_hour: int = 20
+    # Session hours are expressed in GMT + this offset, NOT broker server time,
+    # so the window means the same wall-clock hours whatever offset the broker
+    # runs on and whether or not it observes DST. Oman (GST) is GMT+4, no DST.
+    session_gmt_offset: float = 4.0
+    session_start_hour: int = 6         # 06:00 Oman = 02:00 GMT
+    session_end_hour: int = 23          # 23:00 Oman = 19:00 GMT
     close_before_weekend: bool = True
     weekend_close_hour: int = 20        # Friday, server time
 
@@ -183,6 +188,25 @@ class TradeConfig:
                 kwargs[field_name] = caster(raw)
         kwargs.update(overrides)
         return cls(**kwargs)
+
+    def session_now(self) -> "datetime":
+        """Current time in the zone the session hours are expressed in."""
+        from datetime import datetime, timedelta, timezone
+        return datetime.now(timezone.utc) + timedelta(hours=self.session_gmt_offset)
+
+    def in_session(self, when=None) -> bool:
+        """Is `when` (default: now) inside the configured session window?"""
+        if not self.use_session_filter:
+            return True
+        t = when if when is not None else self.session_now()
+        minutes = t.hour * 60 + t.minute
+        start = self.session_start_hour * 60
+        end = self.session_end_hour * 60
+        if start == end:
+            return True
+        if start < end:
+            return start <= minutes < end
+        return minutes >= start or minutes < end      # wraps midnight
 
     def unit_size(self, point: float) -> float:
         """Convert one `distance_unit` into a price distance for this symbol."""

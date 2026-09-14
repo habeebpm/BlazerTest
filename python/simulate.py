@@ -71,14 +71,21 @@ def csv_frames(path: str, cfg: TradeConfig) -> list[pd.DataFrame]:
 
 
 def simulate(cfg: TradeConfig, frames: list[pd.DataFrame], spread: float = 0.25,
-             warmup: int = 300) -> dict:
-    """Walk the bars, open and close positions, and count what actually fills."""
+             warmup: int = 300, apply_session: bool = True) -> dict:
+    """Walk the bars, open and close positions, and count what actually fills.
+
+    With `apply_session` the configured session window is enforced using each
+    bar's timestamp, treated as a time in the session zone. Positions already
+    open are still managed outside the window - only new entries are blocked,
+    which is what the EA does.
+    """
     sl_dist = cfg.sl_distance(POINT)
     trail = cfg.trail_distance(POINT)
     trail_start = cfg.trail_start_distance(POINT)
 
-    fills = bars = blocked_cap = blocked_opposite = 0
+    fills = bars = blocked_cap = blocked_opposite = blocked_session = 0
     holds: list[int] = []
+    session_bars = 0
 
     for df in frames:
         positions: list[dict] = []
@@ -104,8 +111,14 @@ def simulate(cfg: TradeConfig, frames: list[pd.DataFrame], spread: float = 0.25,
                 open_still.append(pos)
             positions = open_still
 
+            in_session = (not apply_session) or cfg.in_session(df.index[i])
+            session_bars += in_session
+
             sig = st.evaluate(df, cfg, i)
             if not sig.direction:
+                continue
+            if not in_session:
+                blocked_session += 1
                 continue
             if len(positions) >= cfg.max_open_positions:
                 blocked_cap += 1
@@ -122,9 +135,11 @@ def simulate(cfg: TradeConfig, frames: list[pd.DataFrame], spread: float = 0.25,
             fills += 1
         bars += len(df) - warmup
 
-    signals = fills + blocked_cap + blocked_opposite
+    signals = fills + blocked_cap + blocked_opposite + blocked_session
     return {
         "fills": fills,
+        "blocked_session": blocked_session,
+        "session_share": session_bars / bars if bars else 0.0,
         "fills_per_day": BARS_PER_DAY * fills / bars if bars else 0.0,
         "signals_per_day": BARS_PER_DAY * signals / bars if bars else 0.0,
         "avg_hold_bars": float(np.mean(holds)) if holds else 0.0,
@@ -143,7 +158,11 @@ def report(name: str, cfg: TradeConfig, res: dict, spread: float) -> None:
     print(f"  avg hold       {res['avg_hold_bars']:>6.0f} bars  "
           f"({res['avg_hold_bars']*5/60:.1f} hours)")
     print(f"  blocked        {res['blocked_cap']} by the position cap, "
-          f"{res['blocked_opposite']} by an opposing position")
+          f"{res['blocked_opposite']} by an opposing position, "
+          f"{res['blocked_session']} outside the session")
+    print(f"  session        {cfg.session_start_hour:02d}:00-{cfg.session_end_hour:02d}:00 "
+          f"GMT{cfg.session_gmt_offset:+g} = {res['session_share']*100:.0f}% of the clock"
+          if cfg.use_session_filter else "  session        filter off (24h)")
     print(f"  capacity       {2 * BARS_PER_DAY / max(res['avg_hold_bars'], 1):.1f}/day "
           f"is the ceiling at {cfg.max_open_positions} concurrent positions")
     print(f"  spread cost    ${cost:.2f}/trade -> "

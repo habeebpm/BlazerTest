@@ -46,9 +46,9 @@ recently **closed** bar (no repainting), once per new bar. Bollinger Bands act
 as a veto rather than a vote.
 
 Entries are evaluated on each closed **M5** bar and must score at least
-**45/100** (`InpMinConfidence`), with up to **4 positions open at a time**
-(same direction only) and **no daily trade cap** (`InpMaxTradesPerDay = 0`) —
-about **8.5 fills per day**.
+**50/100** (`InpMinConfidence`), inside a **06:00–23:00 Oman (GMT+4)** session,
+with up to **4 positions open at a time** (same direction only) and **no daily
+trade cap** (`InpMaxTradesPerDay = 0`) — about **4.6 fills per day**.
 
 **Every confluence and every confirmation is computed on M5.** The only
 higher-timeframe input is the EMA(200) macro bias on `InpTrendTF` (H4), which
@@ -56,8 +56,8 @@ feeds the trend confluence's *pass* test, not its confirmation.
 
 At 2 of 3 the trend leg is optional, so entries against the H4 trend become
 possible — set `InpRequireTrendConfluence = true` to block them. Between the
-2-of-3 rule, M5 entries and the 45-point gate this produces ~13.0 qualifying
-signals/day, of which roughly **8.5 actually fill** — a signal only trades when
+2-of-3 rule, M5 entries and the 50-point gate this produces ~9.3 qualifying
+signals/day, of which roughly **4.6 actually fill** — a signal only trades when
 a position slot is free. `python/simulate.py` reports the difference.
 
 **Running on a Mac?** MT5 for macOS runs this EA natively — that is the
@@ -94,8 +94,8 @@ To keep it running while the display is off:
   sleeping on power adapter when the display is off" must be **on**.
 - Or from Terminal: `caffeinate -dimsu` — keeps the machine awake until you
   Ctrl-C it.
-- Keep it on the power adapter. A 13-hour session window (07:00–20:00 server
-  time) will not survive on battery.
+- Keep it on the power adapter. A 17-hour session window (06:00–23:00 Oman)
+  will not survive on battery.
 - For genuinely unattended 24/5 operation, a Windows VPS is the standard
   answer — it also removes the sleep, Wi-Fi and reboot problems entirely.
 
@@ -126,18 +126,18 @@ is worth a third: passing earns 60% of it, and the rest scales with how far
 past its confirmation threshold the indicator sits. In testing the floor is
 40, the median 50 and the practical ceiling the mid-80s.
 
-**`InpMinConfidence = 45` — only setups scoring 45 or better are traded.**
-The qualifying floor is 40, so this trims only the weakest band and leaves the
-2-of-3 rule doing most of the work. Measured fills/day:
+**`InpMinConfidence = 50` — only setups scoring 50 or better are traded.**
+The qualifying floor is 40, so this drops the weakest band. Measured fills/day
+(24h; the session window trims these further — see below):
 
 | Gate | 2 pos | 4 pos | 6 pos |
 |---|---|---|---|
-| 50 | 4.7 | 6.9 | 8.1 |
-| **45 (shipped)** | 5.6 | **8.5** | 10.1 |
+| **50 (shipped)** | 4.7 | **6.9** | 8.1 |
+| 45 | 5.6 | 8.5 | 10.1 |
 | off | 6.4 | 10.0 | 12.0 |
 
-Raise to 50 for fewer, more selective entries; 45 with 6 positions reaches
-~10/day if frequency matters more.
+With the 06:00–23:00 Oman window applied, the shipped setting yields **4.6
+fills/day** (gate 45 would give 5.7, the gate off 6.6).
 
 **This score is not a win probability.** It measures how strongly the
 indicators agree at entry, not the odds of profit. No win rate for this EA is
@@ -163,9 +163,11 @@ known — see "Before going live" for how to measure one.
   over-trading.
 - **Spread filter** — skips new entries when the current spread exceeds
   `InpMaxSpreadPoints`.
-- **Session filter** — restricts new entries to a configurable server-time
-  window (defaults to the London/US liquidity overlap) to avoid thin,
-  choppy Asian-session price action.
+- **Session filter** — restricts new entries to a configurable window,
+  defaulting to **06:00–23:00 Oman (GMT+4)**. The hours are interpreted in
+  `InpSessionGmtOffset` hours from GMT, **not** broker server time, so the
+  window means the same wall-clock hours whatever offset your broker runs on
+  and regardless of broker DST. The EA logs the mapping at startup.
 - **Weekend flatten** — optionally closes all open positions ahead of the
   Friday close to avoid weekend gap risk.
 
@@ -183,7 +185,7 @@ so they can be optimized in the Strategy Tester:
 - `InpAtrPeriod`, `InpBandsPeriod`, `InpBandsDeviation` — volatility filters.
 - `InpUseFixedLot`, `InpFixedLot`, `InpRiskPercent`, `InpAtrSlMultiplier`, `InpRiskRewardRatio`, `InpMaxLotSize` — sizing/stops.
 - `InpMaxDailyLossPct`, `InpMaxTradesPerDay`, `InpMaxOpenPositions` — trade-frequency guards.
-- `InpUseSessionFilter`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — timing filters.
+- `InpUseSessionFilter`, `InpSessionGmtOffset`, `InpSessionStartHour/Min`, `InpSessionEndHour/Min`, `InpCloseBeforeWeekend` — timing filters.
 - `InpMaxSpreadPoints` — spread guard.
 
 ## Before going live

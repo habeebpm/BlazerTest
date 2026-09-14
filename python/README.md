@@ -5,7 +5,8 @@ Python port of the MQL5 EA. It watches XAUUSD and opens **0.01 lots** with a
 when at least **2 of the 3 confluences** agree and **at least one of them is
 confirmed**. Entries are evaluated on every **M5 candle close**, with up to
 **4 positions open at a time** (same direction only), **no daily trade cap**,
-and a **setup score of 45 or better** required — about **8.5 fills per day**.
+and a **setup score of 50 or better** required, inside a **06:00–23:00 Oman
+(GMT+4)** session — about **4.6 fills per day**.
 
 > **On a Mac?** The `MetaTrader5` Python package is Windows-only. See
 > [Running on a Mac](#running-on-a-mac) — the MQL5 EA is the simplest route.
@@ -57,10 +58,8 @@ Floor is **40** (two passes, one barely confirmed — the minimum that qualifies
 and the practical ceiling is mid-80s; a perfect 100 needs all three confluences
 confirmed *and* every indicator far past its threshold.
 
-**The shipped gate is `min_confidence = 45`** — setups scoring below 45 are
-skipped. The qualifying floor is 40, so this trims only the weakest band and
-leaves the 2-of-3 rule doing most of the work. At the shipped 4 positions that
-is ~8.5 fills/day.
+**The shipped gate is `min_confidence = 50`** — setups scoring below 50 are
+skipped. The qualifying floor is 40, so this drops the weakest band.
 
 **Every confirmation is evaluated on the working timeframe (M5).** The EMA gap
 uses the M5 EMAs and M5 ATR; the MACD histogram and RSI are M5; the ADX and DI
@@ -91,9 +90,18 @@ Fills per day by gate and position cap (all other filters on):
 | 45 | 5.6 | 7.3 | 8.5 | 9.5 | 10.1 |
 | **off (shipped)** | 6.4 | 8.4 | **10.0** | 11.2 | 12.0 |
 
-The shipped combination is **gate 45 + 4 positions = 8.5 fills/day**. Gate 45
-with 6 positions gives 10.1; gate 50 with 4 returns to the more selective
-6.9/day.
+Those figures are for 24-hour trading. With the shipped **06:00–23:00 Oman**
+session applied, actual fills are:
+
+| Window | Hours | Gate 50 | Gate 45 | Gate off |
+|---|---|---|---|---|
+| 07:00–20:00 (old) | 13 | 3.6 | 4.4 | 5.1 |
+| **06:00–23:00 (shipped)** | **17** | **4.6** | 5.7 | 6.6 |
+| no session filter | 24 | 6.9 | 8.5 | 10.0 |
+
+Where the shipped 9.3 qualifying signals/day go: 3.5 blocked by the session
+window, 1.1 by the position cap, 0.1 by an opposing trade, leaving **4.6 fills**
+— roughly 23 trades a week.
 
 **Signals are not trades.** A signal only becomes a fill when a position slot
 is free and nothing opposing is open, and slots stay occupied until the stop
@@ -292,8 +300,12 @@ Output goes to `logs/trader.log` and every entry is appended to
 
 - Trades are evaluated once per closed working-timeframe bar and use only
   closed-bar values — no repainting.
-- With `cross_lookback = 8`, the 2-of-3 rule, M5 entries and the 45 gate,
-  expect roughly **13.0 qualifying signals and ~8.5 actual fills per day**. The gap is the
+- With `cross_lookback = 8`, the 2-of-3 rule, M5 entries, the 50 gate and the
+  06:00–23:00 Oman window, expect ~**9.3 qualifying signals and ~4.6 actual
+  fills per day**.
+- **Session hours are GMT-offset based, not broker time.** `session_gmt_offset`
+  defaults to 4.0 (Oman/GST, no DST), so the window means the same wall-clock
+  hours whatever offset your broker runs on and regardless of broker DST. The gap is the
   position cap plus holding time; run `python simulate.py` to see it broken
   down. M5 is noisier than M15, so more setups will be marginal.
 - **Trade frequency has a hard ceiling.** With the quality filters on, fills
@@ -307,7 +319,7 @@ Output goes to `logs/trader.log` and every entry is appended to
   all of them together. One XAUUSD lot is 100oz, so $1 of price is $1 per 0.01
   lot: a $6.00 stop risks **$6 per trade, $24 across four positions**. The 3%
   daily-loss breaker allows 5 losing trades on a $1,000 account, 2.5 on $500.
-- At ~8.5 fills/day the spread costs about **$2.10/day, ~$43/month** at a
+- At ~4.6 fills/day the spread costs about **$1.15/day, ~$25/month** at a
   $0.25 spread and 0.01 lots. Run `python simulate.py` to recompute for your spread. Requiring the cross on the very last closed bar (the obvious reading)
   drops that to about **one signal per 2000 bars**, because ADX is still below
   its threshold at the moment the EMAs cross. That measurement is why the

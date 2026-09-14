@@ -22,12 +22,12 @@
 //|                                                                    |
 //| A trade needs InpMinConfluences of the three (default 2) with at   |
 //| least InpMinConfirmed of them confirmed (default 1), AND a setup    |
-//| score of at least InpMinConfidence (45 of 100).                     |
+//| score of at least InpMinConfidence (50 of 100).                     |
 //|                                                                    |
 //| The qualifying floor is 40, so a gate of 45 trims only the weakest |
 //| band. Measured fills/day, by gate and position cap -                |
-//|   gate 50: 4.7 (2 positions) 6.9 (4) 8.1 (6)                        |
-//|   gate 45: 5.6               8.5     10.1   <- shipped at 4         |
+//|   gate 50: 4.7 (2 positions) 6.9 (4) 8.1 (6) <- shipped at 4        |
+//|   gate 45: 5.6               8.5     10.1                          |
 //|   gate off:6.4              10.0     12.0                          |
 //|                                                                    |
 //| EVERY confirmation test runs on the working timeframe (M5): the EMA |
@@ -114,7 +114,7 @@ input double   InpConfirmRsiMargin  = 5.0;          // Momentum confirm: RSI thi
 input double   InpConfirmAdxLevel   = 28.0;         // Strength confirm: minimum ADX
 input double   InpConfirmDiGap      = 8.0;          // Strength confirm: minimum |+DI - -DI|
 input bool     InpUseBandsVeto      = true;         // Veto entries at/beyond the Bollinger band
-input double   InpMinConfidence     = 45.0;         // Min setup score 0-100 to enter (0 = off)
+input double   InpMinConfidence     = 50.0;         // Min setup score 0-100 to enter (0 = off)
 input bool     InpShowConfidence    = true;         // Show the live score in the chart comment
 
 input group "=== Trend-Strength Filter (ADX/DMI) ==="
@@ -142,11 +142,12 @@ input int      InpBreakevenBufferPts= 20;             // Points of buffer added 
 input double   InpTrailStartAtrMult = 1.5;            // Start trailing once profit >= ATR * this
 input double   InpTrailAtrMult      = 1.2;            // Trail distance = ATR * this
 
-input group "=== Session Filter (broker/server time) ==="
+input group "=== Session Filter ==="
 input bool     InpUseSessionFilter  = true;           // Enable session filter
-input int      InpSessionStartHour  = 7;              // Session start hour (server time)
+input double   InpSessionGmtOffset  = 4.0;            // Session hours are in GMT+this (Oman = 4)
+input int      InpSessionStartHour  = 6;              // Session start hour (in the zone above)
 input int      InpSessionStartMin   = 0;               // Session start minute
-input int      InpSessionEndHour    = 20;              // Session end hour (server time)
+input int      InpSessionEndHour    = 23;              // Session end hour (in the zone above)
 input int      InpSessionEndMin     = 0;                // Session end minute
 input bool     InpCloseBeforeWeekend= true;             // Flatten all positions before weekend close
 input int      InpWeekendCloseHour  = 20;               // Friday hour (server time) to start flattening
@@ -171,6 +172,9 @@ datetime       g_currentDay       = 0;
 double         g_dayStartEquity   = 0.0;
 int            g_tradesToday      = 0;
 bool           g_dailyLossHit     = false;
+
+// forward declaration: OnInit reports the session mapping before this is defined
+datetime SessionZoneTime();
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -234,6 +238,19 @@ int OnInit()
    trade.SetDeviationInPoints(InpSlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.LogLevel(LOG_LEVEL_ERRORS);
+
+   if(InpUseSessionFilter)
+   {
+      MqlDateTime zs, ss;
+      TimeToStruct(SessionZoneTime(), zs);
+      TimeToStruct(TimeCurrent(), ss);
+      double serverOffset = (double)(TimeCurrent() - TimeGMT()) / 3600.0;
+      PrintFormat("XAUUSD_Confluence_EA: session %02d:%02d-%02d:%02d in GMT%+.1f "
+                  "(now %02d:%02d there). Broker server is GMT%+.1f, now %02d:%02d.",
+                  InpSessionStartHour, InpSessionStartMin,
+                  InpSessionEndHour, InpSessionEndMin, InpSessionGmtOffset,
+                  zs.hour, zs.min, serverOffset, ss.hour, ss.min);
+   }
 
    g_currentDay     = DateToDay(TimeCurrent());
    g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -314,12 +331,23 @@ bool IsNewBar()
 //+------------------------------------------------------------------+
 //| Session / weekday filter                                          |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Current time in the zone the session hours are expressed in.      |
+//| Derived from GMT rather than server time, so the window means the |
+//| same wall-clock hours whatever offset the broker runs on and      |
+//| whether or not the broker observes DST.                           |
+//+------------------------------------------------------------------+
+datetime SessionZoneTime()
+{
+   return(TimeGMT() + (int)MathRound(InpSessionGmtOffset * 3600.0));
+}
+
 bool IsWithinSession()
 {
    if(!InpUseSessionFilter) return(true);
 
    MqlDateTime s;
-   TimeToStruct(TimeCurrent(), s);
+   TimeToStruct(SessionZoneTime(), s);
    int nowMin   = s.hour*60 + s.min;
    int startMin = InpSessionStartHour*60 + InpSessionStartMin;
    int endMin   = InpSessionEndHour*60   + InpSessionEndMin;
@@ -387,7 +415,7 @@ bool HandleWeekendFlatten()
    if(!InpCloseBeforeWeekend) return(false);
 
    MqlDateTime s;
-   TimeToStruct(TimeCurrent(), s);
+   TimeToStruct(SessionZoneTime(), s);
    if(s.day_of_week == FRIDAY && s.hour >= InpWeekendCloseHour)
    {
       if(CountOpenPositions(-1) > 0)

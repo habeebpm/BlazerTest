@@ -205,8 +205,9 @@ for pos in extra:
     POSITIONS.remove(pos)
 
 print("\n=== 7b. session filter (explicit, clock-independent) ===")
-from datetime import datetime as _dt
-_hour = _dt.now().hour
+# the window is evaluated in the SESSION ZONE (GMT + session_gmt_offset),
+# not the machine's local clock, so build the probes from that hour
+_hour = TradeConfig().session_now().hour
 # a window that definitely excludes the current hour
 _closed = TradeConfig(use_session_filter=True,
                       session_start_hour=(_hour + 2) % 24,
@@ -214,18 +215,18 @@ _closed = TradeConfig(use_session_filter=True,
                       close_before_weekend=False)
 _bot = trader.Bot(_closed, dry_run=True)
 _bot.start(probe_market=False)
-print(f"   hour {_hour}, window {_closed.session_start_hour}-{_closed.session_end_hour}"
+print(f"   zone hour {_hour}, window {_closed.session_start_hour}-{_closed.session_end_hour}"
       f" -> entry_blocked: {_bot.entry_blocked()}")
 assert _bot.entry_blocked() is not None, "outside its window the session filter must block"
 
 # a window that definitely includes it
 _open_cfg = TradeConfig(use_session_filter=True,
                         session_start_hour=_hour,
-                        session_end_hour=(_hour + 1) % 24 or 24,
+                        session_end_hour=(_hour + 1) if _hour < 23 else 24,
                         close_before_weekend=False)
 _bot2 = trader.Bot(_open_cfg, dry_run=True)
 _bot2.start(probe_market=False)
-print(f"   hour {_hour}, window {_open_cfg.session_start_hour}-{_open_cfg.session_end_hour}"
+print(f"   zone hour {_hour}, window {_open_cfg.session_start_hour}-{_open_cfg.session_end_hour}"
       f" -> entry_blocked: {_bot2.entry_blocked()}")
 assert _bot2.entry_blocked() is None, "inside its window the session filter must allow"
 

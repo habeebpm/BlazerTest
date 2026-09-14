@@ -133,8 +133,11 @@ class Bot:
             return f"max trades/day reached ({self.trades_today})"
         if len(mc.get_positions(cfg)) >= cfg.max_open_positions:
             return f"max open positions reached ({cfg.max_open_positions})"
-        if cfg.use_session_filter and not (cfg.session_start_hour <= now.hour < cfg.session_end_hour):
-            return f"outside session {cfg.session_start_hour}:00-{cfg.session_end_hour}:00"
+        if not cfg.in_session():
+            zone = cfg.session_now()
+            return (f"outside session {cfg.session_start_hour}:00-{cfg.session_end_hour}:00 "
+                    f"GMT{cfg.session_gmt_offset:+g} (now {zone:%H:%M} there)")
+        now = cfg.session_now()
         if cfg.close_before_weekend and now.weekday() == 4 and now.hour >= cfg.weekend_close_hour:
             return "weekend close window"
         spread = mc.get_symbol_spec(cfg).spread_points
@@ -263,7 +266,7 @@ class Bot:
             mc.modify_stop(cfg, pos, new_sl, spec.digits, self.dry_run)
 
     def flatten_for_weekend(self) -> None:
-        now = datetime.now()
+        now = self.cfg.session_now()
         if not self.market_open:
             return
         if not (self.cfg.close_before_weekend and now.weekday() == 4
