@@ -84,7 +84,6 @@ log = logging.getLogger("claude_signal_bot")
 
 DEFAULT_MODEL = "claude-sonnet-5"
 HEADER_RE = re.compile(r"(\w+)=(\S+)")
-JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 TWO_LOSS_THRESHOLD = 2
 TIME_DECAY_SECONDS = 10 * 60
 SETUP_TYPES = ("4.1", "4.2", "4.3", "discretionary")
@@ -185,6 +184,7 @@ class BotConfig:
     min_confidence: float = 60.0
     min_atr_mult: float = 0.25   # sanity floor on the proposed stop distance
     max_atr_mult: float = 3.0    # sanity ceiling on the proposed stop distance
+    max_concurrent_signals: int = 1   # pending (unresolved) signals allowed at once
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_timeout: float = 10.0
@@ -595,6 +595,7 @@ def register_trade_history(state: dict, signal_id: int, decision: dict) -> None:
         "signal_id": signal_id, "setup_type": decision["setup_type"], "direction": decision["action"],
         "entry": decision["entry"], "sl": decision["sl"], "tp": decision["tp"],
         "confidence": decision["confidence"], "reasoning": decision["reasoning"],
+        "self_correction": decision.get("self_correction", ""),
         "outcome": "PENDING", "profit": None, "resolution_time": None,
     }
     if len(history) > MAX_TRADE_HISTORY:
@@ -620,9 +621,10 @@ def summarize_recent_performance(state: dict, limit: int = 8) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Time-decay invalidation (risk containment, kept mechanical). Best-effort:
-# the file protocol has no per-position selector, so an expiry closes every
-# position this EA holds, not just the stale one.
+# Time-decay invalidation (risk containment, kept mechanical). Targeted: the
+# EA closes only the specific position tied to the expired signal id (via
+# CLOSE_ID, resolved through its own signal-id -> position-ticket map), not
+# every position it holds.
 # --------------------------------------------------------------------------
 
 def register_pending(state: dict, signal_id: int, setup_type: str) -> None:
@@ -644,16 +646,24 @@ def resolve_pending(state: dict, outcomes: list[dict]) -> None:
             history[sid]["resolution_time"] = datetime.now(timezone.utc).isoformat()
 
 
-def expire_stale_pending(state: dict, decay_seconds: float) -> list[str]:
+def expire_stale_pending(state: dict, decay_seconds: float, limit: int = 1) -> list[str]:
+    """Returns up to `limit` expired signal ids, oldest first, and removes
+    only those from `pending`. The signal file holds one message at a time
+    (each write overwrites the last), so a single run_once cycle can only
+    reliably deliver one CLOSE_ID - anything beyond `limit` stays in
+    `pending` and is retried (still expired) on the next cycle rather than
+    silently dropped."""
     pending = state.get("pending", {})
     now = datetime.now(timezone.utc)
-    expired = []
-    for sid, info in list(pending.items()):
-        issued = datetime.fromisoformat(info["issued_at"])
-        if (now - issued).total_seconds() >= decay_seconds:
-            expired.append(sid)
-            del pending[sid]
-    return expired
+    expired_all = [
+        sid for sid, info in pending.items()
+        if (now - datetime.fromisoformat(info["issued_at"])).total_seconds() >= decay_seconds
+    ]
+    expired_all.sort(key=lambda sid: pending[sid]["issued_at"])
+    to_close = expired_all[:limit]
+    for sid in to_close:
+        del pending[sid]
+    return to_close
 
 
 # --------------------------------------------------------------------------
@@ -693,7 +703,8 @@ def build_overlay_context(snap: ChartSnapshot) -> dict:
 
 def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction: str,
                            h1_direction: str, regime: str, hints: dict, overlay: dict,
-                           standdown_active: list[str], performance: dict) -> tuple[str, str]:
+                           standdown_active: list[str], performance: dict, pending: dict,
+                           cfg: BotConfig) -> tuple[str, str]:
     system = (
         f"You are a disciplined, real-time intraday trading analyst for {snap.symbol}, "
         "making a 10-minute-horizon scalp decision. You reason from the live data given "
@@ -705,12 +716,18 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         f"{TRADING_KNOWLEDGE}\n"
         "Setup types you may cite: 4.1 (RSI-extreme bounce), 4.2 (trend-continuation "
         "pullback), 4.3 (liquidity-sweep reversal), or discretionary.\n\n"
-        "Hard constraints you must still respect (these are enforced in code as a "
-        "backstop, but decide as if they are real): never propose a setup type listed "
-        "as under an active two-loss standdown; sl/tp must be absolute prices on the "
-        "correct side of the current bid/ask; keep the stop distance broadly consistent "
-        "with current ATR (very roughly 0.25x-3x ATR14(M5)) - a stop far outside that is "
-        "either noise-sized or unreasonably tight, not a considered choice.\n\n"
+        "Hard constraints you must still respect (these are the ACTUAL values enforced in "
+        "code as a backstop - decide as if they are real, not just decorative): never "
+        "propose a setup type listed as under an active two-loss standdown; sl/tp must be "
+        "absolute prices on the correct side of the current bid/ask; the stop distance "
+        f"will be rejected outright if it falls outside {cfg.min_atr_mult}x-{cfg.max_atr_mult}x "
+        "ATR14(M5) - a stop far outside that is either noise-sized or unreasonably tight, "
+        f"not a considered choice; confidence below {cfg.min_confidence:.0f} will be rejected "
+        "and traded as NONE regardless of what you propose, so don't report a confidence you "
+        "don't actually mean; do not propose BUY/SELL if MAX CONCURRENT SIGNALS below shows "
+        "the limit is already reached - a live position or pending signal already exists and "
+        "adding another is not part of this system's design (10-minute single scalps, not "
+        "pyramiding).\n\n"
         "Reply with STRICT JSON only, no markdown fences, no text outside the object: "
         '{"action": "BUY"|"SELL"|"NONE", "setup_type": "4.1"|"4.2"|"4.3"|"discretionary"|null, '
         '"sl": <number or null>, "tp": <number or null>, "confidence": <integer 0-100>, '
@@ -732,7 +749,10 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         f"Computed setup hints (advisory only, weigh them, don't just obey them): "
         f"{json.dumps(hints, default=str)}\n\n"
         f"Overlay context: {json.dumps(overlay)}\n"
-        f"Setup types currently on two-loss standdown (do not propose these): {standdown_active}\n\n"
+        f"Setup types currently on two-loss standdown (do not propose these): {standdown_active}\n"
+        f"MAX CONCURRENT SIGNALS: {len(pending)}/{cfg.max_concurrent_signals} currently pending "
+        f"{json.dumps(list(pending.values()))} - do not add a new BUY/SELL if this is already at "
+        "the limit.\n\n"
         f"RECENT PERFORMANCE HISTORY (your own past decisions and reasoning, paired with what "
         f"actually happened - read this before deciding, per the SELF-CORRECTION guidance above):\n"
         f"Win/loss by setup type: {json.dumps(performance['by_setup_type'])}\n"
@@ -757,11 +777,44 @@ def call_claude_analysis(system: str, user: str, cfg: BotConfig) -> str:
     return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
 
+def _extract_json_object(text: str) -> str:
+    """Finds the first balanced {...} object in text, tracking string
+    literals so a brace inside a quoted value (e.g. Claude's own reasoning
+    text) can't be mistaken for the object's end. More robust than a
+    greedy regex against any stray commentary before/after the JSON."""
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("no '{' found")
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    raise ValueError("no balanced '}' found")
+
+
 def parse_claude_decision(raw: str) -> dict:
-    match = JSON_BLOCK_RE.search(raw)
-    if not match:
-        raise ValueError(f"no JSON object in Claude's reply: {raw[:200]!r}")
-    data = json.loads(match.group(0))
+    try:
+        json_text = _extract_json_object(raw)
+    except ValueError as exc:
+        raise ValueError(f"no JSON object in Claude's reply: {raw[:200]!r}") from exc
+    data = json.loads(json_text)
 
     action = str(data.get("action", "NONE")).upper()
     if action not in VALID_ACTIONS:
@@ -792,6 +845,10 @@ def validate_decision(decision: dict, snap: ChartSnapshot, state: dict, cfg: Bot
     if not standdown_gate(state, setup_type):
         return False, f"setup {setup_type} is on two-loss standdown"
 
+    if len(state.get("pending", {})) >= cfg.max_concurrent_signals:
+        return False, (f"already at max concurrent signals "
+                        f"({len(state.get('pending', {}))}/{cfg.max_concurrent_signals} pending)")
+
     if decision["confidence"] < cfg.min_confidence:
         return False, f"confidence {decision['confidence']:.0f} below floor {cfg.min_confidence:.0f}"
 
@@ -811,10 +868,13 @@ def validate_decision(decision: dict, snap: ChartSnapshot, state: dict, cfg: Bot
         return False, "zero stop distance"
 
     atr = snap.ind["M5"].get("atr14")
-    if atr and atr > 0:
-        lo, hi = cfg.min_atr_mult * atr, cfg.max_atr_mult * atr
-        if not (lo <= stop_distance <= hi):
-            return False, f"stop distance {stop_distance:.2f} outside sane band [{lo:.2f}, {hi:.2f}] (ATR={atr})"
+    if not atr or atr <= 0:
+        # No ATR to sanity-check against - fail safe rather than let an
+        # unbounded stop distance through unvalidated.
+        return False, "no ATR14(M5) available to sanity-check the stop distance"
+    lo, hi = cfg.min_atr_mult * atr, cfg.max_atr_mult * atr
+    if not (lo <= stop_distance <= hi):
+        return False, f"stop distance {stop_distance:.2f} outside sane band [{lo:.2f}, {hi:.2f}] (ATR={atr})"
 
     return True, "ok"
 
@@ -902,9 +962,10 @@ def analyze_with_claude(snap: ChartSnapshot, state: dict, cfg: BotConfig) -> dic
     overlay = build_overlay_context(snap)
     standdown_active = active_standdowns(state)
     performance = summarize_recent_performance(state)
+    pending = state.get("pending", {})
 
-    system, user = build_analysis_prompt(snap, m5_direction, m15_direction, h1_direction,
-                                          regime, hints, overlay, standdown_active, performance)
+    system, user = build_analysis_prompt(snap, m5_direction, m15_direction, h1_direction, regime,
+                                          hints, overlay, standdown_active, performance, pending, cfg)
     raw = call_claude_analysis(system, user, cfg)
     decision = parse_claude_decision(raw)
     decision.update({
@@ -928,20 +989,26 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
     m5_direction_now = direction_for(snap.ind["M5"])
     update_standdown(state, outcomes, m5_direction_now)
 
+    # At most one expiry is actioned per cycle (see expire_stale_pending) -
+    # the signal file can only carry one message, so a targeted CLOSE_ID
+    # for signal A must not be overwritten by one for signal B in the same
+    # write. Any further stale entries are picked up on the next cycle.
     expired = expire_stale_pending(state, cfg.time_decay_seconds)
     if expired:
+        sid = expired[0]
+        setup_type = state.get("trade_history", {}).get(sid, {}).get("setup_type", "unknown")
         state["last_signal_id"] = state.get("last_signal_id", 0) + 1
         expire_id = state["last_signal_id"]
-        log.info("time-decay: %s signal(s) unresolved after %ds, issuing CLOSE (id=%d)",
-                  expired, int(cfg.time_decay_seconds), expire_id)
+        log.info("time-decay: signal id=%s unresolved after %ds, issuing targeted close (id=%d)",
+                  sid, int(cfg.time_decay_seconds), expire_id)
         if not cfg.dry_run:
-            write_signal(cfg, expire_id, snap.symbol, "CLOSE", 0.0, 0.0, 0.0, "timedecay", "10-minute time-decay")
-        for sid in expired:
-            record_trade_log({
-                "timestamp": datetime.now(timezone.utc).isoformat(), "outcome": "EXPIRED_NO_FILL",
-                "resolution_time": datetime.now(timezone.utc).isoformat(),
-                "notes": f"original signal_id={sid}",
-            })
+            write_signal(cfg, expire_id, snap.symbol, "CLOSE_ID", float(sid), 0.0, 0.0,
+                         setup_type, "10-minute time-decay")
+        record_trade_log({
+            "timestamp": datetime.now(timezone.utc).isoformat(), "setup_type": setup_type,
+            "outcome": "EXPIRED_NO_FILL", "resolution_time": datetime.now(timezone.utc).isoformat(),
+            "notes": f"original signal_id={sid}",
+        })
 
     last_bar_time = snap.bars["M5"]["time"].iloc[-1].isoformat()
     if state.get("last_bar_time") == last_bar_time:
@@ -1110,6 +1177,17 @@ def selftest() -> None:
     assert unknown_setup["setup_type"] == "discretionary"
     print("  parse_claude_decision normalizes an unrecognized setup_type: OK")
 
+    # a brace inside a string field, and trailing commentary, must not confuse
+    # extraction the way a naive greedy "first { to last }" regex would
+    tricky = parse_claude_decision(
+        '{"action": "NONE", "setup_type": null, "sl": null, "tp": null, "confidence": 40, '
+        '"self_correction": "nothing notable", '
+        '"reasoning": "price is consolidating near the {2340} handle, no edge"}\n\n'
+        'Let me know if you would like a deeper structural read {like this}.'
+    )
+    assert tricky["action"] == "NONE" and "consolidating" in tricky["reasoning"]
+    print("  parse_claude_decision handles a brace inside a string field and trailing text: OK")
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
@@ -1179,7 +1257,16 @@ def selftest() -> None:
         assert "1" in e2e_state["pending"]
         assert e2e_state["trade_history"]["1"]["outcome"] == "PENDING"
         assert e2e_state["trade_history"]["1"]["reasoning"] == good_decision["reasoning"]
+        assert e2e_state["trade_history"]["1"]["self_correction"] == good_decision["self_correction"]
         print("  run_once end-to-end (Claude mocked) registers a pending signal + trade history: OK")
+
+        # a second signal must be rejected outright while one is already pending -
+        # force a "new bar" so run_once doesn't just skip the cycle as unchanged
+        e2e_state["last_bar_time"] = None
+        with patch(f"{__name__}.call_claude_analysis", return_value=fake_reply):
+            e2e_state = run_once(cfg, e2e_state)
+        assert e2e_state["last_signal_id"] == 1, "max-concurrent-signals backstop should have blocked a 2nd BUY"
+        print("  validate_decision's max-concurrent-signals backstop blocks stacking a 2nd signal: OK")
 
         # --- self-correction feedback loop: outcome resolution feeds back into history ---
         resolve_pending(e2e_state, [
@@ -1192,14 +1279,24 @@ def selftest() -> None:
         assert perf["recent_trades"][0]["reasoning"] == good_decision["reasoning"]
         print(f"  resolve_pending feeds outcomes back into trade_history for self-correction: OK ({perf['by_setup_type']})")
 
-        # the prompt itself must actually surface that history to Claude
+        # the prompt itself must actually surface that history to Claude, and must
+        # reflect the ACTUAL configured cfg values, not a hardcoded placeholder
+        custom_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "signals2.txt",
+            ack_file=tmp_path / "ack2.txt", outcome_file=tmp_path / "outcomes2.txt",
+            state_file=tmp_path / "state2.json", dry_run=True, api_key="test-key",
+            min_atr_mult=0.5, max_atr_mult=2.0, min_confidence=72.0,
+        )
         system, user = build_analysis_prompt(
             snap, m5_dir, "BULLISH", "BULLISH", regime, hints, build_overlay_context(snap),
-            [], perf,
+            [], perf, {"3": {"setup_type": "4.1"}}, custom_cfg,
         )
         assert "SELF-CORRECTION" in system
         assert "trend pullback with re-expanding MACD" in user
-        print("  build_analysis_prompt surfaces past reasoning + outcomes to Claude: OK")
+        assert "0.5x-2.0x" in system, "prompt must reflect this run's actual ATR band, not a hardcoded one"
+        assert "72" in system, "prompt must state the actual confidence floor"
+        assert "1/1 currently pending" in user
+        print("  build_analysis_prompt surfaces past reasoning + outcomes + the real cfg constraints: OK")
 
         # --- Telegram fill notifications (network itself is never touched here) ---
         telegram_cfg = BotConfig(
@@ -1244,7 +1341,7 @@ def selftest() -> None:
         assert body["chat_id"] == ["12345"] and body["text"] == ["hello from selftest"]
         print("  send_telegram_message builds the expected Bot API request: OK")
 
-        # --- time-decay (§9) ---
+        # --- time-decay (§9): targeted close, not a blanket one ---
         state3 = load_state(cfg)
         register_pending(state3, 7, "4.1")
         state3["pending"]["7"]["issued_at"] = "2000-01-01T00:00:00+00:00"
@@ -1252,6 +1349,23 @@ def selftest() -> None:
         assert expired == ["7"]
         assert "7" not in state3["pending"]
         print("  expire_stale_pending fires after the decay window: OK")
+
+        # two stale signals at once: only the oldest is closed this cycle, the
+        # other is retried next cycle rather than silently dropped or blanket-closed
+        state4 = load_state(cfg)
+        register_pending(state4, 10, "4.1")
+        register_pending(state4, 11, "4.2")
+        state4["pending"]["10"]["issued_at"] = "2000-01-01T00:00:00+00:00"
+        state4["pending"]["11"]["issued_at"] = "2000-01-01T00:00:01+00:00"   # 1s younger
+        expired = expire_stale_pending(state4, TIME_DECAY_SECONDS)
+        assert expired == ["10"], "must close only the oldest expired signal, not both at once"
+        assert "11" in state4["pending"], "the non-selected expiry must remain pending for the next cycle"
+        print(f"  expire_stale_pending processes one stale signal per cycle, oldest first: OK (kept {list(state4['pending'])})")
+
+        # the write itself must target signal 10 specifically, not a blanket close
+        write_signal(cfg, 99, "XAUUSD", "CLOSE_ID", float("10"), 0.0, 0.0, "4.1", "10-minute time-decay")
+        assert cfg.signal_file.read_text().strip().startswith("99,XAUUSD,CLOSE_ID,10.0,")
+        print("  time-decay writes a targeted CLOSE_ID (original signal id in the lot column): OK")
 
         # --- position sizing ---
         lots = position_size(snap, cfg, 2.0 * atr)
@@ -1293,6 +1407,7 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         min_confidence=args.min_confidence,
         min_atr_mult=args.min_atr_mult,
         max_atr_mult=args.max_atr_mult,
+        max_concurrent_signals=args.max_concurrent_signals,
         telegram_bot_token=args.telegram_bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=args.telegram_chat_id or os.environ.get("TELEGRAM_CHAT_ID", ""),
         dry_run=args.dry_run,
@@ -1323,6 +1438,9 @@ def main(argv: list[str] | None = None) -> int:
                          help="reject a proposed stop distance smaller than this x ATR14(M5)")
     parser.add_argument("--max-atr-mult", type=float, default=3.0,
                          help="reject a proposed stop distance larger than this x ATR14(M5)")
+    parser.add_argument("--max-concurrent-signals", type=int, default=1,
+                         help="max pending (unresolved) signals at once; XTR is a single 10-min "
+                              "scalp system by design, so this defaults conservatively to 1")
     parser.add_argument("--telegram-bot-token", default=None, help="defaults to $TELEGRAM_BOT_TOKEN")
     parser.add_argument("--telegram-chat-id", default=None, help="defaults to $TELEGRAM_CHAT_ID")
     parser.add_argument("--notify-test", action="store_true",

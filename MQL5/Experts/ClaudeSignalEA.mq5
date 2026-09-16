@@ -475,7 +475,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 //| Read the signal file and act on it if it carries a fresh id.      |
 //| Expected single-line CSV format (see python/claude_signal_bot.py):|
 //|   id,symbol,action,lot,sl,tp,timestamp,setup_type,reason          |
-//| action is one of BUY | SELL | NONE | CLOSE                        |
+//| action is one of BUY | SELL | NONE | CLOSE | CLOSE_ALL | CLOSE_ID |
+//| (CLOSE_ID reuses the `lot` column to carry the target signal id -  |
+//| see CloseBySignalId - so only that one position is closed, not     |
+//| every position this EA holds).                                     |
 //+------------------------------------------------------------------+
 void CheckSignalFile()
 {
@@ -545,6 +548,18 @@ void CheckSignalFile()
       return;
    }
 
+   if(action == "CLOSE_ID")
+   {
+      // Targeted close (used for time-decay): the `lot` column is reused to
+      // carry the ORIGINAL signal id whose position should be closed, so a
+      // stale trade doesn't take fresh, still-legitimate ones down with it.
+      long targetSignalId = (long)MathRound(lot);
+      bool found = CloseBySignalId(targetSignalId);
+      WriteAck(id, found ? "CLOSED" : "SKIPPED",
+               StringFormat("target_signal_id=%d%s", targetSignalId, found ? "" : " not found (already closed?)"));
+      return;
+   }
+
    if(action != "BUY" && action != "SELL")
    {
       PrintFormat("ClaudeSignalEA: unknown action '%s' in signal id=%d, ignored", action, id);
@@ -583,6 +598,26 @@ void CloseAllManaged()
       if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
       trade.PositionClose(ticket);
    }
+}
+
+//+------------------------------------------------------------------+
+//| Close only the one position opened for `targetSignalId`, looked up   |
+//| via the same g_posId/g_posSignal map ExecuteSignal populates and     |
+//| OnTradeTransaction consumes. Returns false if no open position is    |
+//| currently tracked under that signal id (already closed, or the       |
+//| mapping was lost across an EA restart - a documented limitation).    |
+//+------------------------------------------------------------------+
+bool CloseBySignalId(const long targetSignalId)
+{
+   int n = ArraySize(g_posSignal);
+   for(int i = 0; i < n; i++)
+   {
+      if(g_posSignal[i] != targetSignalId) continue;
+      ulong ticket = (ulong)g_posId[i];
+      if(!PositionSelectByTicket(ticket)) continue;   // stale entry; keep scanning
+      return(trade.PositionClose(ticket));
+   }
+   return(false);
 }
 
 //+------------------------------------------------------------------+

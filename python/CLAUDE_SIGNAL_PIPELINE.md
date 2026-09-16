@@ -27,12 +27,23 @@ Claude for analysis" - so this version inverts it:
   serious trading system keeps outside the model in the loop:
   - a sanity band on the proposed stop distance vs. ATR14(M5) (rejects a
     stop that's obviously mis-sized, without dictating what a *good* one
-    looks like)
+    looks like) - including outright rejecting the trade, not silently
+    skipping the check, if ATR itself isn't available to check against
   - a same-side-of-price check on SL/TP
   - the §10 two-loss standdown per setup type (Claude is told which types
     are blocked and asked to respect it; code enforces it regardless)
-  - §9's 10-minute time-decay close
+  - a max-concurrent-signals cap (default 1 - XTR is a single 10-minute
+    scalp by design, not a pyramiding system; Claude is shown how many
+    signals are currently pending so it isn't surprised by the rejection)
+  - §9's 10-minute time-decay close - targeted at the specific stale
+    position via `CLOSE_ID`, not a blanket close of everything open
   - §8's position-sizing arithmetic, applied to *Claude's* stop distance
+
+The constraints Claude is told about in its own system prompt (the ATR
+band, the confidence floor, the concurrency cap) are interpolated from the
+actual running config, not a hardcoded description - if you run with
+`--min-atr-mult 0.5 --max-atr-mult 2.0`, Claude is told exactly that, not a
+stale "0.25x-3x" left over from a different session's settings.
 
 Nothing else is gated. There's no HTF "NO_TRADE" matrix silently vetoing a
 setup, no rigid ATR-clamp formula overriding Claude's stop - those XTR
@@ -181,7 +192,9 @@ interval), `--model`, `--risk-percent` (§8, default 2.0), `--fallback-equity`
 `--time-decay-seconds` (§9, default 600), `--min-confidence` (reject
 Claude's own stated confidence below this, default 60), `--min-atr-mult` /
 `--max-atr-mult` (the sanity band on stop distance vs. ATR14(M5), default
-0.25-3.0).
+0.25-3.0), `--max-concurrent-signals` (pending signals allowed at once,
+default 1 - raise it deliberately if you want this system to run more than
+one XTR scalp concurrently, which is not how the spec is written).
 
 ## Telegram fill notifications (optional)
 
@@ -269,16 +282,20 @@ id,symbol,action,lot,sl,tp,timestamp,setup_type,reason
 17,XAUUSD,BUY,0.02,2338.50,2352.30,2026-09-16T10:05:00Z,4.2,trend pullback with re-expanding MACD histogram and aligned HTF trend
 ```
 
-`action` is `BUY`, `SELL`, `NONE` (no trade) or `CLOSE` (close every position
-this EA holds - used both for an explicit close decision and, best-effort,
-for §9 time-decay). `setup_type` is whatever Claude cited -
-`4.1`/`4.2`/`4.3`/`discretionary` - carried into the position's comment
-(`XTR#<id>#<setup_type>`) so the outcome log can attribute a WIN/LOSS back to
-it. `reason` is Claude's own reasoning (truncated), not a template string.
-`id` must increase on every write - the EA ignores anything at or below the
-last id it processed. `sl`/`tp` are absolute prices; the EA rejects a signal
-outright if they're on the wrong side of the current price or inside the
-broker's minimum stop distance (on top of Python's own pre-write checks).
+`action` is `BUY`, `SELL`, `NONE` (no trade), `CLOSE`/`CLOSE_ALL` (close every
+position this EA holds - available for an explicit full flatten, not used by
+this bot itself) or `CLOSE_ID` (close only the one position opened for a
+specific earlier signal - what §9 time-decay actually issues; the `lot`
+column is reused to carry that original signal's id, since the position is
+looked up by it rather than by lot size for this action). `setup_type` is
+whatever Claude cited - `4.1`/`4.2`/`4.3`/`discretionary` - carried into the
+position's comment (`XTR#<id>#<setup_type>`) so the outcome log can
+attribute a WIN/LOSS back to it. `reason` is Claude's own reasoning
+(truncated), not a template string. `id` must increase on every write - the
+EA ignores anything at or below the last id it processed. `sl`/`tp` are
+absolute prices; the EA rejects a signal outright if they're on the wrong
+side of the current price or inside the broker's minimum stop distance (on
+top of Python's own pre-write checks).
 
 **Execution ack** (`claude_trade_ack.txt`, appended by the EA): one line per
 processed signal - `timestamp,id,status,detail` where status is `EXECUTED`,
@@ -286,7 +303,7 @@ processed signal - `timestamp,id,status,detail` where status is `EXECUTED`,
 
 **Trade outcomes** (`claude_trade_outcomes.txt`, appended by the EA when a
 position it opened closes, for any reason - SL, TP, manual close, or a
-time-decay `CLOSE`): `timestamp,signal_id,setup_type,direction,profit,outcome`
+time-decay `CLOSE_ID`): `timestamp,signal_id,setup_type,direction,profit,outcome`
 where outcome is `WIN` or `LOSS`. Python reads this every cycle both to
 drive the §10 standdown backstop and to resolve the matching entry in
 `state["trade_history"]` - the record that powers the self-correction loop
@@ -306,10 +323,11 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | §2/§3 direction & regime *labels* shown to Claude | Python (`direction_for`, `regime_for`) - informational only |
 | §4 setup *hints* shown to Claude | Python (`check_rsi_bounce`, `check_trend_pullback`, `check_liquidity_sweep`) - advisory only, not gates |
 | §5 HTF grade shown to Claude | Python (`htf_conviction`) - advisory only |
-| Side-of-price / stop-distance sanity check | Python, hard backstop on Claude's own numbers |
+| Side-of-price / stop-distance sanity check | Python, hard backstop on Claude's own numbers (fails safe - rejects the trade if ATR itself isn't available to check against) |
 | §8 position sizing | Python, arithmetic from Claude's stop distance |
-| §9 time-decay close | Python |
+| §9 time-decay close | Python, targeted at the specific stale position (`CLOSE_ID`), not everything open |
 | §10 two-loss standdown | Python, hard backstop (Claude is also told about it) |
+| Max concurrent signals | Python, hard backstop, default 1 (Claude is shown current pending count and told not to stack) |
 | §11 trade log / §13 report format | Python, populated with Claude's reasoning |
 | §12 DXY correlation / macro-news feeds | Not wired up - exposed to Claude as explicit "not evaluated" flags rather than silently ignored |
 
@@ -331,8 +349,11 @@ above - from `PENDING` to `WIN`/`LOSS`.
   explicit gaps in the overlay context rather than silently ignored; wiring
   up a real feed for either is a natural next step.
 - **Time-decay and standdown persistence assume one long-running EA/bot
-  pair.** An EA restart loses its in-memory position->setup-type mapping (a
-  documented limitation in the EA's own comments); a Python bot restart
+  pair.** An EA restart loses its in-memory signal-id -> position mapping (a
+  documented limitation in the EA's own comments) - a `CLOSE_ID` for a
+  position opened before that restart won't find a match and is logged as
+  `SKIPPED` rather than closing anything by mistake; the position's own SL/TP
+  still protects it, it just won't be time-decay-closed. A Python bot restart
   reloads its state file, so standdown/pending tracking survives that side.
 - **The signal file is trusted input to a live-trading EA.** Keep the shared
   folder private to processes you control; anything able to write to it can
