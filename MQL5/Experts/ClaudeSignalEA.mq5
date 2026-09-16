@@ -21,16 +21,22 @@
 //|         (for structural-swing / liquidity-sweep detection)        |
 //|       - m5_dir/m15_dir/h1_dir (BULLISH/BEARISH/MIXED, the same     |
 //|         rule Python's direction_for() applies) and htf_align       |
-//|         (BUY/SELL/NONE - BUY/SELL when >= 2 of the 3 agree). This  |
-//|         is a COST pre-filter, not a trading rule: by default       |
+//|         (BUY/SELL/NONE - BUY/SELL when >= 2 of the 3 agree). These |
+//|         read the CURRENT, still-forming bar on each timeframe (the |
+//|         live reading in MT5 right now), unlike everything else in  |
+//|         this export which uses the last CLOSED bar - deliberately: |
+//|         this is a COST pre-filter, not a trading rule. By default  |
 //|         Python skips the Claude API call entirely when htf_align   |
-//|         is NONE, before spending anything. Computed here, not      |
-//|         recomputed independently in Python, so there is exactly    |
-//|         one implementation of the rule to keep consistent - see    |
-//|         python/CLAUDE_SIGNAL_PIPELINE.md for the cost/performance  |
-//|         trade-off (it also skips setups, e.g. RSI-extreme bounces  |
-//|         and liquidity sweeps, that are often contrarian to the     |
-//|         higher timeframes by design).                              |
+//|         is NONE, before spending anything, and re-evaluates fresh  |
+//|         every cycle regardless, so reacting to a value that can    |
+//|         still move before the bar closes is fine here - no trade   |
+//|         rides on it, unlike the closed-bar indicators below.       |
+//|         Computed here, not recomputed independently in Python, so  |
+//|         there is exactly one implementation of the rule to keep    |
+//|         consistent - see python/CLAUDE_SIGNAL_PIPELINE.md for the  |
+//|         cost/performance trade-off (it also skips setups, e.g.     |
+//|         RSI-extreme bounces and liquidity sweeps, that are often   |
+//|         contrarian to the higher timeframes by design).            |
 //|     to a single plain-text file (InpExportFileName).              |
 //|  2. Python reads that file and asks Claude to analyze it in real  |
 //|     time - direction, setup rationale, stop and target are        |
@@ -268,14 +274,25 @@ string Fmt(const double value)
 //| here too (not left to Python alone) so the mechanical 2-of-3 HTF  |
 //| pre-filter below has one authoritative answer, exported plainly,  |
 //| rather than two independent implementations that could drift.    |
+//|                                                                    |
+//| shift=0 (default here) reads the CURRENT, still-forming bar - the  |
+//| live MT5 reading right now, which is what the pre-filter below     |
+//| should react to (it only ever decides whether to spend an API      |
+//| call THIS cycle, re-evaluated fresh next cycle regardless, so a    |
+//| value that can still move before the bar closes is fine - there is |
+//| no trade riding on it). This is a deliberate difference from the   |
+//| ##INDICATORS values Claude actually analyzes (WriteIndicatorRow),  |
+//| which stay on shift=1, the last CLOSED bar, precisely because a    |
+//| real trading decision must not repaint. Pass shift=1 explicitly if |
+//| a closed-bar direction is ever needed elsewhere.                   |
 //+------------------------------------------------------------------+
-string DirectionLabel(const int hEma9, const int hEma21, const int hRsi, const int hMacd)
+string DirectionLabel(const int hEma9, const int hEma21, const int hRsi, const int hMacd, const int shift = 0)
 {
-   double ema9  = IndicatorValue(hEma9);
-   double ema21 = IndicatorValue(hEma21);
-   double rsi   = IndicatorValue(hRsi);
-   double macdMain = IndicatorValue(hMacd, 0);
-   double macdSig  = IndicatorValue(hMacd, 1);
+   double ema9  = IndicatorValue(hEma9, 0, shift);
+   double ema21 = IndicatorValue(hEma21, 0, shift);
+   double rsi   = IndicatorValue(hRsi, 0, shift);
+   double macdMain = IndicatorValue(hMacd, 0, shift);
+   double macdSig  = IndicatorValue(hMacd, 1, shift);
    if(ema9 == EMPTY_VALUE || ema21 == EMPTY_VALUE || rsi == EMPTY_VALUE ||
       macdMain == EMPTY_VALUE || macdSig == EMPTY_VALUE)
       return("MIXED");
@@ -383,9 +400,11 @@ void ExportChartData()
    string exportedStr = TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
    StringReplace(exportedStr, " ", "T");
 
-   string m5Dir  = DirectionLabel(hEma9M5, hEma21M5, hRsiM5, hMacdM5);
-   string m15Dir = DirectionLabel(hEma9M15, hEma21M15, hRsiM15, hMacdM15);
-   string h1Dir  = DirectionLabel(hEma9H1, hEma21H1, hRsiH1, hMacdH1);
+   // shift=0: the CURRENT live/forming bar on each timeframe - "the current
+   // reading in MT5" right now, not the last closed bar (see DirectionLabel).
+   string m5Dir  = DirectionLabel(hEma9M5, hEma21M5, hRsiM5, hMacdM5, 0);
+   string m15Dir = DirectionLabel(hEma9M15, hEma21M15, hRsiM15, hMacdM15, 0);
+   string h1Dir  = DirectionLabel(hEma9H1, hEma21H1, hRsiH1, hMacdH1, 0);
    string htfAlign = HtfAlignment(m5Dir, m15Dir, h1Dir);
 
    FileWrite(handle, StringFormat(

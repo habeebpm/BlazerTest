@@ -102,6 +102,16 @@ coverage of setups (RSI-extreme bounce, liquidity sweep) that don't need
 HTF agreement by design; pass `--no-htf-gate` to see every cycle instead, at
 the "gate off" cost.
 
+**One more caveat on that 45.2%:** the live EA computes `htf_align` from
+the *current, still-forming* bar (`shift=0`), on purpose - see
+`CLAUDE_SIGNAL_PIPELINE.md`. This backtest harness has no live/forming-bar
+data to replay (historical M1 bars are all already closed), so
+`build_snapshot_at()` necessarily computes `htf_align` on **closed** bars
+instead. 45.2% is real evidence that this style of gate meaningfully cuts
+calls; it is not a promise that a live run will skip exactly 45.2% of the
+time - that number is only ever accurate for the closed-bar approximation
+measured here.
+
 ## Simplifications this harness makes (disclosed, not hidden)
 
 - **Fixed synthetic spread** (`--spread`, default $0.25), not the live

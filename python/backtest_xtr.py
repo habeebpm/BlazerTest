@@ -174,6 +174,14 @@ def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m
     # the identical rule (bot.htf_gate_from_directions) - see that
     # function's docstring for why this is the one place Python computes
     # it rather than trusting an exported value.
+    #
+    # NOTE: the live EA reads the CURRENT, still-forming bar (shift=0) for
+    # this specifically, not the closed bar - deliberately, since it only
+    # gates whether to spend an API call this cycle (see
+    # CLAUDE_SIGNAL_PIPELINE.md). A historical M1 dataset has no
+    # "still-forming bar" to replay - every bar here is already closed - so
+    # m5_row/m15_row/h1_row (closed-bar snapshots) are the closest
+    # approximation available, not an exact replay of live behavior.
     htf_align = bot.htf_gate_from_directions(
         bot.direction_for(m5_row), bot.direction_for(m15_row), bot.direction_for(h1_row))
 

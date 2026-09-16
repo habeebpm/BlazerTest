@@ -128,14 +128,24 @@ notifications - see "Telegram fill notifications" below).
 ## The mechanical HTF pre-filter (cost control)
 
 Every earlier section describes Claude being called on every M5 cycle. That
-was true until this pre-filter was added: `ClaudeSignalEA.mq5` now computes,
-from its own indicator buffers, `m5_dir`/`m15_dir`/`h1_dir`
-(BULLISH/BEARISH/MIXED - the same rule as `direction_for()`) and
-`htf_align` (BUY/SELL/NONE - BUY/SELL when at least 2 of the 3 agree,
-NONE otherwise), and exports them in the header. `run_once` reads
-`htf_align` immediately after confirming there's a new M5 bar and, when it's
-`NONE`, **skips the Claude call entirely** - no prompt built, no tokens
-spent, before `analyze_with_claude` is ever reached.
+was true until this pre-filter was added: `ClaudeSignalEA.mq5` now computes
+`m5_dir`/`m15_dir`/`h1_dir` (BULLISH/BEARISH/MIXED - the same rule as
+`direction_for()`) and `htf_align` (BUY/SELL/NONE - BUY/SELL when at least
+2 of the 3 agree, NONE otherwise), and exports them in the header.
+`run_once` reads `htf_align` immediately after confirming there's a new M5
+bar and, when it's `NONE`, **skips the Claude call entirely** - no prompt
+built, no tokens spent, before `analyze_with_claude` is ever reached.
+
+**This reads the CURRENT bar on MT5, not the last closed one - on purpose,
+and unlike everything else exported.** `DirectionLabel()` defaults to
+`shift=0` (the live, still-forming bar) for exactly these three fields;
+`WriteIndicatorRow()` (the `##INDICATORS` data Claude actually analyzes)
+stays on `shift=1`, the last CLOSED bar, as it always has. That split is
+deliberate: the gate only decides whether to spend money on *this* cycle,
+and gets re-evaluated fresh next cycle regardless - reacting to a live
+value that can still move before the bar closes costs nothing to get
+"wrong" for one cycle. A real trading decision repainting mid-bar would be
+a genuine problem; a cost pre-filter flickering for a few seconds isn't.
 
 **Why the EA computes it, not Python** (even though `claude_signal_bot.py`
 already has every value needed to compute this itself for free): a second,
@@ -143,22 +153,33 @@ independent Python implementation of the same rule is exactly the kind of
 thing that silently drifts from the original over time - a threshold tweak
 in one place and not the other, and the gate stops matching what a human
 watching the EA's own logs would expect. Instead there's one authoritative
-computation (`HtfAlignment()` in the EA, mirrored for the one place with no
-live EA to ask - the backtest harness - by `htf_gate_from_directions()` in
-Python), and `run_once` just reads it.
+computation (`HtfAlignment()` in the EA, mirrored - on closed bars, see the
+caveat below - by `htf_gate_from_directions()` in Python for the one place
+with no live EA to ask: the backtest harness), and `run_once` just reads it.
 
-**Measured cost impact** (not estimated): running the backtest harness
-against the real 2-day XAUUSD sample in `backtest_data/`, gated vs.
-`--no-htf-gate`, on identical data:
+**Measured cost impact - with an honest caveat.** Running the backtest
+harness against the real 2-day XAUUSD sample in `backtest_data/`, gated
+vs. `--no-htf-gate`, on identical data:
 
 | | Cycles that would call Claude | Reduction |
 |---|---|---|
 | Gate on (default) | 137 | **45.2%** |
 | Gate off | 250 | - |
 
-At the ~$0.01/cycle estimate in `BACKTEST.md`, that's the difference between
-roughly $2.50 and $1.37 for this sample window - the saving scales linearly
-with however much of your session the gate spends skipping.
+That number is real, but it measures the **closed-bar** version of the
+gate (`htf_gate_from_directions()` on `closed_bars_as_of()` data) - a
+historical M1-bar dataset has no concept of "30 seconds into a still-
+forming bar," so the backtest harness cannot reproduce the live EA's
+`shift=0` reading; there is nothing to replay it against. The live gate,
+reading the current bar, will skip and pass somewhat differently cycle to
+cycle than this measurement - most likely similarly often (it's the same
+rule one bar-width fresher), but 45.2% is evidence for "this kind of gate
+meaningfully cuts calls," not a guaranteed live figure. Watch
+`state["htf_gate_skips"]` on your own live runs for the number that
+actually applies to you. At the ~$0.01/cycle estimate in `BACKTEST.md`,
+this measured reduction is the difference between roughly $2.50 and $1.37
+for this sample window - the saving scales with however much of your
+session the gate spends skipping, live or backtested.
 
 **The performance trade-off - read this before leaving the gate on
 blindly.** The gate is directionally-blind to *why* a setup might fire:
@@ -346,7 +367,13 @@ time,open,high,low,close
 ```
 
 `adx14`/`atr14`/`bb_upper`/`bb_lower` are `NA` for M15/H1, since §1 only
-requires them on M5.
+requires them on M5. The header's `m5_dir`/`m15_dir`/`h1_dir`/`htf_align`
+read the **current, still-forming bar** on each timeframe (the mechanical
+cost pre-filter, see below) - everything else in this file, including the
+`##INDICATORS` values just below, is the last **CLOSED** bar. The two can
+legitimately disagree (e.g. `m5_dir=BULLISH` here while `##INDICATORS`
+still shows the prior, not-yet-updated M5 close) - that's expected, not a
+bug.
 
 **Trade signal** (`claude_trade_signals.txt`, one line, overwritten each
 cycle):
