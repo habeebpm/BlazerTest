@@ -20,13 +20,16 @@
 //|       - the last InpBarsM1/M5/M15/H1 raw OHLC bars per timeframe  |
 //|         (for structural-swing / liquidity-sweep detection)        |
 //|     to a single plain-text file (InpExportFileName).              |
-//|  2. Python reads that file, runs the XTR rule engine (regime,     |
-//|     the three setup types, the HTF conviction filter, stop/target |
-//|     sizing, the two-loss standdown, the 10-minute time-decay) and |
-//|     asks Claude only for a qualitative overlay/narrative on top   |
-//|     of an already-decided BUY/SELL/NONE - never for the direction |
-//|     or the stop/target prices themselves. It writes the result to |
-//|     a second plain-text file (InpSignalFileName). See              |
+//|  2. Python reads that file and asks Claude to analyze it in real  |
+//|     time - direction, setup rationale, stop and target are        |
+//|     Claude's own read of the live data, informed by the XTR setup |
+//|     archetypes and general trading principles as knowledge, not   |
+//|     decided by a fixed if/else rule table. Python keeps only risk |
+//|     *containment* mechanical: a sanity band on the proposed stop  |
+//|     distance, a same-side-of-price check, the two-loss standdown  |
+//|     per setup type, the 10-minute time-decay, and position-sizing |
+//|     arithmetic from account equity and risk %. It writes the      |
+//|     result to a second plain-text file (InpSignalFileName). See   |
 //|     python/claude_signal_bot.py.                                  |
 //|  3. EXECUTE - every InpSignalPollSec seconds, this EA reads that   |
 //|     signal file and, if it carries a new signal id, opens the     |

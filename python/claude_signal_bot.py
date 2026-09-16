@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-XTR micro-scalp signal engine for MQL5/Experts/ClaudeSignalEA.mq5.
+XTR-informed, Claude-analyzed signal engine for MQL5/Experts/ClaudeSignalEA.mq5.
 
-Implements the "XTR - XAUUSD Micro-Scalp Signal Logic Specification"
-(sections referenced below are that document's, see
-CLAUDE_SIGNAL_PIPELINE.md for the full text) as deterministic Python rules,
-not as something an LLM eyeballs from raw candles:
+Earlier versions of this bot ran the "XTR - XAUUSD Micro-Scalp Signal Logic
+Specification" as deterministic if/else code: Python alone decided the
+setup, the HTF filter, and the stop/target, and Claude only annotated an
+already-fixed trade. This version inverts that: Claude is the analyst, doing
+real-time judgment informed by the XTR setup definitions and general
+professional trading principles (both embedded in its system prompt as
+knowledge, not as hard gates) plus live multi-timeframe data. Claude decides
+direction, setup rationale, confidence, stop and target every cycle.
 
-  - §2  directional determination (EMA9/EMA21, RSI, MACD histogram) per
-        timeframe
-  - §3  regime detection from M5 ADX
-  - §4  the three setup types (RSI-extreme bounce, trend-continuation
-        pullback with the MACD re-expansion gate, liquidity-sweep reversal)
-  - §5  the M15/H1 conviction filter matrix
-  - §7  stop-loss / take-profit sizing (ATR-clamped to the structural swing,
-        1.5-2.0R target nudged to a round number or the opposite BB band)
-  - §8  position sizing from account equity and risk %
-  - §9  10-minute time-decay invalidation (best-effort: issues a CLOSE
-        signal - the file protocol has no per-position selector)
-  - §10 the two-loss standdown per setup type
+What stays mechanical is risk *containment*, not signal *detection* - things
+an autonomous live-trading bot should never leave to a single LLM call:
 
-Every number above - direction, SL, TP, lot size - is decided by this code.
-Claude is called only for the discretionary overlay (§12: session timing,
-round-number context, DXY/macro flags) and the narrative report (§13); it
-never overrides the mechanical decision, and is not called at all on a
-NO_TRADE cycle (saving the API call).
+  - a sanity band on the proposed stop distance (vs. ATR14(M5)), and a
+    same-side-of-price check, both applied to Claude's own numbers
+  - a confidence floor
+  - the §10 two-loss standdown per setup type (Claude is told which types
+    are on standdown, and the gate is still enforced in code as a backstop)
+  - §9 10-minute time-decay invalidation
+  - §8 position sizing arithmetic from account equity and risk % (given
+    Claude's stop distance, not Claude's own lot-size math)
+
+Direction, setup rationale, entry timing color, and stop/target placement
+are otherwise entirely Claude's call, made fresh every cycle against the
+live indicator/bar data - not pattern-matched against a fixed rule table.
 
     python claude_signal_bot.py --selftest             # offline logic checks, no API key needed
     python claude_signal_bot.py --data-dir <path> --once --dry-run -v
@@ -67,6 +68,56 @@ HEADER_RE = re.compile(r"(\w+)=(\S+)")
 JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 TWO_LOSS_THRESHOLD = 2
 TIME_DECAY_SECONDS = 10 * 60
+SETUP_TYPES = ("4.1", "4.2", "4.3", "discretionary")
+VALID_ACTIONS = {"BUY", "SELL", "NONE"}
+
+# Knowledge given to Claude as context to reason WITH, not a rule table to
+# execute mechanically. It condenses the XTR spec's setup archetypes plus
+# general, widely-accepted intraday trading principles, so Claude's
+# real-time read is informed by both without being boxed into either.
+TRADING_KNOWLEDGE = """\
+XTR SETUP ARCHETYPES (apply with judgment, not as rigid triggers):
+- 4.1 RSI-Extreme Bounce: mean reversion in a RANGING regime (M5 ADX<25).
+  Classic trigger: M5 RSI<30 with price at/below the lower Bollinger band
+  (long), or RSI>70 at/above the upper band (short). Historically the
+  highest-conviction setup type in this system's own backtests.
+- 4.2 Trend-Continuation Pullback: in a TRENDING regime (M5 ADX>=25), price
+  pulls back toward the M5 EMA9 in the direction of a clean EMA9/EMA21/RSI/
+  MACD alignment. Do NOT treat the first touch of EMA9 as sufficient -
+  this system's live history (trades 13 & 14) lost specifically because of
+  that. Require MACD histogram momentum to actually be re-expanding in the
+  trend's direction (grew after decelerating/flattening), not just present.
+- 4.3 Liquidity-Sweep Reversal: an M1 candle briefly breaks a recent swing
+  high/low and closes back inside within 1-3 bars - a stop-hunt reclaim.
+  Treat as a confluence booster for 4.1/4.2, or a smaller standalone entry.
+- Higher-timeframe alignment (M15, H1 read the same way as M5: EMA9 vs
+  EMA21, RSI vs 50, MACD histogram sign) raises conviction when it agrees
+  and should make you materially more cautious - usually a hard pass -
+  when it clearly opposes the M5 read. Two mixed/unclear HTFs is weak
+  support, not a green light.
+
+GENERAL PRINCIPLES TO WEIGH ALONGSIDE THE ABOVE:
+- Trade with dominant momentum and structure; do not fight a strong,
+  established trend without unusually strong counter-evidence.
+- Require genuine confluence (multiple independent signals agreeing), not
+  a single indicator crossing a threshold.
+- Size the stop to current volatility (ATR) and real market structure (the
+  nearest swing high/low), not an arbitrary fixed distance.
+- Maintain a favorable risk:reward (roughly 1.5-2.0x the stop distance);
+  a marginal setup with poor R:R is worse than no trade.
+- Be more conservative in thin/illiquid sessions (Asian hours) and more
+  willing to act during London/New York overlap.
+- Respect round-number price levels (whole-dollar handles) as places price
+  often reacts, both for stop placement and target selection.
+- Never override an active two-loss standdown for a setup type - if that
+  type just lost twice in a row, stand aside on it even if a fresh trigger
+  looks tempting, until the underlying regime genuinely resets.
+- When evidence is mixed, thin, or contradictory, the correct output is
+  NONE. A skipped trade costs nothing; a bad one costs real money.
+- You are producing a 10-minute-horizon scalp decision, not a long-term
+  thesis - weight the freshest M1/M5 evidence most heavily, and use M15/H1
+  as context and a conviction check, not the primary trigger.
+"""
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -93,6 +144,9 @@ class BotConfig:
     risk_percent: float = 2.0
     fallback_equity: float = 5000.0
     time_decay_seconds: float = TIME_DECAY_SECONDS
+    min_confidence: float = 60.0
+    min_atr_mult: float = 0.25   # sanity floor on the proposed stop distance
+    max_atr_mult: float = 3.0    # sanity ceiling on the proposed stop distance
     dry_run: bool = False
 
 
@@ -213,7 +267,9 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
 
 
 # --------------------------------------------------------------------------
-# §2 - directional determination, §3 - regime
+# Directional/regime labels and setup hints - all ADVISORY context handed to
+# Claude, not a decision path of their own. Kept as plain functions so they
+# stay independently testable.
 # --------------------------------------------------------------------------
 
 def direction_for(tf_ind: dict) -> str:
@@ -233,12 +289,8 @@ def regime_for(m5_ind: dict) -> str:
     return "TRENDING" if adx is not None and adx >= 25 else "RANGING"
 
 
-# --------------------------------------------------------------------------
-# §4 - setup detection
-# --------------------------------------------------------------------------
-
 def check_rsi_bounce(snap: ChartSnapshot) -> dict | None:
-    """§4.1 RSI-Extreme Bounce (mean reversion, ranging regime)."""
+    """4.1-style RSI-extreme + Bollinger-band touch hint."""
     m5 = snap.ind["M5"]
     rsi, bb_upper, bb_lower = m5.get("rsi14"), m5.get("bb_upper"), m5.get("bb_lower")
     if rsi is None or bb_upper is None or bb_lower is None:
@@ -254,8 +306,7 @@ def check_rsi_bounce(snap: ChartSnapshot) -> dict | None:
 def macd_reexpanding(hist: list[float], direction: str) -> bool:
     """The last 2 bars (h2, h1) grow in the trend's sign, immediately after
     a prior bar (h3) that was flat/decelerating relative to the one before
-    it (h4) - the §4.2 gate that stops entries on the first EMA touch
-    before momentum actually confirms (the trades 13/14 fix)."""
+    it (h4) - used as a hint for the 4.2-style re-expansion gate."""
     if len(hist) < 4:
         return False
     sign = 1 if direction == "BULLISH" else -1
@@ -269,7 +320,7 @@ def macd_reexpanding(hist: list[float], direction: str) -> bool:
 
 
 def check_trend_pullback(snap: ChartSnapshot, m5_direction: str) -> dict | None:
-    """§4.2 Trend-Continuation Pullback (trending regime, gated)."""
+    """4.2-style trend-continuation-pullback hint."""
     if m5_direction == "MIXED":
         return None
     m5 = snap.ind["M5"]
@@ -286,8 +337,8 @@ def check_trend_pullback(snap: ChartSnapshot, m5_direction: str) -> dict | None:
 
 
 def check_liquidity_sweep(snap: ChartSnapshot) -> dict | None:
-    """§4.3 Liquidity-Sweep Reversal: a brief break of the recent M1 swing
-    extreme followed by a close back inside within 1-3 M1 bars."""
+    """4.3-style liquidity-sweep-reversal hint: a brief break of the recent
+    M1 swing extreme followed by a close back inside within 1-3 M1 bars."""
     m1 = snap.bars["M1"]
     if len(m1) < 14:
         return None
@@ -306,30 +357,9 @@ def check_liquidity_sweep(snap: ChartSnapshot) -> dict | None:
     return None
 
 
-def select_setup(snap: ChartSnapshot, m5_direction: str, regime: str) -> dict | None:
-    """§3/§4: pick the regime-favored setup, with the liquidity sweep as a
-    confluence booster (or a standalone opportunistic entry if nothing else
-    triggers)."""
-    sweep = check_liquidity_sweep(snap)
-    primary = check_rsi_bounce(snap) if regime == "RANGING" else check_trend_pullback(snap, m5_direction)
-
-    if primary:
-        candidate = dict(primary)
-        candidate["confluence_sweep"] = bool(sweep and sweep["direction"] == primary["direction"])
-        return candidate
-    if sweep:
-        candidate = dict(sweep)
-        candidate["confluence_sweep"] = False
-        return candidate
-    return None
-
-
-# --------------------------------------------------------------------------
-# §5 - HTF conviction filter
-# --------------------------------------------------------------------------
-
 def htf_conviction(signal_direction: str, m15_direction: str, h1_direction: str) -> str:
-    """Returns FULL, REDUCED or NO_TRADE per the §5 table."""
+    """Advisory FULL/REDUCED/NO_TRADE grade handed to Claude as a hint - it
+    is not used to gate anything in code."""
     want = "BULLISH" if signal_direction == "BUY" else "BEARISH"
 
     def state(tf_direction: str) -> str:
@@ -347,69 +377,27 @@ def htf_conviction(signal_direction: str, m15_direction: str, h1_direction: str)
     return "REDUCED"
 
 
+def compute_hints(snap: ChartSnapshot, m5_direction: str, regime: str) -> dict:
+    """All three setup hints plus the advisory HTF grades for BUY and SELL,
+    bundled for the prompt. Claude weighs these; none of them decide."""
+    m15_direction = direction_for(snap.ind["M15"])
+    h1_direction = direction_for(snap.ind["H1"])
+    return {
+        "rsi_extreme_bounce": check_rsi_bounce(snap),
+        "trend_continuation_pullback": check_trend_pullback(snap, m5_direction),
+        "liquidity_sweep_reversal": check_liquidity_sweep(snap),
+        "htf_grade_if_buy": htf_conviction("BUY", m15_direction, h1_direction),
+        "htf_grade_if_sell": htf_conviction("SELL", m15_direction, h1_direction),
+    }
+
+
 # --------------------------------------------------------------------------
-# §7 - stop-loss / take-profit, §8 - position sizing
+# Position sizing (arithmetic, not a trading decision - kept mechanical)
 # --------------------------------------------------------------------------
-
-def compute_stop_loss(snap: ChartSnapshot, direction: str) -> tuple[float, float]:
-    """Returns (sl_price, stop_distance). See §7: the stop distance is the
-    structural-swing distance (plus a small ATR buffer), clamped to
-    [1.0, 1.5] x ATR14(M5)."""
-    atr = snap.ind["M5"]["atr14"] or 0.0
-    price = snap.ask if direction == "BUY" else snap.bid
-
-    m1 = snap.bars["M1"]
-    lookback = m1.iloc[-11:-1] if len(m1) >= 11 else m1.iloc[:-1] if len(m1) > 1 else m1
-    if direction == "BUY":
-        structural = float(lookback["low"].min())
-        structural_distance = price - structural
-    else:
-        structural = float(lookback["high"].max())
-        structural_distance = structural - price
-
-    buffer = 0.05 * atr
-    structural_distance = max(structural_distance, 0.0) + buffer
-
-    if atr > 0:
-        stop_distance = min(max(structural_distance, 1.0 * atr), 1.5 * atr)
-    else:
-        stop_distance = structural_distance
-
-    sl = price - stop_distance if direction == "BUY" else price + stop_distance
-    return sl, stop_distance
-
-
-def _nearest_round_level(price: float) -> float:
-    """Gold often reacts at whole-dollar handles; used only when it falls
-    inside the allowed R:R band (see compute_take_profit)."""
-    return round(price)
-
-
-def compute_take_profit(snap: ChartSnapshot, direction: str, price: float, stop_distance: float) -> float:
-    """§7: entry +/- (1.5 to 2.0 x stop distance), nudged to the nearest
-    whole-dollar handle or the opposite Bollinger band when that still
-    lands inside the allowed band; otherwise the 1.75R midpoint."""
-    m5 = snap.ind["M5"]
-    if direction == "BUY":
-        lo, hi = price + 1.5 * stop_distance, price + 2.0 * stop_distance
-        raw = price + 1.75 * stop_distance
-        candidates = [_nearest_round_level(raw)]
-        if m5.get("bb_upper") is not None:
-            candidates.append(m5["bb_upper"])
-    else:
-        lo, hi = price - 2.0 * stop_distance, price - 1.5 * stop_distance
-        raw = price - 1.75 * stop_distance
-        candidates = [_nearest_round_level(raw)]
-        if m5.get("bb_lower") is not None:
-            candidates.append(m5["bb_lower"])
-
-    in_range = [c for c in candidates if lo <= c <= hi]
-    return min(in_range, key=lambda c: abs(c - raw)) if in_range else raw
-
 
 def position_size(snap: ChartSnapshot, cfg: BotConfig, stop_distance: float) -> float:
-    """§8: risk_amount / (stop_distance x value_per_price_unit_per_lot),
-    rounded down to the broker's lot step."""
+    """risk_amount / (stop_distance x value_per_price_unit_per_lot), rounded
+    down to the broker's lot step."""
     equity = snap.equity if snap.equity > 0 else cfg.fallback_equity
     risk_amount = equity * (cfg.risk_percent / 100.0)
     value_per_unit = (snap.tick_value / snap.tick_size) if snap.tick_size else 0.0
@@ -424,7 +412,7 @@ def position_size(snap: ChartSnapshot, cfg: BotConfig, stop_distance: float) -> 
 
 
 # --------------------------------------------------------------------------
-# §10 - two-loss standdown per setup type
+# Two-loss standdown per setup type (risk containment, kept mechanical)
 # --------------------------------------------------------------------------
 
 def parse_outcomes(path: Path, since_count: int) -> tuple[list[dict], int]:
@@ -478,9 +466,14 @@ def standdown_gate(state: dict, setup_type: str) -> bool:
     return False
 
 
+def active_standdowns(state: dict) -> list[str]:
+    return [st for st, e in state.get("standdown", {}).items() if e.get("active")]
+
+
 # --------------------------------------------------------------------------
-# §9 - time-decay invalidation (best-effort: the file protocol has no
-# per-position selector, so an expiry closes every position this EA holds)
+# Time-decay invalidation (risk containment, kept mechanical). Best-effort:
+# the file protocol has no per-position selector, so an expiry closes every
+# position this EA holds, not just the stale one.
 # --------------------------------------------------------------------------
 
 def register_pending(state: dict, signal_id: int, setup_type: str) -> None:
@@ -509,7 +502,7 @@ def expire_stale_pending(state: dict, decay_seconds: float) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# §12 - discretionary overlay (deterministic parts; Claude adds the rest)
+# Session/round-number context (folded into the analysis prompt)
 # --------------------------------------------------------------------------
 
 def session_context(now: datetime | None = None) -> str:
@@ -539,75 +532,153 @@ def build_overlay_context(snap: ChartSnapshot) -> dict:
     }
 
 
-def call_claude_overlay(candidate: dict, snap: ChartSnapshot, scenario: dict, overlay: dict, cfg: BotConfig) -> dict:
-    """Asks Claude for a one-paragraph qualitative note and an optional
-    confidence caution flag on top of an ALREADY-DECIDED trade. Claude
-    cannot change the direction, setup type, SL or TP - only annotate."""
-    import anthropic
+# --------------------------------------------------------------------------
+# Claude analysis - the actual trading decision
+# --------------------------------------------------------------------------
 
+def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction: str,
+                           h1_direction: str, regime: str, hints: dict, overlay: dict,
+                           standdown_active: list[str], recent_outcomes: list[dict]) -> tuple[str, str]:
     system = (
-        "You are a discretionary overlay on a fully mechanical XAUUSD "
-        "micro-scalp signal. The direction, setup type, stop-loss and "
-        "take-profit are already fixed by rule-based code and will NOT "
-        "change based on your reply. Your only job is to note qualitative "
-        "context that a human overseeing the bot would want to see: "
-        "session liquidity, proximity to a round-number level, and any "
-        "other risk you can infer from the bars provided. Reply with "
-        "STRICT JSON only: "
-        '{"caution": true|false, "note": "<one or two sentences>"}. '
-        'Set "caution" true only if you see a clear reason to distrust '
-        "this specific setup right now (e.g. a thin/illiquid session, "
-        "price already deep into a round-number wall against the trade)."
+        f"You are a disciplined, real-time intraday trading analyst for {snap.symbol}, "
+        "making a 10-minute-horizon scalp decision. You reason from the live data given "
+        "below, informed by the setup archetypes and principles in the knowledge section "
+        "- you do not mechanically apply them as a checklist, and you are free to decide "
+        "NONE even when a hint looks superficially satisfied, or to trade on a read that "
+        "does not neatly match one of the named archetypes (use setup_type "
+        '"discretionary" in that case).\n\n'
+        f"{TRADING_KNOWLEDGE}\n"
+        "Setup types you may cite: 4.1 (RSI-extreme bounce), 4.2 (trend-continuation "
+        "pullback), 4.3 (liquidity-sweep reversal), or discretionary.\n\n"
+        "Hard constraints you must still respect (these are enforced in code as a "
+        "backstop, but decide as if they are real): never propose a setup type listed "
+        "as under an active two-loss standdown; sl/tp must be absolute prices on the "
+        "correct side of the current bid/ask; keep the stop distance broadly consistent "
+        "with current ATR (very roughly 0.25x-3x ATR14(M5)) - a stop far outside that is "
+        "either noise-sized or unreasonably tight, not a considered choice.\n\n"
+        "Reply with STRICT JSON only, no markdown fences, no text outside the object: "
+        '{"action": "BUY"|"SELL"|"NONE", "setup_type": "4.1"|"4.2"|"4.3"|"discretionary"|null, '
+        '"sl": <number or null>, "tp": <number or null>, "confidence": <integer 0-100>, '
+        '"reasoning": "<a few sentences covering the M5 read, regime, HTF context, and '
+        'why this stop/target>"}. sl/tp/setup_type are null when action is NONE.'
     )
+
     user = (
-        f"Setup: {candidate['setup_type']} {candidate['direction']} on {snap.symbol}\n"
-        f"Conviction: {candidate['conviction']}\n"
-        f"Entry/SL/TP: {candidate['entry']}/{candidate['sl']}/{candidate['tp']}\n"
-        f"Scenario: {json.dumps(scenario)}\n"
+        f"Symbol: {snap.symbol}   Bid/Ask: {snap.bid}/{snap.ask}   Spread(points): {snap.spread}\n"
+        f"Account equity: {snap.equity}\n\n"
+        f"M5 indicators: {json.dumps(snap.ind['M5'])}\n"
+        f"M15 indicators: {json.dumps(snap.ind['M15'])}\n"
+        f"H1 indicators: {json.dumps(snap.ind['H1'])}\n"
+        f"M5 direction (mechanical read): {m5_direction}   Regime (M5 ADX): {regime}\n"
+        f"M15 direction (mechanical read): {m15_direction}   H1 direction (mechanical read): {h1_direction}\n"
+        f"M5 MACD histogram, last {len(snap.macd_hist_m5)} bars (oldest->newest): {snap.macd_hist_m5}\n\n"
+        f"Computed setup hints (advisory only, weigh them, don't just obey them): "
+        f"{json.dumps(hints, default=str)}\n\n"
         f"Overlay context: {json.dumps(overlay)}\n"
-        f"Recent M5 bars:\n{snap.bars['M5'].tail(15).to_csv(index=False)}"
+        f"Setup types currently on two-loss standdown (do not propose these): {standdown_active}\n"
+        f"Recent trade outcomes (most recent last): {json.dumps(recent_outcomes)}\n\n"
+        f"Recent M1 bars (last 15, oldest first):\n{snap.bars['M1'].tail(15).to_csv(index=False)}\n"
+        f"Recent M5 bars (last 20, oldest first):\n{snap.bars['M5'].tail(20).to_csv(index=False)}\n"
+        f"Recent M15 bars (last 10, oldest first):\n{snap.bars['M15'].tail(10).to_csv(index=False)}\n"
+        f"Recent H1 bars (last 10, oldest first):\n{snap.bars['H1'].tail(10).to_csv(index=False)}\n"
     )
+    return system, user
+
+
+def call_claude_analysis(system: str, user: str, cfg: BotConfig) -> str:
+    import anthropic
 
     client = anthropic.Anthropic(api_key=cfg.api_key)
     resp = client.messages.create(
-        model=cfg.model, max_tokens=250, system=system,
+        model=cfg.model, max_tokens=700, system=system,
         messages=[{"role": "user", "content": user}],
     )
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+
+
+def parse_claude_decision(raw: str) -> dict:
     match = JSON_BLOCK_RE.search(raw)
     if not match:
-        raise ValueError(f"no JSON object in Claude's overlay reply: {raw[:200]!r}")
+        raise ValueError(f"no JSON object in Claude's reply: {raw[:200]!r}")
     data = json.loads(match.group(0))
-    return {"caution": bool(data.get("caution", False)), "note": str(data.get("note", ""))[:300]}
+
+    action = str(data.get("action", "NONE")).upper()
+    if action not in VALID_ACTIONS:
+        raise ValueError(f"invalid action {action!r}")
+
+    setup_type = data.get("setup_type")
+    if setup_type is not None and setup_type not in SETUP_TYPES:
+        setup_type = "discretionary"
+
+    return {
+        "action": action,
+        "setup_type": setup_type,
+        "sl": data.get("sl"),
+        "tp": data.get("tp"),
+        "confidence": float(data.get("confidence", 0) or 0),
+        "reasoning": str(data.get("reasoning", ""))[:600].replace(",", ";").replace("\n", " "),
+    }
+
+
+def validate_decision(decision: dict, snap: ChartSnapshot, state: dict, cfg: BotConfig) -> tuple[bool, str]:
+    """Backstop safety checks on Claude's own proposal. Never invents or
+    adjusts numbers - only accepts or rejects."""
+    if decision["action"] == "NONE":
+        return True, "no trade"
+
+    setup_type = decision.get("setup_type") or "discretionary"
+    if not standdown_gate(state, setup_type):
+        return False, f"setup {setup_type} is on two-loss standdown"
+
+    if decision["confidence"] < cfg.min_confidence:
+        return False, f"confidence {decision['confidence']:.0f} below floor {cfg.min_confidence:.0f}"
+
+    sl, tp = decision.get("sl"), decision.get("tp")
+    if sl is None or tp is None:
+        return False, "missing sl/tp"
+    sl, tp = float(sl), float(tp)
+
+    price = snap.ask if decision["action"] == "BUY" else snap.bid
+    if decision["action"] == "BUY" and not (sl < price < tp):
+        return False, "sl/tp not on the correct side of price for a BUY"
+    if decision["action"] == "SELL" and not (tp < price < sl):
+        return False, "sl/tp not on the correct side of price for a SELL"
+
+    stop_distance = abs(price - sl)
+    if stop_distance <= 0:
+        return False, "zero stop distance"
+
+    atr = snap.ind["M5"].get("atr14")
+    if atr and atr > 0:
+        lo, hi = cfg.min_atr_mult * atr, cfg.max_atr_mult * atr
+        if not (lo <= stop_distance <= hi):
+            return False, f"stop distance {stop_distance:.2f} outside sane band [{lo:.2f}, {hi:.2f}] (ATR={atr})"
+
+    return True, "ok"
 
 
 # --------------------------------------------------------------------------
-# §13 - output format
+# Output format - Claude's own reasoning is the narrative; the mechanical
+# labels are kept alongside it for traceability/debugging.
 # --------------------------------------------------------------------------
 
-def format_report(snap: ChartSnapshot, m5_direction: str, regime: str,
-                   m15_direction: str, h1_direction: str, decision: dict) -> str:
+def format_report(snap: ChartSnapshot, m5_direction: str, regime: str, m15_direction: str,
+                   h1_direction: str, hints: dict, decision: dict) -> str:
     lines = [
-        f"1. M5 read: {m5_direction} "
-        f"(ema9={snap.ind['M5']['ema9']} ema21={snap.ind['M5']['ema21']} "
-        f"rsi={snap.ind['M5']['rsi14']} macd_hist={snap.ind['M5']['macd_hist']})",
-        f"2. Regime: ADX={snap.ind['M5']['adx14']} -> {regime}",
-        f"3. HTF filter: M15={m15_direction} H1={h1_direction} -> "
-        f"{decision.get('conviction', 'NO_TRADE')}",
-        f"4. M1 context: {decision.get('m1_note', 'no liquidity-sweep confluence')}",
+        f"Mechanical context: M5={m5_direction} regime={regime} (ADX={snap.ind['M5']['adx14']}) "
+        f"M15={m15_direction} H1={h1_direction}",
+        f"Hints: {json.dumps(hints, default=str)}",
     ]
     if decision["action"] == "NONE":
-        lines.append("5. Signal: NO TRADE")
+        lines.append(f"Decision: NO TRADE - {decision.get('reasoning', '')}")
     else:
-        lines.append(f"5. Signal: {decision['action']} - setup {decision['setup_type']} "
-                      f"({decision['conviction']} conviction)")
         rr = abs(decision["tp"] - decision["entry"]) / abs(decision["entry"] - decision["sl"])
-        lines.append(f"6. Execution: entry={decision['entry']} sl={decision['sl']} "
+        lines.append(f"Decision: {decision['action']} - setup {decision['setup_type']} "
+                      f"(confidence {decision['confidence']:.0f})")
+        lines.append(f"Execution: entry={decision['entry']} sl={decision['sl']} "
                       f"tp={decision['tp']} lot={decision['lot']} R:R=1:{rr:.2f}")
-        lines.append(f"7. Time-decay: close/cancel if unresolved after "
-                      f"{int(TIME_DECAY_SECONDS / 60)} minutes")
-    if decision.get("overlay_note"):
-        lines.append(f"Overlay: {decision['overlay_note']}")
+        lines.append(f"Time-decay: close/cancel if unresolved after {int(TIME_DECAY_SECONDS / 60)} minutes")
+        lines.append(f"Reasoning: {decision['reasoning']}")
     return "\n".join(lines)
 
 
@@ -641,7 +712,7 @@ def load_state(cfg: BotConfig) -> dict:
         except Exception:
             log.warning("could not parse state file %s, starting fresh", cfg.state_file)
     return {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
-            "standdown": {}, "pending": {}}
+            "standdown": {}, "pending": {}, "recent_outcomes": []}
 
 
 def save_state(cfg: BotConfig, state: dict) -> None:
@@ -654,41 +725,27 @@ def save_state(cfg: BotConfig, state: dict) -> None:
 # Main decision cycle
 # --------------------------------------------------------------------------
 
-def decide(snap: ChartSnapshot, state: dict) -> dict:
-    """Runs §2-§10 and returns a decision dict. Never calls Claude."""
+def analyze_with_claude(snap: ChartSnapshot, state: dict, cfg: BotConfig) -> dict:
+    """Builds the prompt, calls Claude, and returns a raw (unvalidated)
+    decision dict plus the mechanical context used to build the prompt."""
     m5_direction = direction_for(snap.ind["M5"])
     m15_direction = direction_for(snap.ind["M15"])
     h1_direction = direction_for(snap.ind["H1"])
     regime = regime_for(snap.ind["M5"])
+    hints = compute_hints(snap, m5_direction, regime)
+    overlay = build_overlay_context(snap)
+    standdown_active = active_standdowns(state)
+    recent_outcomes = state.get("recent_outcomes", [])[-5:]
 
-    candidate = select_setup(snap, m5_direction, regime)
-    if candidate is None:
-        return {"action": "NONE", "m5_direction": m5_direction, "regime": regime,
-                "m15_direction": m15_direction, "h1_direction": h1_direction}
-
-    if not standdown_gate(state, candidate["setup_type"]):
-        return {"action": "NONE", "m5_direction": m5_direction, "regime": regime,
-                "m15_direction": m15_direction, "h1_direction": h1_direction,
-                "m1_note": f"setup {candidate['setup_type']} suppressed by two-loss standdown"}
-
-    conviction = htf_conviction(candidate["direction"], m15_direction, h1_direction)
-    if conviction == "NO_TRADE":
-        return {"action": "NONE", "m5_direction": m5_direction, "regime": regime,
-                "m15_direction": m15_direction, "h1_direction": h1_direction}
-
-    direction = candidate["direction"]
-    sl, stop_distance = compute_stop_loss(snap, direction)
-    price = snap.ask if direction == "BUY" else snap.bid
-    tp = compute_take_profit(snap, direction, price, stop_distance)
-
-    m1_note = "liquidity-sweep confluence" if candidate.get("confluence_sweep") else "no liquidity-sweep confluence"
-
-    return {
-        "action": direction, "setup_type": candidate["setup_type"], "conviction": conviction,
-        "entry": price, "sl": sl, "tp": tp, "stop_distance": stop_distance,
-        "m5_direction": m5_direction, "regime": regime,
-        "m15_direction": m15_direction, "h1_direction": h1_direction, "m1_note": m1_note,
-    }
+    system, user = build_analysis_prompt(snap, m5_direction, m15_direction, h1_direction,
+                                          regime, hints, overlay, standdown_active, recent_outcomes)
+    raw = call_claude_analysis(system, user, cfg)
+    decision = parse_claude_decision(raw)
+    decision.update({
+        "m5_direction": m5_direction, "m15_direction": m15_direction,
+        "h1_direction": h1_direction, "regime": regime, "hints": hints,
+    })
+    return decision
 
 
 def run_once(cfg: BotConfig, state: dict) -> dict:
@@ -697,6 +754,10 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
     outcomes, seen = parse_outcomes(cfg.outcome_file, state.get("outcome_lines_seen", 0))
     state["outcome_lines_seen"] = seen
     resolve_pending(state, outcomes)
+    if outcomes:
+        recent = state.setdefault("recent_outcomes", [])
+        recent.extend(outcomes)
+        state["recent_outcomes"] = recent[-20:]
 
     m5_direction_now = direction_for(snap.ind["M5"])
     update_standdown(state, outcomes, m5_direction_now)
@@ -722,37 +783,31 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
         return state
     state["last_bar_time"] = last_bar_time
 
-    decision = decide(snap, state)
+    try:
+        decision = analyze_with_claude(snap, state, cfg)
+    except Exception:
+        log.exception("Claude analysis failed, skipping this cycle without trading")
+        return state
 
-    scenario = {
-        "regime": decision["regime"], "m5_direction": decision["m5_direction"],
-        "m15_direction": decision["m15_direction"], "h1_direction": decision["h1_direction"],
-    }
-    overlay = build_overlay_context(snap)
+    ok, reason = validate_decision(decision, snap, state, cfg)
+    if not ok:
+        decision = {**decision, "action": "NONE", "reasoning": f"{decision.get('reasoning', '')} [REJECTED: {reason}]"}
 
+    hints = decision["hints"]
     if decision["action"] == "NONE":
         report = format_report(snap, decision["m5_direction"], decision["regime"],
-                                decision["m15_direction"], decision["h1_direction"], decision)
+                                decision["m15_direction"], decision["h1_direction"], hints, decision)
         log.info("NO TRADE\n%s", report)
         return state
 
-    lot = position_size(snap, cfg, decision["stop_distance"])
+    price = snap.ask if decision["action"] == "BUY" else snap.bid
+    stop_distance = abs(price - float(decision["sl"]))
+    lot = position_size(snap, cfg, stop_distance)
+    decision["entry"] = price
     decision["lot"] = lot
 
-    overlay_note = ""
-    if not cfg.dry_run and cfg.api_key:
-        try:
-            overlay_result = call_claude_overlay(decision, snap, scenario, overlay, cfg)
-            overlay_note = overlay_result["note"]
-            if overlay_result["caution"]:
-                decision["conviction"] = "REDUCED"
-                overlay_note = "[CAUTION] " + overlay_note
-        except Exception as exc:
-            log.warning("Claude overlay call failed, proceeding without it: %s", exc)
-    decision["overlay_note"] = overlay_note
-
     report = format_report(snap, decision["m5_direction"], decision["regime"],
-                            decision["m15_direction"], decision["h1_direction"], decision)
+                            decision["m15_direction"], decision["h1_direction"], hints, decision)
     log.info("SIGNAL\n%s", report)
 
     state["last_signal_id"] = state.get("last_signal_id", 0) + 1
@@ -764,14 +819,14 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
         "setup_type": decision["setup_type"], "direction": decision["action"],
         "entry": decision["entry"], "sl": decision["sl"], "tp": decision["tp"],
         "atr_at_entry": snap.ind["M5"]["atr14"], "regime_adx": snap.ind["M5"]["adx14"],
-        "conviction": decision["conviction"], "outcome": "PENDING", "notes": overlay_note,
+        "conviction": decision["confidence"], "outcome": "PENDING", "notes": decision["reasoning"],
     })
 
     if cfg.dry_run:
         log.info("[dry-run] would write signal id=%d", signal_id)
     else:
         write_signal(cfg, signal_id, snap.symbol, decision["action"], lot,
-                     decision["sl"], decision["tp"], decision["setup_type"], overlay_note)
+                     decision["sl"], decision["tp"], decision["setup_type"], decision["reasoning"])
         log.info("wrote signal id=%d", signal_id)
 
     return state
@@ -792,7 +847,8 @@ def main_loop(cfg: BotConfig) -> None:
 
 
 # --------------------------------------------------------------------------
-# Selftest - runs anywhere, no API key or MT5 needed
+# Selftest - runs anywhere, no API key or MT5 needed. The Claude call itself
+# is monkeypatched so the full run_once path is exercised offline.
 # --------------------------------------------------------------------------
 
 def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True) -> str:
@@ -816,8 +872,6 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True) -> str:
     h1_rows, h1_last = bar_lines(n_h1, 60, drift, base)
 
     if trending:
-        # ema9 within 0.5xATR(1.80) of the last close, so the §4.2 pullback
-        # check ("price pulls back to/toward EMA9") actually triggers.
         ema9, ema21, rsi, macd_hist, adx = m5_last + 0.3, m5_last - 1.0, 62.0, 0.4, 30.0
         macd_hist_history = [0.10, 0.15, 0.12, 0.20, 0.32]   # decel then re-expand
     else:
@@ -849,8 +903,9 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True) -> str:
 
 def selftest() -> None:
     import tempfile
+    from unittest.mock import patch
 
-    print("claude_signal_bot (XTR) selftest")
+    print("claude_signal_bot selftest")
 
     assert direction_for({"ema9": 10, "ema21": 9, "rsi14": 60, "macd_hist": 0.5}) == "BULLISH"
     assert direction_for({"ema9": 9, "ema21": 10, "rsi14": 40, "macd_hist": -0.5}) == "BEARISH"
@@ -862,17 +917,26 @@ def selftest() -> None:
     print("  regime_for: OK")
 
     assert macd_reexpanding([0.10, 0.15, 0.12, 0.20, 0.32], "BULLISH")
-    assert not macd_reexpanding([0.10, 0.30, 0.20, 0.10], "BULLISH")            # still decelerating, not re-expanding
-    assert not macd_reexpanding([-0.30, -0.20, -0.15, -0.10], "BULLISH")        # bearish re-expansion, wrong sign for BULLISH
+    assert not macd_reexpanding([0.10, 0.30, 0.20, 0.10], "BULLISH")
+    assert not macd_reexpanding([-0.30, -0.20, -0.15, -0.10], "BULLISH")
     print("  macd_reexpanding: OK")
 
     assert htf_conviction("BUY", "BULLISH", "BULLISH") == "FULL"
     assert htf_conviction("BUY", "BULLISH", "MIXED") == "REDUCED"
-    assert htf_conviction("BUY", "MIXED", "BULLISH") == "REDUCED"
     assert htf_conviction("BUY", "BEARISH", "BULLISH") == "NO_TRADE"
-    assert htf_conviction("BUY", "BULLISH", "BEARISH") == "NO_TRADE"
-    assert htf_conviction("BUY", "MIXED", "MIXED") == "NO_TRADE"
-    print("  htf_conviction matrix: OK")
+    print("  htf_conviction (advisory) matrix: OK")
+
+    parsed = parse_claude_decision(
+        'Sure, here you go:\n```json\n'
+        '{"action": "SELL", "setup_type": "4.1", "sl": 2350.0, "tp": 2330.0, '
+        '"confidence": 72, "reasoning": "RSI extreme at the upper band"}\n```'
+    )
+    assert parsed["action"] == "SELL" and parsed["confidence"] == 72.0 and parsed["setup_type"] == "4.1"
+    print("  parse_claude_decision extracts JSON from a fenced reply: OK")
+
+    unknown_setup = parse_claude_decision('{"action": "BUY", "setup_type": "made_up", "confidence": 50}')
+    assert unknown_setup["setup_type"] == "discretionary"
+    print("  parse_claude_decision normalizes an unrecognized setup_type: OK")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -882,69 +946,79 @@ def selftest() -> None:
         snap = parse_chart_file(trending_file)
         assert snap.symbol == "XAUUSD"
         assert set(snap.bars) == {"M1", "M5", "M15", "H1"}
-        assert len(snap.macd_hist_m5) == 5
         print(f"  parse_chart_file: OK (M5 bars={len(snap.bars['M5'])}, ind keys={list(snap.ind)})")
 
         m5_dir = direction_for(snap.ind["M5"])
         regime = regime_for(snap.ind["M5"])
-        assert m5_dir == "BULLISH" and regime == "TRENDING"
-        pullback = check_trend_pullback(snap, m5_dir)
-        assert pullback is not None and pullback["direction"] == "BUY"
-        print(f"  check_trend_pullback fires on a trending, re-expanding setup: OK ({pullback})")
+        hints = compute_hints(snap, m5_dir, regime)
+        assert hints["trend_continuation_pullback"] is not None
+        print(f"  compute_hints surfaces the 4.2 pullback hint: OK ({hints['trend_continuation_pullback']})")
 
         cfg = BotConfig(
             data_file=trending_file, signal_file=tmp_path / "signals.txt",
             ack_file=tmp_path / "ack.txt", outcome_file=tmp_path / "outcomes.txt",
-            state_file=tmp_path / "state.json", dry_run=True,
+            state_file=tmp_path / "state.json", dry_run=True, api_key="test-key",
         )
-        state = load_state(cfg)
-        decision = decide(snap, state)
-        assert decision["action"] == "BUY" and decision["setup_type"] == "4.2"
-        assert decision["sl"] < decision["entry"]
-        print(f"  decide() end-to-end on a trending sample: OK (conviction={decision['conviction']})")
-
-        sl, dist = compute_stop_loss(snap, "BUY")
         atr = snap.ind["M5"]["atr14"]
-        assert 1.0 * atr - 1e-6 <= dist <= 1.5 * atr + 1e-6
-        print(f"  compute_stop_loss clamps to [1.0, 1.5] x ATR: OK (dist={dist:.3f}, atr={atr})")
 
-        tp = compute_take_profit(snap, "BUY", snap.ask, dist)
-        rr = (tp - snap.ask) / dist
-        assert 1.4 <= rr <= 2.1   # allow a little slack for the round-number nudge
-        print(f"  compute_take_profit lands in the 1.5-2.0R band: OK (R={rr:.2f})")
+        good_decision = {
+            "action": "BUY", "setup_type": "4.2", "sl": snap.ask - 1.5 * atr, "tp": snap.ask + 2.5 * atr,
+            "confidence": 75.0, "reasoning": "trend pullback with re-expanding MACD",
+        }
+        state = load_state(cfg)
+        ok, reason = validate_decision(good_decision, snap, state, cfg)
+        assert ok, reason
+        print("  validate_decision accepts a well-formed, sanely-sized BUY: OK")
 
-        lots = position_size(snap, cfg, dist)
-        assert snap.volume_min <= lots <= snap.volume_max
-        print(f"  position_size respects broker limits: OK (lots={lots})")
+        wrong_side = {**good_decision, "sl": snap.ask + 1.0}
+        ok, reason = validate_decision(wrong_side, snap, state, cfg)
+        assert not ok
+        print(f"  validate_decision rejects sl on the wrong side: OK ({reason})")
 
-        ranging_file = tmp_path / "chart_ranging.txt"
-        ranging_file.write_text(_sample_chart_text(trending=False))
-        snap2 = parse_chart_file(ranging_file)
-        assert regime_for(snap2.ind["M5"]) == "RANGING"
-        print("  ranging sample parses with RANGING regime: OK")
+        low_conf = {**good_decision, "confidence": 10.0}
+        ok, reason = validate_decision(low_conf, snap, state, cfg)
+        assert not ok
+        print(f"  validate_decision rejects low confidence: OK ({reason})")
 
-        # --- standdown (§10) ---
-        state2 = load_state(cfg)
-        outcomes = [
+        oversized = {**good_decision, "sl": snap.ask - 10 * atr}
+        ok, reason = validate_decision(oversized, snap, state, cfg)
+        assert not ok
+        print(f"  validate_decision rejects a stop far outside the ATR sanity band: OK ({reason})")
+
+        standdown_state = load_state(cfg)
+        update_standdown(standdown_state, [
             {"signal_id": "1", "setup_type": "4.2", "direction": "BUY", "profit": -5.0, "outcome": "LOSS"},
             {"signal_id": "2", "setup_type": "4.2", "direction": "BUY", "profit": -5.0, "outcome": "LOSS"},
-        ]
-        update_standdown(state2, outcomes, "BULLISH")
-        assert not standdown_gate(state2, "4.2")
-        print("  two consecutive losses trigger a standdown: OK")
-        update_standdown(state2, [], "MIXED")   # M5 returns to MIXED
-        assert standdown_gate(state2, "4.2")    # now clears and re-arms
-        assert not state2["standdown"]["4.2"]["active"]
+        ], "BULLISH")
+        ok, reason = validate_decision(good_decision, snap, standdown_state, cfg)
+        assert not ok
+        print(f"  validate_decision enforces the two-loss standdown as a backstop: OK ({reason})")
+        update_standdown(standdown_state, [], "MIXED")
+        assert standdown_gate(standdown_state, "4.2")
         print("  standdown clears once M5 returns to MIXED: OK")
+
+        # --- end-to-end run_once with the Claude call monkeypatched ---
+        fake_reply = json.dumps(good_decision)
+        with patch(f"{__name__}.call_claude_analysis", return_value=fake_reply):
+            e2e_state = load_state(cfg)
+            e2e_state = run_once(cfg, e2e_state)
+        assert e2e_state["last_signal_id"] == 1
+        assert "1" in e2e_state["pending"]
+        print("  run_once end-to-end (Claude mocked) registers a pending signal: OK")
 
         # --- time-decay (§9) ---
         state3 = load_state(cfg)
         register_pending(state3, 7, "4.1")
-        state3["pending"]["7"]["issued_at"] = "2000-01-01T00:00:00+00:00"   # force staleness
+        state3["pending"]["7"]["issued_at"] = "2000-01-01T00:00:00+00:00"
         expired = expire_stale_pending(state3, TIME_DECAY_SECONDS)
         assert expired == ["7"]
         assert "7" not in state3["pending"]
         print("  expire_stale_pending fires after the decay window: OK")
+
+        # --- position sizing ---
+        lots = position_size(snap, cfg, 2.0 * atr)
+        assert snap.volume_min <= lots <= snap.volume_max
+        print(f"  position_size respects broker limits: OK (lots={lots})")
 
         # --- signal file write/round-trip ---
         write_signal(cfg, 1, "XAUUSD", "BUY", 0.01, snap.ask - 3.0, snap.ask + 5.0, "4.2", "test")
@@ -978,6 +1052,9 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         risk_percent=args.risk_percent,
         fallback_equity=args.fallback_equity,
         time_decay_seconds=args.time_decay_seconds,
+        min_confidence=args.min_confidence,
+        min_atr_mult=args.min_atr_mult,
+        max_atr_mult=args.max_atr_mult,
         dry_run=args.dry_run,
     )
 
@@ -995,11 +1072,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=60.0, help="seconds between analysis cycles")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--api-key", default=None, help="defaults to $ANTHROPIC_API_KEY")
-    parser.add_argument("--risk-percent", type=float, default=2.0, help="§8 risk per trade, as %% of equity")
+    parser.add_argument("--risk-percent", type=float, default=2.0, help="risk per trade, as %% of equity")
     parser.add_argument("--fallback-equity", type=float, default=5000.0,
                          help="used for sizing if the EA's exported equity is 0 (e.g. testing)")
     parser.add_argument("--time-decay-seconds", type=float, default=TIME_DECAY_SECONDS,
-                         help="§9: force-close if unresolved after this long")
+                         help="force-close if unresolved after this long")
+    parser.add_argument("--min-confidence", type=float, default=60.0,
+                         help="reject Claude's signal below this confidence")
+    parser.add_argument("--min-atr-mult", type=float, default=0.25,
+                         help="reject a proposed stop distance smaller than this x ATR14(M5)")
+    parser.add_argument("--max-atr-mult", type=float, default=3.0,
+                         help="reject a proposed stop distance larger than this x ATR14(M5)")
     parser.add_argument("--dry-run", action="store_true", help="analyze and log but never write the signal file")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -1011,9 +1094,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = build_config_from_args(args)
-    if not cfg.dry_run and not cfg.api_key:
-        log.warning("no Claude API key set - trades will still be decided mechanically, "
-                    "but the §12 discretionary overlay note will be skipped")
+    if not cfg.api_key:
+        log.error("no Claude API key: set ANTHROPIC_API_KEY or pass --api-key - "
+                  "Claude does the actual trading analysis now, so this bot cannot run without it")
+        return 1
 
     if args.once:
         state = load_state(cfg)

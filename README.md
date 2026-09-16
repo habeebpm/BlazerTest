@@ -26,13 +26,15 @@ not predict future results.
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
   See `python/README.md`.
 - `MQL5/Experts/ClaudeSignalEA.mq5` + `python/claude_signal_bot.py` — a
-  separate, experimental file-based pipeline implementing the "XTR" 10-minute
-  XAUUSD micro-scalp spec: the EA exports M1/M5/M15/H1 indicator and bar data
-  every minute, a deterministic Python rule engine (regime, three setup
-  types, HTF conviction filter, ATR-clamped stops, a two-loss standdown)
-  decides BUY/SELL/NONE with SL/TP, Claude adds only a qualitative overlay
-  note, and the EA executes with a fixed $4 trailing stop. See
-  `python/CLAUDE_SIGNAL_PIPELINE.md`.
+  separate, experimental file-based pipeline built around the "XTR"
+  10-minute XAUUSD micro-scalp spec: the EA exports M1/M5/M15/H1 indicator
+  and bar data every minute, and **Claude does the real-time trading
+  analysis** — direction, setup rationale, stop and target — informed by
+  the XTR setup archetypes and general trading principles as knowledge
+  rather than a fixed rule table. Python keeps only risk containment
+  mechanical (a stop-distance sanity check, the two-loss standdown, the
+  10-minute time-decay, position sizing), and the EA executes with a fixed
+  $4 trailing stop. See `python/CLAUDE_SIGNAL_PIPELINE.md`.
 
 ## Strategy logic
 
