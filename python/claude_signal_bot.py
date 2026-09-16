@@ -44,6 +44,13 @@ choosing among three fixed labels.
 one the EA writes to with FILE_COMMON) - typically, on Windows:
     %APPDATA%\\MetaQuotes\\Terminal\\Common\\Files
 See CLAUDE_SIGNAL_PIPELINE.md for the full setup and file-format reference.
+
+Optional Telegram fill notifications: set TELEGRAM_BOT_TOKEN and
+TELEGRAM_CHAT_ID (or pass --telegram-bot-token/--telegram-chat-id) and a
+message is sent the moment the EA's ack log reports a signal EXECUTED -
+i.e. actually filled at market, not merely written. `--notify-test` sends
+one test message and exits, to verify the bot/chat setup before relying on
+it. Unset, notifications are silently skipped.
 """
 from __future__ import annotations
 
@@ -56,6 +63,9 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,6 +185,9 @@ class BotConfig:
     min_confidence: float = 60.0
     min_atr_mult: float = 0.25   # sanity floor on the proposed stop distance
     max_atr_mult: float = 3.0    # sanity ceiling on the proposed stop distance
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_timeout: float = 10.0
     dry_run: bool = False
 
 
@@ -458,6 +471,74 @@ def parse_outcomes(path: Path, since_count: int) -> tuple[list[dict], int]:
             "direction": parts[3], "profit": float(parts[4]), "outcome": parts[5],
         })
     return records, len(lines)
+
+
+# --------------------------------------------------------------------------
+# Telegram fill notifications. The EA's ack log already reports EXECUTED
+# the instant a signal fills at market (it never queues limit orders), so
+# "filled" and "EXECUTED" are the same event here - no separate fill-vs-
+# pending tracking is needed.
+# --------------------------------------------------------------------------
+
+def parse_acks(path: Path, since_count: int) -> tuple[list[dict], int]:
+    if not path.exists():
+        return [], since_count
+    lines = [l for l in path.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
+    new_lines = lines[since_count:]
+    records = []
+    for line in new_lines:
+        parts = line.split(",", 3)   # timestamp,id,status,detail - detail may itself be free text
+        if len(parts) < 4:
+            continue
+        records.append({"timestamp": parts[0], "signal_id": parts[1], "status": parts[2], "detail": parts[3]})
+    return records, len(lines)
+
+
+def format_fill_notification(ack: dict, history_entry: dict | None, symbol: str) -> str:
+    lines = [f"{symbol} signal FILLED (id {ack['signal_id']})"]
+    if history_entry:
+        lines.append(f"{history_entry['direction']} - setup {history_entry['setup_type']} "
+                      f"- confidence {history_entry['confidence']:.0f}")
+        lines.append(f"Entry {history_entry['entry']}  SL {history_entry['sl']}  TP {history_entry['tp']}")
+        if history_entry.get("reasoning"):
+            lines.append(f"Reasoning: {history_entry['reasoning']}")
+    lines.append(f"Broker: {ack['detail']}")
+    lines.append(f"Time: {ack['timestamp']}")
+    return "\n".join(lines)
+
+
+def send_telegram_message(cfg: BotConfig, text: str) -> None:
+    """Plain text only (no parse_mode) - Claude's own reasoning ends up in
+    these messages and may contain characters Telegram's Markdown/HTML
+    parsers would choke on, so formatted markup isn't worth the failure
+    mode. Raises on failure; callers decide whether that's fatal."""
+    if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
+        return
+    url = f"https://api.telegram.org/bot{cfg.telegram_bot_token}/sendMessage"
+    payload = urllib.parse.urlencode({
+        "chat_id": cfg.telegram_chat_id,
+        "text": text,
+        "disable_web_page_preview": "true",
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST")
+    with urllib.request.urlopen(req, timeout=cfg.telegram_timeout) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"Telegram API returned HTTP {resp.status}")
+
+
+def notify_fills(state: dict, acks: list[dict], snap: ChartSnapshot, cfg: BotConfig) -> None:
+    if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
+        return
+    for ack in acks:
+        if ack["status"] != "EXECUTED":
+            continue
+        history_entry = state.get("trade_history", {}).get(ack["signal_id"])
+        text = format_fill_notification(ack, history_entry, snap.symbol)
+        try:
+            send_telegram_message(cfg, text)
+            log.info("Telegram notification sent for filled signal id=%s", ack["signal_id"])
+        except (urllib.error.URLError, RuntimeError, OSError):
+            log.exception("failed to send Telegram notification for signal id=%s", ack["signal_id"])
 
 
 def update_standdown(state: dict, outcomes: list[dict], m5_direction: str) -> None:
@@ -797,7 +878,7 @@ def load_state(cfg: BotConfig) -> dict:
         except Exception:
             log.warning("could not parse state file %s, starting fresh", cfg.state_file)
     return {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
-            "standdown": {}, "pending": {}, "trade_history": {}}
+            "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {}}
 
 
 def save_state(cfg: BotConfig, state: dict) -> None:
@@ -839,6 +920,10 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
     outcomes, seen = parse_outcomes(cfg.outcome_file, state.get("outcome_lines_seen", 0))
     state["outcome_lines_seen"] = seen
     resolve_pending(state, outcomes)   # also updates trade_history entries with their outcome
+
+    acks, ack_seen = parse_acks(cfg.ack_file, state.get("ack_lines_seen", 0))
+    state["ack_lines_seen"] = ack_seen
+    notify_fills(state, acks, snap, cfg)   # Telegram, if configured; a no-op otherwise
 
     m5_direction_now = direction_for(snap.ind["M5"])
     update_standdown(state, outcomes, m5_direction_now)
@@ -1116,6 +1201,49 @@ def selftest() -> None:
         assert "trend pullback with re-expanding MACD" in user
         print("  build_analysis_prompt surfaces past reasoning + outcomes to Claude: OK")
 
+        # --- Telegram fill notifications (network itself is never touched here) ---
+        telegram_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "signals.txt",
+            ack_file=tmp_path / "tg_ack.txt", outcome_file=tmp_path / "outcomes.txt",
+            state_file=tmp_path / "state.json", dry_run=True, api_key="test-key",
+            telegram_bot_token="test-token", telegram_chat_id="12345",
+        )
+        tg_state = load_state(telegram_cfg)
+        register_trade_history(tg_state, 1, {**good_decision, "entry": snap.ask})
+        telegram_cfg.ack_file.write_text(
+            "2026.09.16 12:01:00,1,EXECUTED,ticket=555 price=2350.10 lots=0.37 setup=4.2\n"
+            "2026.09.16 12:01:05,2,REJECTED,missing sl/tp\n"
+        )
+        acks, _ = parse_acks(telegram_cfg.ack_file, 0)
+        assert len(acks) == 2 and acks[0]["status"] == "EXECUTED" and acks[1]["status"] == "REJECTED"
+        print("  parse_acks: OK")
+
+        sent = []
+        with patch(f"{__name__}.send_telegram_message", side_effect=lambda c, text: sent.append(text)):
+            notify_fills(tg_state, acks, snap, telegram_cfg)
+        assert len(sent) == 1 and "FILLED" in sent[0] and "4.2" in sent[0] and "ticket=555" in sent[0]
+        print(f"  notify_fills sends exactly one message, only for the EXECUTED ack: OK ({sent[0].splitlines()[0]})")
+
+        sent_unconfigured = []
+        with patch(f"{__name__}.send_telegram_message", side_effect=lambda c, text: sent_unconfigured.append(text)):
+            notify_fills(tg_state, acks, snap, cfg)   # cfg has no telegram token/chat id configured
+        assert sent_unconfigured == []
+        print("  notify_fills is a no-op without telegram_bot_token/chat_id: OK")
+
+        # send_telegram_message itself: verify the request it builds, without touching the network
+        class _FakeResponse:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with patch(f"{__name__}.urllib.request.urlopen", return_value=_FakeResponse()) as mock_urlopen:
+            send_telegram_message(telegram_cfg, "hello from selftest")
+        called_req = mock_urlopen.call_args[0][0]
+        assert called_req.full_url == "https://api.telegram.org/bottest-token/sendMessage"
+        body = urllib.parse.parse_qs(called_req.data.decode("utf-8"))
+        assert body["chat_id"] == ["12345"] and body["text"] == ["hello from selftest"]
+        print("  send_telegram_message builds the expected Bot API request: OK")
+
         # --- time-decay (§9) ---
         state3 = load_state(cfg)
         register_pending(state3, 7, "4.1")
@@ -1165,6 +1293,8 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         min_confidence=args.min_confidence,
         min_atr_mult=args.min_atr_mult,
         max_atr_mult=args.max_atr_mult,
+        telegram_bot_token=args.telegram_bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+        telegram_chat_id=args.telegram_chat_id or os.environ.get("TELEGRAM_CHAT_ID", ""),
         dry_run=args.dry_run,
     )
 
@@ -1193,6 +1323,10 @@ def main(argv: list[str] | None = None) -> int:
                          help="reject a proposed stop distance smaller than this x ATR14(M5)")
     parser.add_argument("--max-atr-mult", type=float, default=3.0,
                          help="reject a proposed stop distance larger than this x ATR14(M5)")
+    parser.add_argument("--telegram-bot-token", default=None, help="defaults to $TELEGRAM_BOT_TOKEN")
+    parser.add_argument("--telegram-chat-id", default=None, help="defaults to $TELEGRAM_CHAT_ID")
+    parser.add_argument("--notify-test", action="store_true",
+                         help="send a test Telegram message (verifies bot token/chat id) and exit")
     parser.add_argument("--dry-run", action="store_true", help="analyze and log but never write the signal file")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -1201,6 +1335,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.selftest:
         selftest()
+        return 0
+
+    if args.notify_test:
+        cfg = build_config_from_args(args)
+        if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
+            log.error("--notify-test requires a bot token and chat id: set TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID "
+                      "or pass --telegram-bot-token/--telegram-chat-id")
+            return 1
+        try:
+            send_telegram_message(cfg, "ClaudeSignalEA: test notification - Telegram integration is working.")
+        except Exception:
+            log.exception("test notification failed to send")
+            return 1
+        log.info("test notification sent")
         return 0
 
     cfg = build_config_from_args(args)

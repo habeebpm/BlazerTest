@@ -98,17 +98,19 @@ ClaudeSignalEA.mq5
     with its setup type
   - every tick: trails open
     positions by a fixed $4
-  - appends execution acks         --->   claude_trade_ack.txt
-  - appends WIN/LOSS per setup     --->   claude_trade_outcomes.txt
-    type when a position closes
-    (fed back to Claude as recent
-    performance context, and to
-    the §10 standdown backstop)
+  - appends execution acks         --->   claude_trade_ack.txt --> read every cycle;
+  - appends WIN/LOSS per setup     --->   claude_trade_outcomes.txt   an EXECUTED ack fires
+    type when a position closes             |                        a Telegram message
+    (fed back to Claude as recent           v                        (fill notification)
+    performance context, and to      Telegram Bot API
+    the §10 standdown backstop)      (if TELEGRAM_BOT_TOKEN/
+                                       TELEGRAM_CHAT_ID are set)
 ```
 
 Nothing here talks to the MetaTrader5 Python API - the two sides only share a
 folder on disk, so the Python side needs no MetaTrader package, only network
-access to Claude.
+access to Claude (and, optionally, to Telegram's Bot API for fill
+notifications - see "Telegram fill notifications" below).
 
 ## Why MQL5 still computes the indicators, not Python
 
@@ -180,6 +182,56 @@ interval), `--model`, `--risk-percent` (§8, default 2.0), `--fallback-equity`
 Claude's own stated confidence below this, default 60), `--min-atr-mult` /
 `--max-atr-mult` (the sanity band on stop distance vs. ATR14(M5), default
 0.25-3.0).
+
+## Telegram fill notifications (optional)
+
+A message is sent the moment the EA's ack log reports a signal `EXECUTED` -
+that's a real fill, since the EA only ever trades at market, never queues a
+pending order. Nothing else notifies (not `NONE`, not rejections, not
+outcomes) - just the one event the task asked for. Uses Telegram's Bot API
+directly over HTTPS via the standard library (`urllib`), so no extra
+dependency and nothing added to `requirements.txt`.
+
+**Setup:**
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, `/newbot`,
+   follow the prompts. You get a bot token that looks like
+   `123456789:AAG...`.
+2. Start a chat with your new bot (search its username, hit Start) - a bot
+   can't message you until you've messaged it first.
+3. Get your chat id: message [@userinfobot](https://t.me/userinfobot) (or
+   call `https://api.telegram.org/bot<token>/getUpdates` after step 2 and
+   read `message.chat.id` from the JSON).
+4. Set both as environment variables (or pass them on the command line):
+
+```bash
+export TELEGRAM_BOT_TOKEN=123456789:AAG...
+export TELEGRAM_CHAT_ID=987654321
+
+python claude_signal_bot.py --data-dir "<common files path>" --notify-test
+```
+
+`--notify-test` sends one message and exits - confirm it arrives before
+trusting the live loop to notify you. Leave both unset and notifications
+are silently skipped; nothing else about the pipeline depends on them.
+
+A filled-signal message looks like:
+
+```
+XAUUSD signal FILLED (id 17)
+BUY - setup 4.2 - confidence 78
+Entry 2338.42  SL 2335.10  TP 2344.60
+Reasoning: trend pullback with re-expanding MACD histogram, HTF aligned
+Broker: ticket=90210394 price=2338.44 lots=0.05 setup=4.2
+Time: 2026.09.16 10:05:12
+```
+
+The "Entry/SL/TP/Reasoning" lines come from this bot's own record of the
+decision (`state["trade_history"]`, keyed by signal id); "Broker" is the
+EA's own ack detail - the actual fill price/lot/ticket, straight from
+MetaTrader. If the bot's state was reset since the signal was written (a
+restart, a cleared state file), the message falls back to just the broker
+line rather than failing.
 
 ## File formats
 
@@ -285,4 +337,8 @@ above - from `PENDING` to `WIN`/`LOSS`.
 - **The signal file is trusted input to a live-trading EA.** Keep the shared
   folder private to processes you control; anything able to write to it can
   place trades through the EA's own validation only.
+- **The Telegram bot token is a credential.** Anyone who has it can send
+  messages as your bot (though not read your account or place trades - the
+  bot only ever calls `sendMessage`). Keep it in an environment variable,
+  not in a committed file, the same as `ANTHROPIC_API_KEY`.
 - Demo-test extensively before ever pointing this at a live account.

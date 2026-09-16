@@ -34,7 +34,8 @@ not predict future results.
   rather than a fixed rule table. Python keeps only risk containment
   mechanical (a stop-distance sanity check, the two-loss standdown, the
   10-minute time-decay, position sizing), and the EA executes with a fixed
-  $4 trailing stop. See `python/CLAUDE_SIGNAL_PIPELINE.md`.
+  $4 trailing stop. Optional Telegram notifications fire the moment a
+  signal actually fills. See `python/CLAUDE_SIGNAL_PIPELINE.md`.
 
 ## Strategy logic
 
