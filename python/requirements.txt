@@ -4,3 +4,5 @@
 MetaTrader5>=5.0.45; sys_platform == "win32"
 pandas>=2.0
 numpy>=1.24
+# Only needed by claude_signal_bot.py (see CLAUDE_SIGNAL_PIPELINE.md).
+anthropic>=0.40.0

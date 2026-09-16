@@ -25,6 +25,11 @@ not predict future results.
   MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
   See `python/README.md`.
+- `MQL5/Experts/ClaudeSignalEA.mq5` + `python/claude_signal_bot.py` — a
+  separate, experimental file-based pipeline: the EA exports chart data every
+  minute, a Python process sends it to Claude for analysis and writes back a
+  BUY/SELL signal with SL/TP, and the EA executes it with a fixed $4
+  trailing stop. See `python/CLAUDE_SIGNAL_PIPELINE.md`.
 
 ## Strategy logic
 
