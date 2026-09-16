@@ -27,6 +27,15 @@ Direction, setup rationale, entry timing color, and stop/target placement
 are otherwise entirely Claude's call, made fresh every cycle against the
 live indicator/bar data - not pattern-matched against a fixed rule table.
 
+Claude is also shown its own recent decisions paired with what actually
+happened to them (state["trade_history"], updated as outcomes arrive) and
+asked to explicitly self-correct: if its own history shows a setup type or
+reasoning pattern that's been losing, say so and adjust rather than
+repeating it. It is also free to name a pattern that doesn't fit any of the
+three XTR archetypes ("discretionary") rather than being forced into one -
+this is meant to be a generative read of the market, not a classifier
+choosing among three fixed labels.
+
     python claude_signal_bot.py --selftest             # offline logic checks, no API key needed
     python claude_signal_bot.py --data-dir <path> --once --dry-run -v
     python claude_signal_bot.py --data-dir <path>       # run the loop, ANTHROPIC_API_KEY required
@@ -117,6 +126,25 @@ GENERAL PRINCIPLES TO WEIGH ALONGSIDE THE ABOVE:
 - You are producing a 10-minute-horizon scalp decision, not a long-term
   thesis - weight the freshest M1/M5 evidence most heavily, and use M15/H1
   as context and a conviction check, not the primary trigger.
+
+SELF-CORRECTION (learn from the last, apply it to the present):
+- You will be shown your own recent decisions paired with what actually
+  happened to them. Read that history before deciding. If it shows a
+  pattern - a setup type losing repeatedly, a reasoning style that keeps
+  getting the regime wrong, ignoring HTF opposition and paying for it -
+  say so explicitly and adjust this cycle instead of repeating it.
+- This is not just the two-loss standdown (which is enforced regardless).
+  It's about the texture of *why* recent calls went wrong, which the
+  standdown counter alone doesn't capture - e.g. "the last two 4.2s both
+  entered right as HTF flipped against them" is worth noticing even before
+  a formal standdown triggers.
+- Do not overcorrect on a small sample - one loss is not a pattern. Be
+  specific about what you're adjusting and why, or say plainly that
+  recent history shows nothing worth changing.
+- You are not limited to the three named archetypes. If the live data
+  shows a genuine, reasoned setup that doesn't match 4.1/4.2/4.3, describe
+  it and use setup_type "discretionary" rather than forcing a label that
+  doesn't fit or defaulting to NONE out of caution alone.
 """
 
 
@@ -471,6 +499,46 @@ def active_standdowns(state: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Trade history: Claude's own past decisions paired with what happened to
+# them - the "learn from the last" feedback loop. Kept in state.json (not
+# just the append-only CSV) because we mutate an entry in place once its
+# outcome arrives, which a plain audit log shouldn't do.
+# --------------------------------------------------------------------------
+
+MAX_TRADE_HISTORY = 50
+
+
+def register_trade_history(state: dict, signal_id: int, decision: dict) -> None:
+    history = state.setdefault("trade_history", {})
+    history[str(signal_id)] = {
+        "signal_id": signal_id, "setup_type": decision["setup_type"], "direction": decision["action"],
+        "entry": decision["entry"], "sl": decision["sl"], "tp": decision["tp"],
+        "confidence": decision["confidence"], "reasoning": decision["reasoning"],
+        "outcome": "PENDING", "profit": None, "resolution_time": None,
+    }
+    if len(history) > MAX_TRADE_HISTORY:
+        oldest = sorted(history, key=lambda k: int(k))[: len(history) - MAX_TRADE_HISTORY]
+        for k in oldest:
+            del history[k]
+
+
+def summarize_recent_performance(state: dict, limit: int = 8) -> dict:
+    """Recent resolved trades (with Claude's own past reasoning) plus a
+    per-setup-type win/loss tally, for the self-correction context."""
+    history = state.get("trade_history", {})
+    resolved = [t for t in history.values() if t.get("outcome") in ("WIN", "LOSS")]
+    resolved.sort(key=lambda t: t.get("resolution_time") or "")
+    recent = resolved[-limit:]
+
+    by_setup: dict[str, dict] = {}
+    for t in resolved:
+        rec = by_setup.setdefault(t["setup_type"], {"wins": 0, "losses": 0})
+        rec["wins" if t["outcome"] == "WIN" else "losses"] += 1
+
+    return {"recent_trades": recent, "by_setup_type": by_setup}
+
+
+# --------------------------------------------------------------------------
 # Time-decay invalidation (risk containment, kept mechanical). Best-effort:
 # the file protocol has no per-position selector, so an expiry closes every
 # position this EA holds, not just the stale one.
@@ -485,8 +553,14 @@ def register_pending(state: dict, signal_id: int, setup_type: str) -> None:
 
 def resolve_pending(state: dict, outcomes: list[dict]) -> None:
     pending = state.get("pending", {})
+    history = state.get("trade_history", {})
     for rec in outcomes:
-        pending.pop(str(rec["signal_id"]), None)
+        sid = str(rec["signal_id"])
+        pending.pop(sid, None)
+        if sid in history:
+            history[sid]["outcome"] = rec["outcome"]
+            history[sid]["profit"] = rec["profit"]
+            history[sid]["resolution_time"] = datetime.now(timezone.utc).isoformat()
 
 
 def expire_stale_pending(state: dict, decay_seconds: float) -> list[str]:
@@ -538,7 +612,7 @@ def build_overlay_context(snap: ChartSnapshot) -> dict:
 
 def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction: str,
                            h1_direction: str, regime: str, hints: dict, overlay: dict,
-                           standdown_active: list[str], recent_outcomes: list[dict]) -> tuple[str, str]:
+                           standdown_active: list[str], performance: dict) -> tuple[str, str]:
     system = (
         f"You are a disciplined, real-time intraday trading analyst for {snap.symbol}, "
         "making a 10-minute-horizon scalp decision. You reason from the live data given "
@@ -559,6 +633,8 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         "Reply with STRICT JSON only, no markdown fences, no text outside the object: "
         '{"action": "BUY"|"SELL"|"NONE", "setup_type": "4.1"|"4.2"|"4.3"|"discretionary"|null, '
         '"sl": <number or null>, "tp": <number or null>, "confidence": <integer 0-100>, '
+        '"self_correction": "<one sentence: what, if anything, you are adjusting based on '
+        'RECENT PERFORMANCE HISTORY below, or \'nothing notable\' if there is no pattern yet>", '
         '"reasoning": "<a few sentences covering the M5 read, regime, HTF context, and '
         'why this stop/target>"}. sl/tp/setup_type are null when action is NONE.'
     )
@@ -575,8 +651,12 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         f"Computed setup hints (advisory only, weigh them, don't just obey them): "
         f"{json.dumps(hints, default=str)}\n\n"
         f"Overlay context: {json.dumps(overlay)}\n"
-        f"Setup types currently on two-loss standdown (do not propose these): {standdown_active}\n"
-        f"Recent trade outcomes (most recent last): {json.dumps(recent_outcomes)}\n\n"
+        f"Setup types currently on two-loss standdown (do not propose these): {standdown_active}\n\n"
+        f"RECENT PERFORMANCE HISTORY (your own past decisions and reasoning, paired with what "
+        f"actually happened - read this before deciding, per the SELF-CORRECTION guidance above):\n"
+        f"Win/loss by setup type: {json.dumps(performance['by_setup_type'])}\n"
+        f"Last {len(performance['recent_trades'])} resolved trades (oldest first): "
+        f"{json.dumps(performance['recent_trades'])}\n\n"
         f"Recent M1 bars (last 15, oldest first):\n{snap.bars['M1'].tail(15).to_csv(index=False)}\n"
         f"Recent M5 bars (last 20, oldest first):\n{snap.bars['M5'].tail(20).to_csv(index=False)}\n"
         f"Recent M15 bars (last 10, oldest first):\n{snap.bars['M15'].tail(10).to_csv(index=False)}\n"
@@ -616,6 +696,7 @@ def parse_claude_decision(raw: str) -> dict:
         "sl": data.get("sl"),
         "tp": data.get("tp"),
         "confidence": float(data.get("confidence", 0) or 0),
+        "self_correction": str(data.get("self_correction", ""))[:300].replace(",", ";").replace("\n", " "),
         "reasoning": str(data.get("reasoning", ""))[:600].replace(",", ";").replace("\n", " "),
     }
 
@@ -671,6 +752,8 @@ def format_report(snap: ChartSnapshot, m5_direction: str, regime: str, m15_direc
     ]
     if decision["action"] == "NONE":
         lines.append(f"Decision: NO TRADE - {decision.get('reasoning', '')}")
+        if decision.get("self_correction"):
+            lines.append(f"Self-correction: {decision['self_correction']}")
     else:
         rr = abs(decision["tp"] - decision["entry"]) / abs(decision["entry"] - decision["sl"])
         lines.append(f"Decision: {decision['action']} - setup {decision['setup_type']} "
@@ -679,6 +762,8 @@ def format_report(snap: ChartSnapshot, m5_direction: str, regime: str, m15_direc
                       f"tp={decision['tp']} lot={decision['lot']} R:R=1:{rr:.2f}")
         lines.append(f"Time-decay: close/cancel if unresolved after {int(TIME_DECAY_SECONDS / 60)} minutes")
         lines.append(f"Reasoning: {decision['reasoning']}")
+        if decision.get("self_correction"):
+            lines.append(f"Self-correction: {decision['self_correction']}")
     return "\n".join(lines)
 
 
@@ -712,7 +797,7 @@ def load_state(cfg: BotConfig) -> dict:
         except Exception:
             log.warning("could not parse state file %s, starting fresh", cfg.state_file)
     return {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
-            "standdown": {}, "pending": {}, "recent_outcomes": []}
+            "standdown": {}, "pending": {}, "trade_history": {}}
 
 
 def save_state(cfg: BotConfig, state: dict) -> None:
@@ -735,10 +820,10 @@ def analyze_with_claude(snap: ChartSnapshot, state: dict, cfg: BotConfig) -> dic
     hints = compute_hints(snap, m5_direction, regime)
     overlay = build_overlay_context(snap)
     standdown_active = active_standdowns(state)
-    recent_outcomes = state.get("recent_outcomes", [])[-5:]
+    performance = summarize_recent_performance(state)
 
     system, user = build_analysis_prompt(snap, m5_direction, m15_direction, h1_direction,
-                                          regime, hints, overlay, standdown_active, recent_outcomes)
+                                          regime, hints, overlay, standdown_active, performance)
     raw = call_claude_analysis(system, user, cfg)
     decision = parse_claude_decision(raw)
     decision.update({
@@ -753,11 +838,7 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
 
     outcomes, seen = parse_outcomes(cfg.outcome_file, state.get("outcome_lines_seen", 0))
     state["outcome_lines_seen"] = seen
-    resolve_pending(state, outcomes)
-    if outcomes:
-        recent = state.setdefault("recent_outcomes", [])
-        recent.extend(outcomes)
-        state["recent_outcomes"] = recent[-20:]
+    resolve_pending(state, outcomes)   # also updates trade_history entries with their outcome
 
     m5_direction_now = direction_for(snap.ind["M5"])
     update_standdown(state, outcomes, m5_direction_now)
@@ -813,13 +894,18 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
     state["last_signal_id"] = state.get("last_signal_id", 0) + 1
     signal_id = state["last_signal_id"]
     register_pending(state, signal_id, decision["setup_type"])
+    register_trade_history(state, signal_id, decision)
+
+    notes = decision["reasoning"]
+    if decision.get("self_correction") and decision["self_correction"].lower() != "nothing notable":
+        notes = f"[self-correction: {decision['self_correction']}] {notes}"
 
     record_trade_log({
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "setup_type": decision["setup_type"], "direction": decision["action"],
         "entry": decision["entry"], "sl": decision["sl"], "tp": decision["tp"],
         "atr_at_entry": snap.ind["M5"]["atr14"], "regime_adx": snap.ind["M5"]["adx14"],
-        "conviction": decision["confidence"], "outcome": "PENDING", "notes": decision["reasoning"],
+        "conviction": decision["confidence"], "outcome": "PENDING", "notes": notes,
     })
 
     if cfg.dry_run:
@@ -929,7 +1015,8 @@ def selftest() -> None:
     parsed = parse_claude_decision(
         'Sure, here you go:\n```json\n'
         '{"action": "SELL", "setup_type": "4.1", "sl": 2350.0, "tp": 2330.0, '
-        '"confidence": 72, "reasoning": "RSI extreme at the upper band"}\n```'
+        '"confidence": 72, "self_correction": "nothing notable", '
+        '"reasoning": "RSI extreme at the upper band"}\n```'
     )
     assert parsed["action"] == "SELL" and parsed["confidence"] == 72.0 and parsed["setup_type"] == "4.1"
     print("  parse_claude_decision extracts JSON from a fenced reply: OK")
@@ -963,7 +1050,8 @@ def selftest() -> None:
 
         good_decision = {
             "action": "BUY", "setup_type": "4.2", "sl": snap.ask - 1.5 * atr, "tp": snap.ask + 2.5 * atr,
-            "confidence": 75.0, "reasoning": "trend pullback with re-expanding MACD",
+            "confidence": 75.0, "self_correction": "nothing notable",
+            "reasoning": "trend pullback with re-expanding MACD",
         }
         state = load_state(cfg)
         ok, reason = validate_decision(good_decision, snap, state, cfg)
@@ -1004,7 +1092,29 @@ def selftest() -> None:
             e2e_state = run_once(cfg, e2e_state)
         assert e2e_state["last_signal_id"] == 1
         assert "1" in e2e_state["pending"]
-        print("  run_once end-to-end (Claude mocked) registers a pending signal: OK")
+        assert e2e_state["trade_history"]["1"]["outcome"] == "PENDING"
+        assert e2e_state["trade_history"]["1"]["reasoning"] == good_decision["reasoning"]
+        print("  run_once end-to-end (Claude mocked) registers a pending signal + trade history: OK")
+
+        # --- self-correction feedback loop: outcome resolution feeds back into history ---
+        resolve_pending(e2e_state, [
+            {"signal_id": "1", "setup_type": "4.2", "direction": "BUY", "profit": -6.0, "outcome": "LOSS"},
+        ])
+        assert e2e_state["trade_history"]["1"]["outcome"] == "LOSS"
+        assert "1" not in e2e_state["pending"]
+        perf = summarize_recent_performance(e2e_state)
+        assert perf["by_setup_type"]["4.2"]["losses"] == 1
+        assert perf["recent_trades"][0]["reasoning"] == good_decision["reasoning"]
+        print(f"  resolve_pending feeds outcomes back into trade_history for self-correction: OK ({perf['by_setup_type']})")
+
+        # the prompt itself must actually surface that history to Claude
+        system, user = build_analysis_prompt(
+            snap, m5_dir, "BULLISH", "BULLISH", regime, hints, build_overlay_context(snap),
+            [], perf,
+        )
+        assert "SELF-CORRECTION" in system
+        assert "trend pullback with re-expanding MACD" in user
+        print("  build_analysis_prompt surfaces past reasoning + outcomes to Claude: OK")
 
         # --- time-decay (§9) ---
         state3 = load_state(cfg)

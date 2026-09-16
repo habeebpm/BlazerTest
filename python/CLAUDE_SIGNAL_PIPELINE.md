@@ -39,6 +39,36 @@ setup, no rigid ATR-clamp formula overriding Claude's stop - those XTR
 mechanics are now inputs to Claude's reasoning (still computed accurately in
 Python/MQL5 and handed over as labeled hints), not code paths that decide.
 
+## The self-correction feedback loop
+
+A one-shot analyst that never sees its own track record just repeats its
+mistakes. So every cycle, before Claude decides anything, `analyze_with_claude`
+hands it `state["trade_history"]` - its own past decisions (setup type,
+reasoning, stop/target) paired with what actually happened once the EA's
+outcome log resolved them (`resolve_pending` mutates the matching entry to
+`WIN`/`LOSS` as soon as it sees the outcome) - plus a win/loss tally per
+setup type (`summarize_recent_performance`). The system prompt's
+SELF-CORRECTION section asks Claude to read that before deciding: if a
+pattern shows up (a setup type losing repeatedly, a reasoning style that
+keeps misreading the regime, entries right as the HTF flips against them),
+say so and adjust, rather than repeat it next cycle. Claude's own answer to
+"what am I adjusting, if anything" comes back as a `self_correction` field
+alongside the trade decision, and gets written into the signal's reason and
+the trade log's notes so it's visible in the record, not just implicit in
+the number that came out.
+
+This sits above, not instead of, the mechanical two-loss standdown: the
+standdown is a hard, guaranteed brake after exactly two losses; the
+self-correction loop is Claude noticing a *qualitative* pattern earlier or
+differently than a bare counter would ("both of the last two 4.2s entered
+right as HTF flipped" is worth catching before a formal standdown triggers).
+Claude is also explicitly told it isn't limited to the three named XTR
+archetypes - a live setup that doesn't fit 4.1/4.2/4.3 can be described on
+its own terms with `setup_type: "discretionary"`, rather than forced into a
+label that doesn't fit or dropped to NONE out of caution alone. That's the
+"generative" half of this design: real-time synthesis of what the current
+data plus recent history actually support, not a fixed three-way classifier.
+
 ```
 MetaTrader 5 terminal                          Python process
 ------------------------                        ---------------
@@ -206,8 +236,9 @@ processed signal - `timestamp,id,status,detail` where status is `EXECUTED`,
 position it opened closes, for any reason - SL, TP, manual close, or a
 time-decay `CLOSE`): `timestamp,signal_id,setup_type,direction,profit,outcome`
 where outcome is `WIN` or `LOSS`. Python reads this every cycle both to
-drive the §10 standdown backstop and to hand Claude its own recent
-win/loss history as context for the next decision.
+drive the §10 standdown backstop and to resolve the matching entry in
+`state["trade_history"]` - the record that powers the self-correction loop
+above - from `PENDING` to `WIN`/`LOSS`.
 
 ## What Claude decides vs. what code still enforces
 
@@ -219,6 +250,7 @@ win/loss history as context for the next decision.
 | Stop-loss / take-profit prices | Claude |
 | Confidence / conviction | Claude |
 | Narrative reasoning (§13-style) | Claude |
+| Self-correction note (what it's adjusting based on its own track record) | Claude, informed by `state["trade_history"]` (Python maintains the record, Claude interprets it) |
 | §2/§3 direction & regime *labels* shown to Claude | Python (`direction_for`, `regime_for`) - informational only |
 | §4 setup *hints* shown to Claude | Python (`check_rsi_bounce`, `check_trend_pullback`, `check_liquidity_sweep`) - advisory only, not gates |
 | §5 HTF grade shown to Claude | Python (`htf_conviction`) - advisory only |
