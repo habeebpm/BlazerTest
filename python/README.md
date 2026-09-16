@@ -293,7 +293,7 @@ advised), `-v`.
 | `selftest.py` | Strategy/indicator/trailing checks |
 | `test_integration.py` | Drives the bot against a stub MetaTrader5 module |
 | `simulate.py` | Counts actual fills (not signals) under the position rules |
-| `claude_signal_bot.py` | Separate, experimental pipeline: reads chart data exported by `MQL5/Experts/ClaudeSignalEA.mq5`, asks Claude for a BUY/SELL/SL/TP decision, writes it back for the EA to execute. See `CLAUDE_SIGNAL_PIPELINE.md`. |
+| `claude_signal_bot.py` | Separate, experimental pipeline: implements the "XTR" micro-scalp rule engine (regime, setup types, HTF filter, stops, standdown) against data exported by `MQL5/Experts/ClaudeSignalEA.mq5`, calling Claude only for a qualitative overlay note, and writes the resulting BUY/SELL/SL/TP signal back for the EA to execute. See `CLAUDE_SIGNAL_PIPELINE.md`. |
 
 `indicators.py` follows MT5's conventions, not the textbook ones, so the Python
 bot and the MQL5 EA agree: MACD's signal line is an **SMA**, ATR uses an **SMA**
