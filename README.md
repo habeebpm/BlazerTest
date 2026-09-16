@@ -35,7 +35,9 @@ not predict future results.
   mechanical (a stop-distance sanity check, the two-loss standdown, the
   10-minute time-decay, position sizing), and the EA executes with a fixed
   $4 trailing stop. Optional Telegram notifications fire the moment a
-  signal actually fills. See `python/CLAUDE_SIGNAL_PIPELINE.md`.
+  signal actually fills. See `python/CLAUDE_SIGNAL_PIPELINE.md`, and
+  `python/BACKTEST.md` for how (and how honestly) this pipeline can be
+  backtested against historical data.
 
 ## Strategy logic
 

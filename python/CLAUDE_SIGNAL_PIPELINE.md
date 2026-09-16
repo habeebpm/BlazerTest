@@ -363,3 +363,10 @@ above - from `PENDING` to `WIN`/`LOSS`.
   bot only ever calls `sendMessage`). Keep it in an environment variable,
   not in a committed file, the same as `ANTHROPIC_API_KEY`.
 - Demo-test extensively before ever pointing this at a live account.
+
+## Backtesting
+
+See `BACKTEST.md` - a real backtest replays historical bars through this
+pipeline's actual decision code (`backtest_xtr.py`) and needs an
+`ANTHROPIC_API_KEY`, since Claude's real-time judgment is the thing being
+tested and there's no deterministic rule table left to replay for free.

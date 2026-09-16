@@ -294,6 +294,8 @@ advised), `-v`.
 | `test_integration.py` | Drives the bot against a stub MetaTrader5 module |
 | `simulate.py` | Counts actual fills (not signals) under the position rules |
 | `claude_signal_bot.py` | Separate, experimental pipeline: hands live multi-timeframe data exported by `MQL5/Experts/ClaudeSignalEA.mq5`, plus the "XTR" setup archetypes and general trading principles as knowledge, to Claude for real-time analysis; Claude decides direction/setup/SL/TP, Python enforces only risk-containment backstops (stop-distance sanity, two-loss standdown, time-decay, position sizing) and writes the resulting signal back for the EA to execute. Sends an optional Telegram message the moment a signal fills. See `CLAUDE_SIGNAL_PIPELINE.md`. |
+| `backtest_xtr.py` | Historical backtest harness for the pipeline above: replays real M1 bars through the *actual* `claude_signal_bot.py` decision/validation/sizing functions (not a reimplementation) and simulates each trade's outcome. Needs an `ANTHROPIC_API_KEY` for a real run; `--stub` verifies the harness offline with a content-blind stand-in that is explicitly not a strategy. See `BACKTEST.md`. |
+| `backtest_data/xauusd_1min_sample.csv` | 2,500 real M1 XAU/USD bars (fetched live via Twelve Data) for a first backtest run without sourcing your own data. |
 
 `indicators.py` follows MT5's conventions, not the textbook ones, so the Python
 bot and the MQL5 EA agree: MACD's signal line is an **SMA**, ATR uses an **SMA**
