@@ -170,11 +170,19 @@ def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m
     close_price = float(m5_closed["close"].iloc[-1])
     half_spread = spread_price / 2.0
 
+    # No live EA here to compute/export htf_align, so derive it locally via
+    # the identical rule (bot.htf_gate_from_directions) - see that
+    # function's docstring for why this is the one place Python computes
+    # it rather than trusting an exported value.
+    htf_align = bot.htf_gate_from_directions(
+        bot.direction_for(m5_row), bot.direction_for(m15_row), bot.direction_for(h1_row))
+
     return bot.ChartSnapshot(
         symbol=symbol, digits=2, point=0.01, tick_value=1.0, tick_size=0.01,
         volume_min=0.01, volume_max=50.0, volume_step=0.01,
         bid=close_price - half_spread, ask=close_price + half_spread,
         spread=int(round(spread_price / 0.01)), equity=equity, exported_at=as_of.isoformat(),
+        htf_align=htf_align,
         ind={"M5": m5_row, "M15": m15_row, "H1": h1_row},
         macd_hist_m5=macd_hist_m5,
         bars={"M1": _bars_frame(m1_closed), "M5": _bars_frame(m5_closed),
@@ -298,7 +306,8 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
     h1_ind = compute_indicator_series(h1)
 
     state = {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
-             "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {}}
+             "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {},
+             "htf_gate_skips": 0}
     equity = start_equity
     trades: list[dict] = []
     cycles_evaluated = 0
@@ -324,6 +333,15 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
         snap = build_snapshot_at(as_of, m1, m5, m15, h1, m5_ind, m15_ind, h1_ind, symbol, equity, spread_price)
         if snap is None:
             continue
+
+        # Same mechanical cost pre-filter as the live pipeline (run_once) -
+        # counted separately from cycles_evaluated so the backtest report
+        # shows the actual reduction in Claude calls, not just trade counts.
+        if cfg.require_htf_gate and snap.htf_align == "NONE":
+            state["htf_gate_skips"] += 1
+            log(f"[{as_of}] mechanical HTF gate: htf_align=NONE, skipping (no Claude call)")
+            continue
+
         cycles_evaluated += 1
 
         try:
@@ -372,10 +390,11 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
         log(f"[{as_of}] {decision['action']} {decision['setup_type']} conf={decision['confidence']:.0f} "
             f"-> {result['outcome']} ({result['reason']}) P&L={result['profit']:+.2f} equity={equity:.2f}")
 
-    return summarize(trades, start_equity, equity, cycles_evaluated)
+    return summarize(trades, start_equity, equity, cycles_evaluated, state["htf_gate_skips"])
 
 
-def summarize(trades: list[dict], start_equity: float, end_equity: float, cycles_evaluated: int) -> dict:
+def summarize(trades: list[dict], start_equity: float, end_equity: float,
+              cycles_evaluated: int, htf_gate_skips: int = 0) -> dict:
     n = len(trades)
     wins = sum(1 for t in trades if t["profit"] >= 0)
     peak, max_dd, eq = start_equity, 0.0, start_equity
@@ -392,8 +411,11 @@ def summarize(trades: list[dict], start_equity: float, end_equity: float, cycles
         if t["profit"] >= 0:
             rec["wins"] += 1
 
+    total_bars = cycles_evaluated + htf_gate_skips
     return {
-        "cycles_evaluated": cycles_evaluated, "trades": n, "wins": wins, "losses": n - wins,
+        "cycles_evaluated": cycles_evaluated, "htf_gate_skips": htf_gate_skips,
+        "htf_gate_skip_rate_pct": round(htf_gate_skips / total_bars * 100.0, 1) if total_bars else 0.0,
+        "trades": n, "wins": wins, "losses": n - wins,
         "win_rate_pct": round(wins / n * 100.0, 1) if n else 0.0,
         "start_equity": start_equity, "end_equity": round(end_equity, 2),
         "total_pnl": round(end_equity - start_equity, 2), "max_drawdown": round(max_dd, 2),
@@ -512,12 +534,36 @@ def selftest() -> None:
     report = run_backtest(m1_trend, cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
                            decide_fn=stub_decision, max_cycles=15)
     assert report["cycles_evaluated"] > 0
-    assert set(report) >= {"trades", "win_rate_pct", "total_pnl", "max_drawdown", "by_setup_type", "trade_log"}
+    assert set(report) >= {"trades", "win_rate_pct", "total_pnl", "max_drawdown", "by_setup_type", "trade_log",
+                            "htf_gate_skips", "htf_gate_skip_rate_pct"}
     assert report["trades"] == len(report["trade_log"])
     if report["trades"] > 0:
         assert all(t["reasoning"] == "stub decider - not Claude, no judgment applied" for t in report["trade_log"])
     print(f"  run_backtest end-to-end with the stub decider: OK "
-          f"(cycles={report['cycles_evaluated']} trades={report['trades']} pnl={report['total_pnl']})")
+          f"(cycles={report['cycles_evaluated']} htf_gate_skips={report['htf_gate_skips']} "
+          f"trades={report['trades']} pnl={report['total_pnl']})")
+
+    # the HTF gate (on by default, cfg.require_htf_gate) must actually reduce reported
+    # Claude-call cycles relative to running with it off, for the same underlying data
+    nogate_cfg = bot.BotConfig(
+        data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
+        outcome_file=Path("unused"), state_file=Path("unused"),
+        risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
+        min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
+        require_htf_gate=False,
+    )
+    nogate_report = run_backtest(m1_trend, nogate_cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
+                                  decide_fn=stub_decision, max_cycles=None)
+    gated_report_same_window = run_backtest(m1_trend, cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
+                                             decide_fn=stub_decision, max_cycles=None)
+    assert gated_report_same_window["htf_gate_skips"] > 0
+    assert nogate_report["htf_gate_skips"] == 0
+    assert (gated_report_same_window["cycles_evaluated"] + gated_report_same_window["htf_gate_skips"]
+            == nogate_report["cycles_evaluated"])
+    print(f"  require_htf_gate measurably cuts Claude-call cycles vs. --no-htf-gate: OK "
+          f"(gated {gated_report_same_window['cycles_evaluated']} calls + "
+          f"{gated_report_same_window['htf_gate_skips']} skipped, "
+          f"vs {nogate_report['cycles_evaluated']} calls with the gate off)")
 
     # --- run_backtest wired to the REAL bot.analyze_with_claude path, with only the
     #     network call itself mocked - proves the harness calls production code, not a copy ---
@@ -556,6 +602,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-atr-mult", type=float, default=0.25)
     parser.add_argument("--max-atr-mult", type=float, default=3.0)
     parser.add_argument("--max-concurrent-signals", type=int, default=1)
+    parser.add_argument("--no-htf-gate", action="store_true",
+                         help="disable the mechanical 2-of-3 HTF pre-filter (on by default) and call "
+                              "Claude on every cycle - costs more API calls, but doesn't skip cycles a "
+                              "contrarian 4.1/4.3 setup could fire on; see CLAUDE_SIGNAL_PIPELINE.md")
     parser.add_argument("--time-decay-seconds", type=float, default=600.0)
     parser.add_argument("--trail-usd", type=float, default=TRAIL_USD_DEFAULT)
     parser.add_argument("--spread", type=float, default=0.25,
@@ -590,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model, api_key=api_key, risk_percent=args.risk_percent,
         fallback_equity=args.start_equity, time_decay_seconds=args.time_decay_seconds,
         min_confidence=args.min_confidence, min_atr_mult=args.min_atr_mult, max_atr_mult=args.max_atr_mult,
-        max_concurrent_signals=args.max_concurrent_signals,
+        max_concurrent_signals=args.max_concurrent_signals, require_htf_gate=not args.no_htf_gate,
     )
     decide_fn = stub_decision if args.stub else None
     log = print if args.verbose else (lambda *a, **k: None)

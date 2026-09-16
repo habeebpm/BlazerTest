@@ -185,6 +185,7 @@ class BotConfig:
     min_atr_mult: float = 0.25   # sanity floor on the proposed stop distance
     max_atr_mult: float = 3.0    # sanity ceiling on the proposed stop distance
     max_concurrent_signals: int = 1   # pending (unresolved) signals allowed at once
+    require_htf_gate: bool = True     # skip the Claude call entirely when htf_align == "NONE"
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_timeout: float = 10.0
@@ -206,6 +207,7 @@ class ChartSnapshot:
     spread: int
     equity: float
     exported_at: str
+    htf_align: str        # BUY/SELL/NONE - the EA's own mechanical 2-of-3 pre-filter
     ind: dict            # {"M5": {...}, "M15": {...}, "H1": {...}}
     macd_hist_m5: list    # oldest -> newest
     bars: dict            # {"M1": df, "M5": df, "M15": df, "H1": df}
@@ -287,6 +289,16 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
             raise ValueError(f"{path}: missing bars for {tf}")
 
     last_close = float(bars["M5"]["close"].iloc[-1])
+
+    htf_align = meta.get("htf_align")
+    if htf_align not in ("BUY", "SELL", "NONE"):
+        # Older export files / hand-built fixtures without the field: fall
+        # back to computing it locally, via the identical rule, rather than
+        # leaving the gate permanently open or closed by accident.
+        htf_align = htf_gate_from_directions(
+            direction_for(ind["M5"]), direction_for(ind["M15"]), direction_for(ind["H1"]),
+        )
+
     return ChartSnapshot(
         symbol=meta["symbol"],
         digits=int(meta.get("digits", 2)),
@@ -301,6 +313,7 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
         spread=int(meta.get("spread", 0)),
         equity=float(meta.get("equity", 0.0)),
         exported_at=meta.get("exported", ""),
+        htf_align=htf_align,
         ind=ind,
         macd_hist_m5=macd_hist_m5,
         bars=bars,
@@ -328,6 +341,22 @@ def direction_for(tf_ind: dict) -> str:
 def regime_for(m5_ind: dict) -> str:
     adx = m5_ind.get("adx14")
     return "TRENDING" if adx is not None and adx >= 25 else "RANGING"
+
+
+def htf_gate_from_directions(m5_dir: str, m15_dir: str, h1_dir: str) -> str:
+    """The mechanical 'at least 2 of {M5,M15,H1} agree' cost pre-filter.
+    Returns BUY/SELL/NONE. Mirrors ClaudeSignalEA.mq5's own HtfAlignment()
+    exactly - the EA computes and exports this as the authoritative value
+    (ChartSnapshot.htf_align), so live parsing never calls this; it exists
+    for the one path with no EA to ask - the backtest harness - and as
+    parse_chart_file's fallback for an export file missing the field."""
+    bulls = sum(d == "BULLISH" for d in (m5_dir, m15_dir, h1_dir))
+    bears = sum(d == "BEARISH" for d in (m5_dir, m15_dir, h1_dir))
+    if bulls >= 2:
+        return "BUY"
+    if bears >= 2:
+        return "SELL"
+    return "NONE"
 
 
 def check_rsi_bounce(snap: ChartSnapshot) -> dict | None:
@@ -938,7 +967,8 @@ def load_state(cfg: BotConfig) -> dict:
         except Exception:
             log.warning("could not parse state file %s, starting fresh", cfg.state_file)
     return {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
-            "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {}}
+            "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {},
+            "htf_gate_skips": 0}
 
 
 def save_state(cfg: BotConfig, state: dict) -> None:
@@ -1016,6 +1046,21 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
         return state
     state["last_bar_time"] = last_bar_time
 
+    # Mechanical cost pre-filter: skip the Claude call entirely (no tokens
+    # spent) when the EA's own htf_align says fewer than 2 of {M5,M15,H1}
+    # agree. This trades money for coverage - it also skips cycles a 4.1
+    # (RSI-extreme bounce) or 4.3 (liquidity-sweep reversal) setup could
+    # have fired on, since both are often contrarian to the higher
+    # timeframes by design. See CLAUDE_SIGNAL_PIPELINE.md. Disable with
+    # --no-htf-gate if that trade-off isn't the one you want.
+    if cfg.require_htf_gate and snap.htf_align == "NONE":
+        state["htf_gate_skips"] = state.get("htf_gate_skips", 0) + 1
+        log.info("mechanical HTF gate: fewer than 2/3 timeframes aligned (M5=%s M15=%s H1=%s) - "
+                  "skipping the Claude call this cycle (%d skipped so far)",
+                  m5_direction_now, direction_for(snap.ind["M15"]), direction_for(snap.ind["H1"]),
+                  state["htf_gate_skips"])
+        return state
+
     try:
         decision = analyze_with_claude(snap, state, cfg)
     except Exception:
@@ -1089,7 +1134,8 @@ def main_loop(cfg: BotConfig) -> None:
 # is monkeypatched so the full run_once path is exercised offline.
 # --------------------------------------------------------------------------
 
-def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True) -> str:
+def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
+                        force_htf_align: str | None = None) -> str:
     n_m1, n_m5, n_m15, n_h1 = 30, 30, 30, 30
     base = 2340.0
 
@@ -1117,10 +1163,23 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True) -> str:
         macd_hist_history = [-0.05, -0.03, -0.02, -0.01, 0.00]
 
     bb_upper, bb_lower = m5_last + 5.0, m5_last - 5.0
+
+    m5_dir, m15_dir, h1_dir, htf_align = ("BULLISH", "BULLISH", "BULLISH", "BUY") if trending \
+        else ("MIXED", "MIXED", "MIXED", "NONE")
+    if force_htf_align is not None:
+        # Override the EA's exported gate independently of the bar/indicator
+        # data above, so a test can simulate "M5 itself looks tradeable but
+        # M15/H1 don't confirm" without perturbing the fixtures other tests
+        # (e.g. the 4.2 pullback hint) rely on.
+        htf_align = force_htf_align
+        if htf_align == "NONE":
+            m15_dir = h1_dir = "MIXED"
+
     lines = [
         f"#symbol={symbol} digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 "
         f"volume_max=50.00 volume_step=0.01 bid={m5_last - 0.1:.2f} ask={m5_last + 0.1:.2f} "
-        f"spread=25 equity=5000.00 exported=2026.09.16T12:00:00",
+        f"spread=25 equity=5000.00 m5_dir={m5_dir} m15_dir={m15_dir} h1_dir={h1_dir} "
+        f"htf_align={htf_align} exported=2026.09.16T12:00:00",
         "##INDICATORS",
         "tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower",
         f"M5,{ema9:.2f},{ema21:.2f},{rsi:.2f},{macd_hist:.2f},{adx:.2f},1.80,{bb_upper:.2f},{bb_lower:.2f}",
@@ -1164,6 +1223,12 @@ def selftest() -> None:
     assert htf_conviction("BUY", "BEARISH", "BULLISH") == "NO_TRADE"
     print("  htf_conviction (advisory) matrix: OK")
 
+    assert htf_gate_from_directions("BULLISH", "BULLISH", "MIXED") == "BUY"     # 2/3 bullish
+    assert htf_gate_from_directions("BULLISH", "BEARISH", "MIXED") == "NONE"    # 1/3 each way
+    assert htf_gate_from_directions("BEARISH", "BEARISH", "BEARISH") == "SELL"  # 3/3
+    assert htf_gate_from_directions("MIXED", "MIXED", "MIXED") == "NONE"
+    print("  htf_gate_from_directions (mechanical 2-of-3 pre-filter): OK")
+
     parsed = parse_claude_decision(
         'Sure, here you go:\n```json\n'
         '{"action": "SELL", "setup_type": "4.1", "sl": 2350.0, "tp": 2330.0, '
@@ -1196,7 +1261,18 @@ def selftest() -> None:
         snap = parse_chart_file(trending_file)
         assert snap.symbol == "XAUUSD"
         assert set(snap.bars) == {"M1", "M5", "M15", "H1"}
-        print(f"  parse_chart_file: OK (M5 bars={len(snap.bars['M5'])}, ind keys={list(snap.ind)})")
+        assert snap.htf_align == "BUY"
+        print(f"  parse_chart_file: OK (M5 bars={len(snap.bars['M5'])}, ind keys={list(snap.ind)}, htf_align={snap.htf_align})")
+
+        # a header without htf_align at all (an older export file) must fall back to computing
+        # it locally via the same rule, not silently gate everything open or closed
+        no_field_text = _sample_chart_text(trending=True).replace(
+            " m5_dir=BULLISH m15_dir=BULLISH h1_dir=BULLISH htf_align=BUY", "")
+        no_field_file = tmp_path / "chart_no_htf_field.txt"
+        no_field_file.write_text(no_field_text)
+        snap_fallback = parse_chart_file(no_field_file)
+        assert snap_fallback.htf_align == "BUY"
+        print("  parse_chart_file falls back to computing htf_align when the field is absent: OK")
 
         m5_dir = direction_for(snap.ind["M5"])
         regime = regime_for(snap.ind["M5"])
@@ -1267,6 +1343,40 @@ def selftest() -> None:
             e2e_state = run_once(cfg, e2e_state)
         assert e2e_state["last_signal_id"] == 1, "max-concurrent-signals backstop should have blocked a 2nd BUY"
         print("  validate_decision's max-concurrent-signals backstop blocks stacking a 2nd signal: OK")
+
+        # --- mechanical HTF gate: skips the Claude call entirely when htf_align == NONE ---
+        misaligned_file = tmp_path / "chart_misaligned.txt"
+        misaligned_file.write_text(_sample_chart_text(trending=True, force_htf_align="NONE"))
+        gated_cfg = BotConfig(
+            data_file=misaligned_file, signal_file=tmp_path / "gated_signals.txt",
+            ack_file=tmp_path / "gated_ack.txt", outcome_file=tmp_path / "gated_outcomes.txt",
+            state_file=tmp_path / "gated_state.json", dry_run=True, api_key="test-key",
+        )
+        gated_snap = parse_chart_file(misaligned_file)
+        assert gated_snap.htf_align == "NONE"
+        gated_state = load_state(gated_cfg)
+        with patch(f"{__name__}.call_claude_analysis") as mock_call:
+            gated_state = run_once(gated_cfg, gated_state)
+        mock_call.assert_not_called()
+        assert gated_state["last_signal_id"] == 0
+        assert gated_state["htf_gate_skips"] == 1
+        print(f"  the mechanical HTF gate skips the Claude call when htf_align=NONE: OK "
+              f"(skips={gated_state['htf_gate_skips']})")
+
+        # --require-htf-gate=False (--no-htf-gate on the CLI) must bypass the gate and call Claude anyway
+        nogate_cfg = BotConfig(
+            data_file=misaligned_file, signal_file=tmp_path / "nogate_signals.txt",
+            ack_file=tmp_path / "nogate_ack.txt", outcome_file=tmp_path / "nogate_outcomes.txt",
+            state_file=tmp_path / "nogate_state.json", dry_run=True, api_key="test-key",
+            require_htf_gate=False,
+        )
+        nogate_state = load_state(nogate_cfg)
+        none_reply = json.dumps({**good_decision, "action": "NONE", "setup_type": None, "sl": None, "tp": None})
+        with patch(f"{__name__}.call_claude_analysis", return_value=none_reply) as mock_call2:
+            nogate_state = run_once(nogate_cfg, nogate_state)
+        mock_call2.assert_called_once()
+        assert nogate_state.get("htf_gate_skips", 0) == 0
+        print("  --no-htf-gate (require_htf_gate=False) bypasses the gate and calls Claude anyway: OK")
 
         # --- self-correction feedback loop: outcome resolution feeds back into history ---
         resolve_pending(e2e_state, [
@@ -1408,6 +1518,7 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         min_atr_mult=args.min_atr_mult,
         max_atr_mult=args.max_atr_mult,
         max_concurrent_signals=args.max_concurrent_signals,
+        require_htf_gate=not args.no_htf_gate,
         telegram_bot_token=args.telegram_bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=args.telegram_chat_id or os.environ.get("TELEGRAM_CHAT_ID", ""),
         dry_run=args.dry_run,
@@ -1441,6 +1552,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-concurrent-signals", type=int, default=1,
                          help="max pending (unresolved) signals at once; XTR is a single 10-min "
                               "scalp system by design, so this defaults conservatively to 1")
+    parser.add_argument("--no-htf-gate", action="store_true",
+                         help="disable the mechanical 2-of-3 HTF pre-filter (on by default) and call "
+                              "Claude on every cycle regardless of htf_align - costs more, but doesn't "
+                              "skip contrarian setups (RSI-extreme bounce, liquidity sweep) the gate would")
     parser.add_argument("--telegram-bot-token", default=None, help="defaults to $TELEGRAM_BOT_TOKEN")
     parser.add_argument("--telegram-chat-id", default=None, help="defaults to $TELEGRAM_CHAT_ID")
     parser.add_argument("--notify-test", action="store_true",

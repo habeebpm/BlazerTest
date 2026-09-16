@@ -86,11 +86,13 @@ MetaTrader 5 terminal                          Python process
 ClaudeSignalEA.mq5
   - every 60s: computes EMA9/21,          --->   claude_chart_data.txt
     RSI14, MACD-hist (M5/M15/H1),                        |
-    ADX14/ATR14/Bollinger (M5 only)                       v
-    + raw M1/M5/M15/H1 bars, from its            claude_signal_bot.py
-    own indicator buffers                          - computes direction/regime
-                                                       labels + setup hints
-                                                       (advisory context only)
+    ADX14/ATR14/Bollinger (M5 only),                      v
+    m5_dir/m15_dir/h1_dir + htf_align             claude_signal_bot.py
+    (mechanical 2-of-3 pre-filter)                  - htf_align == NONE? skip -
+    + raw M1/M5/M15/H1 bars, from its                 no Claude call, no cost
+    own indicator buffers                           - else: computes direction/
+                                                       regime labels + setup
+                                                       hints (advisory context)
                                                      - builds a prompt with the
                                                        XTR knowledge + live data
                                                        + standdown/outcome state
@@ -122,6 +124,76 @@ Nothing here talks to the MetaTrader5 Python API - the two sides only share a
 folder on disk, so the Python side needs no MetaTrader package, only network
 access to Claude (and, optionally, to Telegram's Bot API for fill
 notifications - see "Telegram fill notifications" below).
+
+## The mechanical HTF pre-filter (cost control)
+
+Every earlier section describes Claude being called on every M5 cycle. That
+was true until this pre-filter was added: `ClaudeSignalEA.mq5` now computes,
+from its own indicator buffers, `m5_dir`/`m15_dir`/`h1_dir`
+(BULLISH/BEARISH/MIXED - the same rule as `direction_for()`) and
+`htf_align` (BUY/SELL/NONE - BUY/SELL when at least 2 of the 3 agree,
+NONE otherwise), and exports them in the header. `run_once` reads
+`htf_align` immediately after confirming there's a new M5 bar and, when it's
+`NONE`, **skips the Claude call entirely** - no prompt built, no tokens
+spent, before `analyze_with_claude` is ever reached.
+
+**Why the EA computes it, not Python** (even though `claude_signal_bot.py`
+already has every value needed to compute this itself for free): a second,
+independent Python implementation of the same rule is exactly the kind of
+thing that silently drifts from the original over time - a threshold tweak
+in one place and not the other, and the gate stops matching what a human
+watching the EA's own logs would expect. Instead there's one authoritative
+computation (`HtfAlignment()` in the EA, mirrored for the one place with no
+live EA to ask - the backtest harness - by `htf_gate_from_directions()` in
+Python), and `run_once` just reads it.
+
+**Measured cost impact** (not estimated): running the backtest harness
+against the real 2-day XAUUSD sample in `backtest_data/`, gated vs.
+`--no-htf-gate`, on identical data:
+
+| | Cycles that would call Claude | Reduction |
+|---|---|---|
+| Gate on (default) | 137 | **45.2%** |
+| Gate off | 250 | - |
+
+At the ~$0.01/cycle estimate in `BACKTEST.md`, that's the difference between
+roughly $2.50 and $1.37 for this sample window - the saving scales linearly
+with however much of your session the gate spends skipping.
+
+**The performance trade-off - read this before leaving the gate on
+blindly.** The gate is directionally-blind to *why* a setup might fire:
+
+- **4.2 (trend-continuation pullback)** wants the timeframes aligned by
+  definition, so the gate rarely costs it anything real.
+- **4.1 (RSI-extreme bounce)** is mean-reversion - it's allowed to fire
+  in a *ranging* regime specifically because the higher timeframes often
+  *aren't* cleanly trending either way. The gate doesn't veto this as
+  often as you'd guess (chop tends to read MIXED rather than falsely
+  aligned, and MIXED still counts toward "not NONE" as long as one other
+  timeframe is clearly bearish/bullish alongside a trending M5) - but it
+  can, and does, cut some.
+- **4.3 (liquidity-sweep reversal)** is the one this gate is genuinely in
+  tension with: a sweep is a *reversal against the recent move*, which is
+  exactly when the higher timeframes are still reading the old direction.
+  A sweep setup whose HTFs haven't flipped yet gets skipped before Claude
+  ever sees it - not rejected by Claude's judgment, just never asked.
+
+In the measured run above, all 5 trades the stub decider found still fired
+even with the gate on - none were lost in this particular window. That's
+reassuring but not a guarantee: it's one sample, one (non-Claude) decider,
+and a window where the trades that happened to occur also happened to pass
+the gate. Whether real Claude would find (and lose) more 4.1/4.3 setups
+under the gate than this sample suggests is exactly what a real
+`ANTHROPIC_API_KEY`-backed run, gated vs. `--no-htf-gate` over the same
+window, would tell you - see `BACKTEST.md`.
+
+**Bottom line:** leave the gate on if API cost is the binding constraint and
+you're comfortable trading away some contrarian setups for it; pass
+`--no-htf-gate` (Python) if you'd rather Claude see every cycle and pay for
+it. Either way, `state["htf_gate_skips"]` (live) and
+`report["htf_gate_skips"]`/`report["htf_gate_skip_rate_pct"]` (backtest) let
+you see exactly how much the gate is actually doing on your own data, rather
+than trusting the number above to generalize.
 
 ## Why MQL5 still computes the indicators, not Python
 
@@ -194,7 +266,9 @@ Claude's own stated confidence below this, default 60), `--min-atr-mult` /
 `--max-atr-mult` (the sanity band on stop distance vs. ATR14(M5), default
 0.25-3.0), `--max-concurrent-signals` (pending signals allowed at once,
 default 1 - raise it deliberately if you want this system to run more than
-one XTR scalp concurrently, which is not how the spec is written).
+one XTR scalp concurrently, which is not how the spec is written),
+`--no-htf-gate` (disable the mechanical 2-of-3 HTF pre-filter - see below;
+on by default).
 
 ## Telegram fill notifications (optional)
 
@@ -252,7 +326,7 @@ line rather than failing.
 line, then `##`-delimited sections:
 
 ```
-#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 exported=2026.09.16T12:00:00
+#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY exported=2026.09.16T12:00:00
 ##INDICATORS
 tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower
 M5,2345.10,2344.80,58.20,0.35,27.40,1.85,2347.00,2340.20
@@ -313,7 +387,8 @@ above - from `PENDING` to `WIN`/`LOSS`.
 
 | | Decided by |
 |---|---|
-| Direction (BUY/SELL/NONE) | Claude, every cycle, from live data |
+| Whether Claude is even called this cycle | MQL5 (`htf_align`, mechanical 2-of-3 pre-filter), hard gate, `--no-htf-gate` to disable - see above |
+| Direction (BUY/SELL/NONE) | Claude, on every cycle the gate lets through, from live data |
 | Setup rationale (4.1/4.2/4.3/discretionary) | Claude |
 | Entry timing color, M1 sweep read | Claude |
 | Stop-loss / take-profit prices | Claude |

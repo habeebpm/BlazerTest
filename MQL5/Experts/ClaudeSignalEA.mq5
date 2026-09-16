@@ -19,6 +19,18 @@
 //|         expansion" gate in the trend-continuation setup)          |
 //|       - the last InpBarsM1/M5/M15/H1 raw OHLC bars per timeframe  |
 //|         (for structural-swing / liquidity-sweep detection)        |
+//|       - m5_dir/m15_dir/h1_dir (BULLISH/BEARISH/MIXED, the same     |
+//|         rule Python's direction_for() applies) and htf_align       |
+//|         (BUY/SELL/NONE - BUY/SELL when >= 2 of the 3 agree). This  |
+//|         is a COST pre-filter, not a trading rule: by default       |
+//|         Python skips the Claude API call entirely when htf_align   |
+//|         is NONE, before spending anything. Computed here, not      |
+//|         recomputed independently in Python, so there is exactly    |
+//|         one implementation of the rule to keep consistent - see    |
+//|         python/CLAUDE_SIGNAL_PIPELINE.md for the cost/performance  |
+//|         trade-off (it also skips setups, e.g. RSI-extreme bounces  |
+//|         and liquidity sweeps, that are often contrarian to the     |
+//|         higher timeframes by design).                              |
 //|     to a single plain-text file (InpExportFileName).              |
 //|  2. Python reads that file and asks Claude to analyze it in real  |
 //|     time - direction, setup rationale, stop and target are        |
@@ -250,6 +262,51 @@ string Fmt(const double value)
 }
 
 //+------------------------------------------------------------------+
+//| BULLISH/BEARISH/MIXED for one timeframe, from its own EMA9/EMA21/ |
+//| RSI14/MACD-histogram - the exact same rule claude_signal_bot.py's |
+//| direction_for() applies to these same exported values. Computed   |
+//| here too (not left to Python alone) so the mechanical 2-of-3 HTF  |
+//| pre-filter below has one authoritative answer, exported plainly,  |
+//| rather than two independent implementations that could drift.    |
+//+------------------------------------------------------------------+
+string DirectionLabel(const int hEma9, const int hEma21, const int hRsi, const int hMacd)
+{
+   double ema9  = IndicatorValue(hEma9);
+   double ema21 = IndicatorValue(hEma21);
+   double rsi   = IndicatorValue(hRsi);
+   double macdMain = IndicatorValue(hMacd, 0);
+   double macdSig  = IndicatorValue(hMacd, 1);
+   if(ema9 == EMPTY_VALUE || ema21 == EMPTY_VALUE || rsi == EMPTY_VALUE ||
+      macdMain == EMPTY_VALUE || macdSig == EMPTY_VALUE)
+      return("MIXED");
+   double macdHist = macdMain - macdSig;
+   if(ema9 > ema21 && rsi > 50.0 && macdHist > 0.0) return("BULLISH");
+   if(ema9 < ema21 && rsi < 50.0 && macdHist < 0.0) return("BEARISH");
+   return("MIXED");
+}
+
+//+------------------------------------------------------------------+
+//| The mechanical pre-filter itself: BUY/SELL when at least 2 of the |
+//| 3 timeframes agree on a direction, NONE otherwise. This does NOT  |
+//| decide whether to trade - claude_signal_bot.py still makes that   |
+//| call. It decides whether the cycle is worth spending an API call  |
+//| on at all; see python/CLAUDE_SIGNAL_PIPELINE.md for the cost/     |
+//| performance trade-off (it also skips setups - RSI-extreme bounces |
+//| and liquidity-sweep reversals - that are often contrarian to the  |
+//| higher timeframes by design, not just noise).                     |
+//+------------------------------------------------------------------+
+string HtfAlignment(const string m5Dir, const string m15Dir, const string h1Dir)
+{
+   int bulls = 0, bears = 0;
+   if(m5Dir  == "BULLISH") bulls++; else if(m5Dir  == "BEARISH") bears++;
+   if(m15Dir == "BULLISH") bulls++; else if(m15Dir == "BEARISH") bears++;
+   if(h1Dir  == "BULLISH") bulls++; else if(h1Dir  == "BEARISH") bears++;
+   if(bulls >= 2) return("BUY");
+   if(bears >= 2) return("SELL");
+   return("NONE");
+}
+
+//+------------------------------------------------------------------+
 //| Write one timeframe's indicator row. adx/atr/bandsUpper/bandsLower|
 //| are only meaningful for M5 (§1) - pass EMPTY_VALUE for the others.|
 //+------------------------------------------------------------------+
@@ -326,11 +383,17 @@ void ExportChartData()
    string exportedStr = TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
    StringReplace(exportedStr, " ", "T");
 
+   string m5Dir  = DirectionLabel(hEma9M5, hEma21M5, hRsiM5, hMacdM5);
+   string m15Dir = DirectionLabel(hEma9M15, hEma21M15, hRsiM15, hMacdM15);
+   string h1Dir  = DirectionLabel(hEma9H1, hEma21H1, hRsiH1, hMacdH1);
+   string htfAlign = HtfAlignment(m5Dir, m15Dir, h1Dir);
+
    FileWrite(handle, StringFormat(
       "#symbol=%s digits=%d point=%.5f tick_value=%.5f tick_size=%.5f volume_min=%.2f "
-      "volume_max=%.2f volume_step=%.2f bid=%.5f ask=%.5f spread=%d equity=%.2f exported=%s",
+      "volume_max=%.2f volume_step=%.2f bid=%.5f ask=%.5f spread=%d equity=%.2f "
+      "m5_dir=%s m15_dir=%s h1_dir=%s htf_align=%s exported=%s",
       _Symbol, digits, point, tickValue, tickSize, volMin, volMax, volStep,
-      tick.bid, tick.ask, spreadPts, equity, exportedStr));
+      tick.bid, tick.ask, spreadPts, equity, m5Dir, m15Dir, h1Dir, htfAlign, exportedStr));
 
    // --- §1/§2 indicator snapshot, last CLOSED bar, per timeframe ---
    FileWrite(handle, "##INDICATORS");

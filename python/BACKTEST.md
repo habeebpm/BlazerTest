@@ -82,16 +82,25 @@ context is capped at 8 entries). Output is capped at 700 tokens but a
 typical decision runs well under that. At Claude Sonnet 5 pricing ($2.00 /
 $10.00 per 1M input/output tokens):
 
-| Scope | Cycles | Rough cost |
-|---|---|---|
-| Sanity check (`--max-cycles 10`) | 10 | ~$0.10 |
-| The bundled 2-day sample, full run | ~250 | ~$2.50 |
-| One month of M1 data | ~8,000 | ~$75-85 |
+| Scope | Cycles (gate off) | Cycles (gate on, default) | Rough cost (gate on) |
+|---|---|---|---|
+| Sanity check (`--max-cycles 10`) | 10 | ~5-6 | ~$0.05 |
+| The bundled 2-day sample, full run | 250 | **137 (measured)** | ~$1.40 |
+| One month of M1 data | ~8,000 | ~4,400 (at the same ratio) | ~$40-45 |
 
 These are ballpark figures from a token/char estimate, not
 `messages.count_tokens` — close enough to plan a run, not precise enough to
 budget a large one exactly. **Always set `--max-cycles`** until you've seen
 one real run's actual `usage` and cost.
+
+The "gate on" cycle counts assume the mechanical 2-of-3 HTF pre-filter
+(`ClaudeSignalEA.mq5`'s `htf_align`, on by default - see
+`CLAUDE_SIGNAL_PIPELINE.md` § "The mechanical HTF pre-filter") is active.
+137/250 is a real measurement on the bundled sample, not an estimate -
+**a 45.2% reduction in Claude calls** for this window. It also trades away
+coverage of setups (RSI-extreme bounce, liquidity sweep) that don't need
+HTF agreement by design; pass `--no-htf-gate` to see every cycle instead, at
+the "gate off" cost.
 
 ## Simplifications this harness makes (disclosed, not hidden)
 
