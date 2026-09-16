@@ -434,7 +434,7 @@ void ExportChartData()
    ArraySetAsSeries(sigArr, true);
    int copiedMain = CopyBuffer(hMacdM5, 0, 1, n, mainArr);
    int copiedSig  = CopyBuffer(hMacdM5, 1, 1, n, sigArr);
-   int copiedHist = MathMin(copiedMain, copiedSig);
+   int copiedHist = (int)MathMin(copiedMain, copiedSig);
    for(int i = copiedHist - 1; i >= 0; i--)   // oldest -> newest
       FileWrite(handle, StringFormat("%.5f", mainArr[i] - sigArr[i]));
 
