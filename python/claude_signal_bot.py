@@ -138,6 +138,16 @@ GENERAL PRINCIPLES TO WEIGH ALONGSIDE THE ABOVE:
   a marginal setup with poor R:R is worse than no trade.
 - Be more conservative in thin/illiquid sessions (Asian hours) and more
   willing to act during London/New York overlap.
+- News check: gold is unusually macro-sensitive. If the overlay context
+  below shows a HIGH-importance USD event (NFP, CPI, FOMC, PPI, and
+  similar) due within roughly the next 15-20 minutes, stand fully aside
+  regardless of how clean the technical setup looks - the move is about
+  to be repriced, not traded. In the 15-20 minutes just after such an
+  event fired, be materially more cautious: spreads widen and price can
+  gap or whipsaw in ways that invalidate normal technical structure, so
+  require unusually clean confluence before treating a post-release move
+  as a genuine signal rather than release noise still settling. Absent
+  any high-impact event nearby, this changes nothing.
 - Respect round-number price levels (whole-dollar handles) as places price
   often reacts, both for stop placement and target selection.
 - Never override an active two-loss standdown for a setup type - if that
@@ -228,6 +238,16 @@ class ChartSnapshot:
     ind: dict            # {"M5": {...}, "M15": {...}, "H1": {...}}
     macd_hist_m5: list    # oldest -> newest
     bars: dict            # {"M1": df, "M5": df, "M15": df, "H1": df}
+    # News awareness (XTR's "News check" step), from the EA's Economic
+    # Calendar query. None/"" means either "checked, nothing found in the
+    # window" or "calendar unavailable on this broker's server" - the EA
+    # can't tell those apart (see ClaudeSignalEA.mq5's own comment), so
+    # neither can this. Defaulted so callers with no news data (the
+    # backtest harness; an older export file) don't need to supply them.
+    news_next_min: int | None = None
+    news_next_name: str = ""
+    news_recent_min: int | None = None
+    news_recent_name: str = ""
 
 
 # --------------------------------------------------------------------------
@@ -284,6 +304,35 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
     if "MACD_HIST_M5" in sections:
         rows = sections["MACD_HIST_M5"]
         macd_hist_m5 = [float(r) for r in rows[1:]]   # skip the "value" header
+
+    # News awareness: news_next_min/news_recent_min in the header are
+    # authoritative (same pattern as htf_align/htf_strength) - -1, or the
+    # fields missing entirely (an older export, or InpEnableNewsCheck off),
+    # both mean "no news data"; see ChartSnapshot's own comment on why
+    # that's ambiguous with "checked, found nothing" and left that way
+    # rather than guessed at. ##NEWS (if present) supplies only the
+    # human-readable event name the header can't hold (it may contain
+    # spaces the header's key=value parsing can't handle).
+    def _news_minutes(raw: str | None) -> int | None:
+        if raw is None:
+            return None
+        value = int(raw)
+        return value if value >= 0 else None
+
+    news_next_min = _news_minutes(meta.get("news_next_min"))
+    news_recent_min = _news_minutes(meta.get("news_recent_min"))
+    news_next_name = news_recent_name = ""
+    if "NEWS" in sections:
+        rows = sections["NEWS"]
+        header = rows[0].split(",")
+        for row in rows[1:]:
+            vals = row.split(",", len(header) - 1)
+            d = dict(zip(header, vals))
+            name = d.get("name", "NA")
+            if d.get("when") == "NEXT" and news_next_min is not None:
+                news_next_name = name
+            elif d.get("when") == "RECENT" and news_recent_min is not None:
+                news_recent_name = name
 
     bars: dict = {}
     for tf in ("M1", "M5", "M15", "H1"):
@@ -343,6 +392,10 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
         ind=ind,
         macd_hist_m5=macd_hist_m5,
         bars=bars,
+        news_next_min=news_next_min,
+        news_next_name=news_next_name,
+        news_recent_min=news_recent_min,
+        news_recent_name=news_recent_name,
     )
 
 
@@ -885,12 +938,33 @@ def round_number_context(price: float) -> dict:
     return {"nearest_50_handle": nearest, "distance": round(price - nearest, 2)}
 
 
+def macro_news_context(snap: ChartSnapshot) -> str | dict:
+    """The EA's Economic Calendar read (XTR's "News check" step), or an
+    honest "not evaluated" string when there's nothing to report - either
+    the EA has InpEnableNewsCheck off, this export predates the feature, or
+    the broker's server doesn't populate the calendar at all. Those three
+    cases are indistinguishable from the export alone (see ChartSnapshot's
+    own comment) - reported as one "not evaluated", not guessed apart."""
+    if snap.news_next_min is None and snap.news_recent_min is None:
+        return "not evaluated - no economic-calendar data this cycle (feature off, older export, or broker doesn't populate it)"
+    return {
+        "next_high_impact_event": (
+            {"name": snap.news_next_name, "minutes_until": snap.news_next_min}
+            if snap.news_next_min is not None else None
+        ),
+        "recent_high_impact_event": (
+            {"name": snap.news_recent_name, "minutes_since": snap.news_recent_min}
+            if snap.news_recent_min is not None else None
+        ),
+    }
+
+
 def build_overlay_context(snap: ChartSnapshot) -> dict:
     return {
         "session": session_context(),
         "round_number": round_number_context(snap.bid),
         "dxy_correlation": "not evaluated - no DXY feed configured",
-        "macro_news": "not evaluated - no economic-calendar feed configured",
+        "macro_news": macro_news_context(snap),
     }
 
 
@@ -1340,7 +1414,9 @@ def main_loop(cfg: BotConfig) -> None:
 # --------------------------------------------------------------------------
 
 def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
-                        force_htf_align: str | None = None) -> str:
+                        force_htf_align: str | None = None,
+                        news_next_min: int | None = None, news_next_name: str = "",
+                        news_recent_min: int | None = None, news_recent_name: str = "") -> str:
     n_m1, n_m5, n_m15, n_h1 = 30, 30, 30, 30
     base = 2340.0
 
@@ -1381,11 +1457,14 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
             m15_dir = h1_dir = "MIXED"
 
     htf_strength = htf_strength_from_directions(m5_dir, m15_dir, h1_dir)
+    news_hdr_next = news_next_min if news_next_min is not None else -1
+    news_hdr_recent = news_recent_min if news_recent_min is not None else -1
     lines = [
         f"#symbol={symbol} digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 "
         f"volume_max=50.00 volume_step=0.01 bid={m5_last - 0.1:.2f} ask={m5_last + 0.1:.2f} "
         f"spread=25 equity=5000.00 m5_dir={m5_dir} m15_dir={m15_dir} h1_dir={h1_dir} "
-        f"htf_align={htf_align} htf_strength={htf_strength} exported=2026.09.16T12:00:00",
+        f"htf_align={htf_align} htf_strength={htf_strength} news_next_min={news_hdr_next} "
+        f"news_recent_min={news_hdr_recent} exported=2026.09.16T12:00:00",
         "##INDICATORS",
         "tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower",
         f"M5,{ema9:.2f},{ema21:.2f},{rsi:.2f},{macd_hist:.2f},{adx:.2f},1.80,{bb_upper:.2f},{bb_lower:.2f}",
@@ -1393,6 +1472,10 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
         else "M15,2340.00,2340.00,50.00,0.00,NA,NA,NA,NA",
         f"H1,{h1_last + 1:.2f},{h1_last - 1:.2f},55.00,0.10,NA,NA,NA,NA" if trending
         else "H1,2340.00,2340.00,50.00,0.00,NA,NA,NA,NA",
+        "##NEWS",
+        "when,minutes,currency,name",
+        f"NEXT,{news_hdr_next},USD,{news_next_name or 'NA'}",
+        f"RECENT,{news_hdr_recent},USD,{news_recent_name or 'NA'}",
         "##MACD_HIST_M5",
         "value",
         *[f"{v:.5f}" for v in macd_hist_history],
@@ -1539,6 +1622,34 @@ def selftest() -> None:
         hints = compute_hints(snap, m5_dir, regime)
         assert hints["trend_continuation_pullback"] is not None
         print(f"  compute_hints surfaces the 4.2 pullback hint: OK ({hints['trend_continuation_pullback']})")
+
+        # --- news awareness: header is authoritative, ##NEWS supplies the name ---
+        assert snap.news_next_min is None and snap.news_recent_min is None
+        assert macro_news_context(snap) == (
+            "not evaluated - no economic-calendar data this cycle "
+            "(feature off, older export, or broker doesn't populate it)"
+        )
+        print("  parse_chart_file/macro_news_context report 'not evaluated' when no news data is exported: OK")
+
+        news_file = tmp_path / "chart_news.txt"
+        news_file.write_text(_sample_chart_text(
+            trending=True, news_next_min=12, news_next_name="Non-Farm Payrolls",
+            news_recent_min=45, news_recent_name="CPI m/m",
+        ))
+        news_snap = parse_chart_file(news_file)
+        assert news_snap.news_next_min == 12 and news_snap.news_next_name == "Non-Farm Payrolls"
+        assert news_snap.news_recent_min == 45 and news_snap.news_recent_name == "CPI m/m"
+        news_ctx = macro_news_context(news_snap)
+        assert news_ctx["next_high_impact_event"] == {"name": "Non-Farm Payrolls", "minutes_until": 12}
+        assert news_ctx["recent_high_impact_event"] == {"name": "CPI m/m", "minutes_since": 45}
+        print(f"  parse_chart_file/macro_news_context surface a real upcoming/recent high-impact event: OK ({news_ctx})")
+
+        # only "next" present - "recent" must independently report None, not borrow next's data
+        next_only_file = tmp_path / "chart_news_next_only.txt"
+        next_only_file.write_text(_sample_chart_text(trending=True, news_next_min=8, news_next_name="FOMC Statement"))
+        next_only_snap = parse_chart_file(next_only_file)
+        assert next_only_snap.news_next_min == 8 and next_only_snap.news_recent_min is None
+        print("  news_next/news_recent are parsed independently, not conflated: OK")
 
         cfg = BotConfig(
             data_file=trending_file, signal_file=tmp_path / "signals.txt",

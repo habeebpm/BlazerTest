@@ -321,6 +321,56 @@ broker- and session-specific - watch `state["spread_history"]` for a while
 before picking a multiplier. `state["spread_gate_skips"]` tracks how often
 it fired.
 
+## News check (economic calendar awareness)
+
+The XTR logic's output flow includes a "News check" step before the
+signal itself. `ClaudeSignalEA.mq5` implements it using MT5's own built-in
+Economic Calendar (`CalendarValueHistory`/`CalendarEventById`) - no
+external feed or API key needed, but genuinely broker-dependent: the
+calendar is a service MetaQuotes provides through the broker's server, and
+some demo/ECN servers don't populate it at all.
+
+Each export cycle (when `InpEnableNewsCheck` is on, the default), the EA
+looks for the nearest upcoming and the most recent past
+`CALENDAR_IMPORTANCE_HIGH` event for `InpNewsCurrency` (default `USD` -
+gold is USD-quoted and dominated by USD macro data: NFP, CPI, FOMC, PPI,
+and similar), within `InpNewsLookaheadMin`/`InpNewsLookbackMin` minutes
+(both default 60). This is advisory context handed to Claude via
+`macro_news_context()` and a new `TRADING_KNOWLEDGE` principle - it does
+**not** gate anything in code, consistent with everything else in this
+design ("Claude analyzes, code contains risk" above): the knowledge text
+tells Claude to stand fully aside ahead of a HIGH-importance event due
+within roughly 15-20 minutes, and to require unusually clean confluence
+in the 15-20 minutes just after one fires, but this is Claude's judgment
+call to make each cycle, not a code-level blackout window.
+
+**Two honest caveats, not hidden:**
+
+- **This is untested against a real calendar.** The Economic Calendar API
+  is less commonly used than the indicator functions the rest of this EA
+  relies on, and (like everything else in `ClaudeSignalEA.mq5`) it was
+  written and reviewed without access to MetaEditor or a compiler in this
+  session - the function signatures were verified against MQL5's own
+  documentation before writing this, which is more than the rest of the
+  EA's review got, but "verified against docs" is still not "compiled and
+  run against a live calendar." Test this specifically - e.g. watch an
+  export around a known NFP/CPI release time on a demo account - before
+  trusting it.
+- **"No event found" and "calendar unavailable" are indistinguishable.**
+  `CalendarValueHistory` returns the same empty result whether there's
+  genuinely no HIGH-importance USD event in the window or the broker's
+  server just doesn't populate the calendar at all. The EA has no way to
+  tell those apart without a much wider sanity query, so it doesn't try -
+  `news_next_min`/`news_recent_min` export `-1` either way, and
+  `macro_news_context()` reports a single honest "not evaluated" string
+  rather than guessing which case it is. If you want to know which one
+  you're actually getting, check the terminal's own Toolbox → Calendar tab
+  on the same account.
+
+The backtest harness (`backtest_xtr.py`) has no historical calendar data
+to replay, so this is always the "not evaluated" case there - see
+BACKTEST.md.
+
 ## Why MQL5 still computes the indicators, not Python
 
 The spec only fetches 30 candles per timeframe - nowhere near enough history
@@ -452,12 +502,16 @@ line rather than failing.
 line, then `##`-delimited sections:
 
 ```
-#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY htf_strength=2 exported=2026.09.16T12:00:00
+#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY htf_strength=2 news_next_min=23 news_recent_min=-1 exported=2026.09.16T12:00:00
 ##INDICATORS
 tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower
 M5,2345.10,2344.80,58.20,0.35,27.40,1.85,2347.00,2340.20
 M15,2344.50,2343.90,55.10,0.20,NA,NA,NA,NA
 H1,2340.00,2338.50,52.00,0.10,NA,NA,NA,NA
+##NEWS
+when,minutes,currency,name
+NEXT,23,USD,Non-Farm Payrolls
+RECENT,-1,USD,NA
 ##MACD_HIST_M5
 value
 0.10
@@ -480,6 +534,12 @@ The two can legitimately disagree (e.g. `m5_dir=BULLISH` here while
 `##INDICATORS` still shows the prior, not-yet-updated M5 close) - that's
 expected, not a bug. `htf_strength` is 2 or 3 (how many of the 3 timeframes
 agreed) and 0 whenever `htf_align=NONE`.
+
+`news_next_min`/`news_recent_min` (-1 = none) and `##NEWS` are the "News
+check" step (see below) - `-1`/`NA` means either "checked, nothing found
+in the lookahead/lookback window" or "the calendar isn't populated on this
+broker's server at all"; the EA can't tell those two apart (see next
+section), so this file doesn't claim to either.
 
 **Trade signal** (`claude_trade_signals.txt`, one line, overwritten each
 cycle):
@@ -539,7 +599,8 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | Daily loss/trade-count circuit breaker | Python, hard backstop, opt-in (`--max-daily-loss-usd`/`--max-trades-per-day`, both 0/disabled by default) |
 | Mechanical spread-widening gate | Python, hard backstop, opt-in (`--max-spread-mult`, 0/disabled by default) |
 | §11 trade log / §13 report format | Python, populated with Claude's reasoning + which mechanical hints actually fired (`hints_fired`) |
-| §12 DXY correlation / macro-news feeds | Not wired up - exposed to Claude as explicit "not evaluated" flags rather than silently ignored |
+| §12 macro-news check | MQL5's built-in Economic Calendar (`InpEnableNewsCheck`, on by default) - advisory context, not a gate; see "News check" above |
+| §12 DXY correlation | Not wired up - exposed to Claude as an explicit "not evaluated" flag rather than silently ignored |
 
 ## Honest notes / risks
 
@@ -555,9 +616,12 @@ above - from `PENDING` to `WIN`/`LOSS`.
 - **API cost and latency are now on every cycle**, not just graded signals -
   Claude is doing the actual read every time there's a new M5 bar, whether
   or not it ends up trading.
-- **DXY correlation and macro/news are not evaluated.** They are logged as
-  explicit gaps in the overlay context rather than silently ignored; wiring
-  up a real feed for either is a natural next step.
+- **DXY correlation is still not evaluated** - logged as an explicit gap in
+  the overlay context rather than silently ignored; wiring up a real feed
+  is a natural next step. Macro/news IS now evaluated via MT5's built-in
+  Economic Calendar (see "News check" above), but only as advisory context
+  - untested against a real calendar in this session, and unable to tell
+  "no event" apart from "calendar unavailable on this broker."
 - **Time-decay and standdown persistence assume one long-running EA/bot
   pair.** An EA restart loses its in-memory signal-id -> position mapping (a
   documented limitation in the EA's own comments) - a `CLOSE_ID` for a

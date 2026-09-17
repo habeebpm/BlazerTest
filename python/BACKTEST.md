@@ -134,6 +134,12 @@ measured here.
 - **No weekend/holiday gap handling beyond what's in the data** — if your
   CSV has a gap, the harness just resamples across it; it doesn't know the
   market was closed.
+- **No news awareness at all** — the live EA can optionally query MT5's
+  Economic Calendar (see CLAUDE_SIGNAL_PIPELINE.md § "News check"); this
+  harness has no calendar data for historical dates, so `ChartSnapshot`'s
+  news fields are always unset here and `macro_news_context()` always
+  reports "not evaluated." A real backtest run's decisions never see the
+  news-awareness guidance in `TRADING_KNOWLEDGE` actually triggered.
 - **The self-correction loop sees only this run's own history.** Realistic
   in spirit (it's exactly what a live run would build up over time from a
   cold start), but a backtest starting cold means the first several cycles

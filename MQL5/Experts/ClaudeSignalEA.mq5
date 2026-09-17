@@ -127,6 +127,12 @@ input group "=== Risk Management ==="
 input double  InpTrailingUSD        = 4.0;          // Trailing-stop distance, in account-currency $, per position
 input double  InpTrailStartUSD      = 4.0;          // Profit ($) required before the trail engages
 
+input group "=== News Awareness (optional, broker-dependent) ==="
+input bool    InpEnableNewsCheck    = true;          // Query MT5's built-in Economic Calendar for HIGH-impact events
+input string  InpNewsCurrency       = "USD";         // Currency to filter by (XAUUSD is USD-quoted; USD macro data dominates gold)
+input int     InpNewsLookaheadMin   = 60;            // Minutes ahead to scan for the next HIGH-importance event
+input int     InpNewsLookbackMin    = 60;            // Minutes back to scan for the most recent HIGH-importance event
+
 //================================= STATE =====================================
 
 CTrade   trade;
@@ -333,6 +339,78 @@ string HtfAlignment(const string m5Dir, const string m15Dir, const string h1Dir,
 }
 
 //+------------------------------------------------------------------+
+//| Economic-calendar news awareness (§ "News check" in the XTR       |
+//| logic). Uses MT5's own built-in Economic Calendar - broker-       |
+//| dependent: some demo/ECN servers don't populate it at all, in     |
+//| which case CalendarValueHistory simply returns 0 and these        |
+//| functions return false, degrading to "no data" rather than an     |
+//| error. NOTE: a false return here is ambiguous between "checked,   |
+//| no HIGH event in the window" and "calendar unavailable on this    |
+//| server" - the EA cannot tell those apart, and neither can Python; |
+//| documented in CLAUDE_SIGNAL_PIPELINE.md rather than hidden.       |
+//| CalendarValueHistory's `time` values are in the trade server's    |
+//| own timezone, same as TimeCurrent() - directly comparable, no     |
+//| conversion needed.                                                 |
+//+------------------------------------------------------------------+
+bool FindNextHighImpactNews(const datetime now, const int lookaheadMin, const string currency,
+                             int &outMinutes, string &outName)
+{
+   MqlCalendarValue values[];
+   datetime to = now + lookaheadMin * 60;
+   int n = CalendarValueHistory(values, now, to, NULL, currency);
+   if(n <= 0) return(false);
+
+   datetime bestTime = 0;
+   string   bestName = "";
+   bool     found = false;
+   for(int i = 0; i < n; i++)
+   {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(values[i].event_id, ev)) continue;
+      if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      if(!found || values[i].time < bestTime)
+      {
+         bestTime = values[i].time;
+         bestName = ev.name;
+         found = true;
+      }
+   }
+   if(!found) return(false);
+   outMinutes = (int)((bestTime - now) / 60);
+   outName    = bestName;
+   return(true);
+}
+
+bool FindRecentHighImpactNews(const datetime now, const int lookbackMin, const string currency,
+                               int &outMinutes, string &outName)
+{
+   MqlCalendarValue values[];
+   datetime from = now - lookbackMin * 60;
+   int n = CalendarValueHistory(values, from, now, NULL, currency);
+   if(n <= 0) return(false);
+
+   datetime bestTime = 0;
+   string   bestName = "";
+   bool     found = false;
+   for(int i = 0; i < n; i++)
+   {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(values[i].event_id, ev)) continue;
+      if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      if(!found || values[i].time > bestTime)
+      {
+         bestTime = values[i].time;
+         bestName = ev.name;
+         found = true;
+      }
+   }
+   if(!found) return(false);
+   outMinutes = (int)((now - bestTime) / 60);
+   outName    = bestName;
+   return(true);
+}
+
+//+------------------------------------------------------------------+
 //| Write one timeframe's indicator row. adx/atr/bandsUpper/bandsLower|
 //| are only meaningful for M5 (§1) - pass EMPTY_VALUE for the others.|
 //+------------------------------------------------------------------+
@@ -417,12 +495,37 @@ void ExportChartData()
    int    htfStrength = 0;
    string htfAlign = HtfAlignment(m5Dir, m15Dir, h1Dir, htfStrength);
 
+   // News awareness (XTR's "News check" step) - -1/"" means either "checked,
+   // nothing found in the window" or "calendar unavailable on this broker's
+   // server"; see FindNextHighImpactNews's own comment for why the EA can't
+   // tell those apart. Names go in ##NEWS below, not the header, since they
+   // can contain spaces the header's key=value parsing can't handle.
+   int    newsNextMin = -1, newsRecentMin = -1;
+   string newsNextName = "", newsRecentName = "";
+   if(InpEnableNewsCheck)
+   {
+      FindNextHighImpactNews(TimeCurrent(), InpNewsLookaheadMin, InpNewsCurrency, newsNextMin, newsNextName);
+      FindRecentHighImpactNews(TimeCurrent(), InpNewsLookbackMin, InpNewsCurrency, newsRecentMin, newsRecentName);
+   }
+
    FileWrite(handle, StringFormat(
       "#symbol=%s digits=%d point=%.5f tick_value=%.5f tick_size=%.5f volume_min=%.2f "
       "volume_max=%.2f volume_step=%.2f bid=%.5f ask=%.5f spread=%d equity=%.2f "
-      "m5_dir=%s m15_dir=%s h1_dir=%s htf_align=%s htf_strength=%d exported=%s",
+      "m5_dir=%s m15_dir=%s h1_dir=%s htf_align=%s htf_strength=%d news_next_min=%d "
+      "news_recent_min=%d exported=%s",
       _Symbol, digits, point, tickValue, tickSize, volMin, volMax, volStep,
-      tick.bid, tick.ask, spreadPts, equity, m5Dir, m15Dir, h1Dir, htfAlign, htfStrength, exportedStr));
+      tick.bid, tick.ask, spreadPts, equity, m5Dir, m15Dir, h1Dir, htfAlign, htfStrength,
+      newsNextMin, newsRecentMin, exportedStr));
+
+   // --- News event names (kept out of the header - see comment above) ---
+   FileWrite(handle, "##NEWS");
+   FileWrite(handle, "when,minutes,currency,name");
+   string newsNextNameOut = StringLen(newsNextName) > 0 ? newsNextName : "NA";
+   string newsRecentNameOut = StringLen(newsRecentName) > 0 ? newsRecentName : "NA";
+   StringReplace(newsNextNameOut, ",", ";");
+   StringReplace(newsRecentNameOut, ",", ";");
+   FileWrite(handle, StringFormat("NEXT,%d,%s,%s", newsNextMin, InpNewsCurrency, newsNextNameOut));
+   FileWrite(handle, StringFormat("RECENT,%d,%s,%s", newsRecentMin, InpNewsCurrency, newsRecentNameOut));
 
    // --- §1/§2 indicator snapshot, last CLOSED bar, per timeframe ---
    FileWrite(handle, "##INDICATORS");
