@@ -97,30 +97,43 @@ TRADING_KNOWLEDGE = """\
 XTR SETUP ARCHETYPES (apply with judgment, not as rigid triggers):
 - 4.1 RSI-Extreme Bounce: mean reversion in a RANGING regime (M5 ADX<25).
   Classic trigger: M5 RSI<30 with price at/below the lower Bollinger band
-  (long), or RSI>70 at/above the upper band (short). Historically the
-  highest-conviction setup type in this system's own backtests.
+  (long), or RSI>70 at/above the upper band (short). This system's own
+  documented backtest assumption is that this is the primary, higher-
+  conviction setup type - treat it as the default lean when both 4.1 and
+  4.2 conditions are plausibly present, not as merely "historical."
 - 4.2 Trend-Continuation Pullback: in a TRENDING regime (M5 ADX>=25), price
   pulls back toward the M5 EMA9 in the direction of a clean EMA9/EMA21/RSI/
   MACD alignment. Do NOT treat the first touch of EMA9 as sufficient -
   this system's live history (trades 13 & 14) lost specifically because of
   that. Require MACD histogram momentum to actually be re-expanding in the
   trend's direction (grew after decelerating/flattening), not just present.
+  Documented as the weaker of the two backtested edges - treat it as
+  opportunistic, requiring cleaner confluence and warranting a lower
+  confidence than an equally clean 4.1, not a co-equal setup type.
 - 4.3 Liquidity-Sweep Reversal: an M1 candle briefly breaks a recent swing
   high/low and closes back inside within 1-3 bars - a stop-hunt reclaim.
-  Treat as a confluence booster for 4.1/4.2, or a smaller standalone entry.
+  M1 is entry-timing refinement, not an independent signal: use this only
+  as a confluence booster for a 4.1 or 4.2 read that already stands on its
+  own M5/HTF evidence, never as the sole basis for a trade by itself.
 - Higher-timeframe alignment (M15, H1 read the same way as M5: EMA9 vs
-  EMA21, RSI vs 50, MACD histogram sign) raises conviction when it agrees
-  and should make you materially more cautious - usually a hard pass -
-  when it clearly opposes the M5 read. Two mixed/unclear HTFs is weak
-  support, not a green light.
+  EMA21, RSI vs 50, MACD histogram sign) grades your conviction: FULL when
+  both M15 and H1 clearly agree with the M5 direction, REDUCED when one
+  clearly agrees and the other is mixed/unclear, and NO_TRADE when M5 is
+  clearly opposed by either HTF or both are mixed/unclear - treat NO_TRADE
+  conviction as a hard pass in practice, not merely "more cautious."
 
 GENERAL PRINCIPLES TO WEIGH ALONGSIDE THE ABOVE:
 - Trade with dominant momentum and structure; do not fight a strong,
   established trend without unusually strong counter-evidence.
 - Require genuine confluence (multiple independent signals agreeing), not
   a single indicator crossing a threshold.
-- Size the stop to current volatility (ATR) and real market structure (the
-  nearest swing high/low), not an arbitrary fixed distance.
+- Size the stop to current volatility and real market structure, not an
+  arbitrary fixed distance: typically 1.0-1.5x M5 ATR14 as the working
+  range, widened only when a genuine nearby swing high/low calls for more
+  room, tightened only when structure sits closer than that. The stop
+  distance is rejected outright if it falls far outside this (see the
+  actual enforced band below) - 1.0-1.5x is the target to aim for within
+  that band, not just the minimum that survives the check.
 - Maintain a favorable risk:reward (roughly 1.5-2.0x the stop distance);
   a marginal setup with poor R:R is worse than no trade.
 - Be more conservative in thin/illiquid sessions (Asian hours) and more

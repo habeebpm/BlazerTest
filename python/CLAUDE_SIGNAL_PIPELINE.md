@@ -58,6 +58,48 @@ setup, no rigid ATR-clamp formula overriding Claude's stop - those XTR
 mechanics are now inputs to Claude's reasoning (still computed accurately in
 Python/MQL5 and handed over as labeled hints), not code paths that decide.
 
+## `TRADING_KNOWLEDGE` refinements from a backtest-informed review
+
+`TRADING_KNOWLEDGE` (the system-prompt knowledge block in
+`claude_signal_bot.py`) was revised to fold in a more detailed statement of
+the XTR spec's own logic, surfaced by comparing this project's behavior
+against a separate chat session that had been given the full spec. Three
+concrete, code-verifiable changes went in:
+
+- **4.3 (liquidity-sweep reversal) is no longer described as a standalone
+  entry.** It previously said "a confluence booster for 4.1/4.2, or a
+  smaller standalone entry" - now it's booster-only, matching the spec's
+  stated intent that M1 is entry-timing refinement, never an independent
+  signal on its own.
+- **An explicit ATR sizing target (1.0-1.5x M5 ATR14)**, inside the
+  existing enforced sanity band (`--min-atr-mult`/`--max-atr-mult`,
+  0.25x-3.0x by default) rather than replacing it - the band stays the
+  wide backstop it always was (reject anything wildly mis-sized), while
+  the knowledge text now tells Claude what to actually aim for within it,
+  not just what survives the check.
+- **4.1 stated as the primary/higher-conviction setup, 4.2 as opportunistic**
+  and warranting a lower confidence than an equally clean 4.1, rather than
+  co-equal archetypes.
+
+**What did NOT go in, and why:** the other chat also cited specific
+win-rate figures (a ~56% out-of-sample win rate for 4.1, ~44.8% for 4.2,
+over ~25 test trades). Those are deliberately left out of
+`TRADING_KNOWLEDGE`. The only performance figure actually on record in this
+repo is different - a "4W-6L live sample" (4 wins, 6 losses, ~40%) from the
+original spec's own §14, which doesn't obviously reconcile with a
+56%-over-25-trades claim - and the original spec's full text isn't
+preserved anywhere in this repo to check against, so there was no way to
+verify whether those specific percentages are the spec's own documented
+backtest numbers or something stated without a checkable source. Embedding
+an unverified performance statistic into a live-trading system's own
+decision-making prompt is exactly the kind of thing this project has
+consistently avoided elsewhere (see "Honest notes / risks" below and
+`BACKTEST.md`) - the *directional* priority (4.1 over 4.2) made it in,
+because it's already consistent with what was here before and doesn't
+depend on an unconfirmed number to be true. If you have the original XTR
+spec's actual §14 text, or a real backtest run's own measured win rates,
+those can replace this hedge with the real figures.
+
 ## The self-correction feedback loop
 
 A one-shot analyst that never sees its own track record just repeats its
