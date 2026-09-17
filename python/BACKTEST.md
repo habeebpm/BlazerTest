@@ -71,7 +71,16 @@ control), `--start-equity`, `--risk-percent`, `--min-confidence`,
 `--min-atr-mult`/`--max-atr-mult`, `--max-concurrent-signals`,
 `--time-decay-seconds`, `--trail-usd`, `--spread` (fixed synthetic spread in
 price units), `--warmup-bars` (M5 bars skipped for indicator warm-up,
-default 250), `--out` (write the trade log to CSV).
+default 250), `--out` (write the trade log to CSV). Also available, both
+disabled by default so they don't change existing results unless you opt
+in — see `CLAUDE_SIGNAL_PIPELINE.md` § "Two more mechanical, opt-in risk
+controls" for what they do live: `--max-daily-loss-usd`/
+`--max-trades-per-day` (the daily circuit breaker) and `--max-spread-mult`
+(the spread gate — with this harness's fixed `--spread`, the rolling
+median always equals the current reading, so it never actually trips
+unless you vary spread yourself; it's wired here for parity with the live
+bot, not because it does anything against the bundled sample). The report
+JSON's `daily_breaker_skips`/`spread_gate_skips` show whether either fired.
 
 ## Cost estimate (measured, not guessed)
 

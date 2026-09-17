@@ -33,9 +33,12 @@ not predict future results.
   the XTR setup archetypes and general trading principles as knowledge
   rather than a fixed rule table. Python keeps only risk containment
   mechanical (a stop-distance sanity check, the two-loss standdown, the
-  10-minute time-decay, position sizing), and the EA executes with a fixed
-  $4 trailing stop. Optional Telegram notifications fire the moment a
-  signal actually fills. See `python/CLAUDE_SIGNAL_PIPELINE.md`, and
+  10-minute time-decay, position sizing, plus an opt-in daily loss/trade
+  circuit breaker and an opt-in spread-widening gate), and the EA executes
+  with a fixed $4 trailing stop. A mechanical 2-of-3 higher-timeframe
+  pre-filter, computed in MQL5, skips the Claude call on cycles where it
+  isn't met, cutting API cost. Optional Telegram notifications fire the
+  moment a signal actually fills. See `python/CLAUDE_SIGNAL_PIPELINE.md`, and
   `python/BACKTEST.md` for how (and how honestly) this pipeline can be
   backtested against historical data.
 

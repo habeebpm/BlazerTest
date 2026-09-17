@@ -77,7 +77,7 @@ LOG_DIR.mkdir(exist_ok=True)
 TRADE_LOG = LOG_DIR / "xtr_trades.csv"          # matches the §11 schema
 TRADE_LOG_FIELDS = [
     "timestamp", "setup_type", "direction", "entry", "sl", "tp", "atr_at_entry",
-    "regime_adx", "conviction", "outcome", "resolution_time", "notes",
+    "regime_adx", "conviction", "hints_fired", "outcome", "resolution_time", "notes",
 ]
 
 log = logging.getLogger("claude_signal_bot")
@@ -186,6 +186,9 @@ class BotConfig:
     max_atr_mult: float = 3.0    # sanity ceiling on the proposed stop distance
     max_concurrent_signals: int = 1   # pending (unresolved) signals allowed at once
     require_htf_gate: bool = True     # skip the Claude call entirely when htf_align == "NONE"
+    max_daily_loss_usd: float = 0.0   # 0 = disabled; halt new signals once today's realized pnl <= -this
+    max_trades_per_day: int = 0       # 0 = disabled; halt new signals once today's EXECUTED count reaches this
+    max_spread_mult: float = 0.0      # 0 = disabled; skip the cycle when spread > this x the recent rolling median
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_timeout: float = 10.0
@@ -207,7 +210,8 @@ class ChartSnapshot:
     spread: int
     equity: float
     exported_at: str
-    htf_align: str        # BUY/SELL/NONE - the EA's own mechanical 2-of-3 pre-filter
+    htf_align: str         # BUY/SELL/NONE - the EA's own mechanical 2-of-3 pre-filter
+    htf_strength: int      # 2 or 3 - how many of {M5,M15,H1} agreed; 0 when htf_align is NONE
     ind: dict            # {"M5": {...}, "M15": {...}, "H1": {...}}
     macd_hist_m5: list    # oldest -> newest
     bars: dict            # {"M1": df, "M5": df, "M15": df, "H1": df}
@@ -291,13 +295,21 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
     last_close = float(bars["M5"]["close"].iloc[-1])
 
     htf_align = meta.get("htf_align")
+    htf_strength_raw = meta.get("htf_strength")
     if htf_align not in ("BUY", "SELL", "NONE"):
         # Older export files / hand-built fixtures without the field: fall
         # back to computing it locally, via the identical rule, rather than
         # leaving the gate permanently open or closed by accident.
-        htf_align = htf_gate_from_directions(
-            direction_for(ind["M5"]), direction_for(ind["M15"]), direction_for(ind["H1"]),
-        )
+        m5_dir, m15_dir, h1_dir = direction_for(ind["M5"]), direction_for(ind["M15"]), direction_for(ind["H1"])
+        htf_align = htf_gate_from_directions(m5_dir, m15_dir, h1_dir)
+        htf_strength = htf_strength_from_directions(m5_dir, m15_dir, h1_dir)
+    elif htf_strength_raw is not None:
+        htf_strength = int(htf_strength_raw)
+    else:
+        # htf_align present but htf_strength missing (an export from before
+        # the strength field existed): 2 is the only guarantee htf_align
+        # itself makes when it's not NONE - not necessarily the true count.
+        htf_strength = 0 if htf_align == "NONE" else 2
 
     return ChartSnapshot(
         symbol=meta["symbol"],
@@ -314,6 +326,7 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
         equity=float(meta.get("equity", 0.0)),
         exported_at=meta.get("exported", ""),
         htf_align=htf_align,
+        htf_strength=htf_strength,
         ind=ind,
         macd_hist_m5=macd_hist_m5,
         bars=bars,
@@ -357,6 +370,15 @@ def htf_gate_from_directions(m5_dir: str, m15_dir: str, h1_dir: str) -> str:
     if bears >= 2:
         return "SELL"
     return "NONE"
+
+
+def htf_strength_from_directions(m5_dir: str, m15_dir: str, h1_dir: str) -> int:
+    """Companion to htf_gate_from_directions: how many of the 3 agreed (2 or
+    3), 0 when the gate is NONE. Mirrors ClaudeSignalEA.mq5's HtfAlignment
+    `strength` out-param; same fallback-only usage as the gate itself."""
+    bulls = sum(d == "BULLISH" for d in (m5_dir, m15_dir, h1_dir))
+    bears = sum(d == "BEARISH" for d in (m5_dir, m15_dir, h1_dir))
+    return max(bulls, bears) if (bulls >= 2 or bears >= 2) else 0
 
 
 def check_rsi_bounce(snap: ChartSnapshot) -> dict | None:
@@ -609,6 +631,78 @@ def active_standdowns(state: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Daily loss cap / trade-count circuit breaker (risk containment, kept
+# mechanical). Unlike the per-setup-type standdown, this halts EVERYTHING
+# for the rest of the UTC day once tripped - a blunt, deliberately simple
+# backstop against a bad session compounding, independent of which setup
+# types are involved. Gates the Claude call itself (like the HTF gate)
+# rather than just rejecting afterward, so a tripped breaker costs nothing
+# further in API spend either.
+# --------------------------------------------------------------------------
+
+def utc_date_str(now: datetime | None = None) -> str:
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+
+
+def update_daily_tracking(state: dict, now: datetime, acks: list[dict], outcomes: list[dict]) -> None:
+    today = utc_date_str(now)
+    daily = state.get("daily")
+    if not daily or daily.get("date") != today:
+        daily = {"date": today, "trade_count": 0, "pnl": 0.0}
+        state["daily"] = daily
+    daily["trade_count"] += sum(1 for a in acks if a["status"] == "EXECUTED")
+    daily["pnl"] += sum(rec["profit"] for rec in outcomes)
+
+
+def daily_breaker_reason(state: dict, cfg: BotConfig) -> str | None:
+    """Returns why the breaker is tripped, or None if new signals may still
+    be issued today. Only ever reads state["daily"] - update_daily_tracking
+    must be called first each cycle so it reflects today's actual count."""
+    daily = state.get("daily", {})
+    if cfg.max_trades_per_day > 0 and daily.get("trade_count", 0) >= cfg.max_trades_per_day:
+        return f"max trades/day reached ({daily['trade_count']}/{cfg.max_trades_per_day})"
+    if cfg.max_daily_loss_usd > 0 and daily.get("pnl", 0.0) <= -cfg.max_daily_loss_usd:
+        return f"daily loss cap reached (${daily['pnl']:.2f} <= -${cfg.max_daily_loss_usd:.2f})"
+    return None
+
+
+# --------------------------------------------------------------------------
+# Mechanical spread-widening gate (cost/risk pre-filter, kept mechanical).
+# The EA already exports the live spread every cycle; this just keeps a
+# rolling window of recent readings in state (there's no live EA to ask for
+# a "normal" spread the way there is for htf_align) and skips the Claude
+# call when the current spread is abnormally wide relative to it - typically
+# a sign of a thin/illiquid moment (rollover, a news spike) worth sitting
+# out regardless of what the indicators say. Disabled by default
+# (max_spread_mult=0) because "abnormal" is broker- and session-specific;
+# enable it once you've observed your own broker's normal range.
+# --------------------------------------------------------------------------
+
+SPREAD_HISTORY_MAXLEN = 20
+SPREAD_HISTORY_MIN_SAMPLES = 10   # don't gate on a cold/short history
+
+
+def update_spread_history(state: dict, spread: int) -> None:
+    hist = state.setdefault("spread_history", [])
+    hist.append(spread)
+    del hist[:-SPREAD_HISTORY_MAXLEN]
+
+
+def spread_gate_reason(state: dict, spread: int, cfg: BotConfig) -> str | None:
+    if cfg.max_spread_mult <= 0:
+        return None
+    hist = state.get("spread_history", [])
+    if len(hist) < SPREAD_HISTORY_MIN_SAMPLES:
+        return None
+    baseline = sorted(hist)[len(hist) // 2]   # median, robust to a single earlier spike
+    if baseline <= 0:
+        return None
+    if spread > cfg.max_spread_mult * baseline:
+        return f"spread {spread} is {spread / baseline:.1f}x the recent median ({baseline}), over the {cfg.max_spread_mult}x limit"
+    return None
+
+
+# --------------------------------------------------------------------------
 # Trade history: Claude's own past decisions paired with what happened to
 # them - the "learn from the last" feedback loop. Kept in state.json (not
 # just the append-only CSV) because we mutate an entry in place once its
@@ -618,6 +712,23 @@ def active_standdowns(state: dict) -> list[str]:
 MAX_TRADE_HISTORY = 50
 
 
+def hints_fired_summary(hints: dict) -> str:
+    """Which of the three mechanical setup hints actually fired this cycle
+    (independent of the setup_type Claude chose to trade, if any) - e.g.
+    "4.1,4.3" or "" if none fired. Lets later analysis tell apart Claude
+    agreeing with a fired hint, trading discretionary with nothing firing,
+    or going against what the hints show - each a different pattern to
+    notice, not visible from setup_type alone."""
+    fired = []
+    if hints.get("rsi_extreme_bounce"):
+        fired.append("4.1")
+    if hints.get("trend_continuation_pullback"):
+        fired.append("4.2")
+    if hints.get("liquidity_sweep_reversal"):
+        fired.append("4.3")
+    return ",".join(fired)
+
+
 def register_trade_history(state: dict, signal_id: int, decision: dict) -> None:
     history = state.setdefault("trade_history", {})
     history[str(signal_id)] = {
@@ -625,6 +736,7 @@ def register_trade_history(state: dict, signal_id: int, decision: dict) -> None:
         "entry": decision["entry"], "sl": decision["sl"], "tp": decision["tp"],
         "confidence": decision["confidence"], "reasoning": decision["reasoning"],
         "self_correction": decision.get("self_correction", ""),
+        "hints_fired": hints_fired_summary(decision.get("hints", {})),
         "outcome": "PENDING", "profit": None, "resolution_time": None,
     }
     if len(history) > MAX_TRADE_HISTORY:
@@ -633,20 +745,63 @@ def register_trade_history(state: dict, signal_id: int, decision: dict) -> None:
             del history[k]
 
 
+def _profit_stats(trades: list[dict]) -> dict:
+    """wins/losses/pnl/avg_win/avg_loss/profit_factor over a list of
+    resolved trade_history entries. profit_factor is gross win $ / gross
+    loss $ (None when there are no losses yet to divide by - not 0, since
+    an undefined ratio isn't the same claim as a bad one)."""
+    wins = [t["profit"] for t in trades if t["outcome"] == "WIN"]
+    losses = [t["profit"] for t in trades if t["outcome"] == "LOSS"]
+    gross_win = sum(wins)
+    gross_loss = -sum(losses)   # losses are negative profit; make this positive
+    return {
+        "wins": len(wins), "losses": len(losses),
+        "pnl": round(gross_win - gross_loss, 2),
+        "win_rate_pct": round(100.0 * len(wins) / (len(wins) + len(losses)), 1) if (wins or losses) else None,
+        "avg_win": round(gross_win / len(wins), 2) if wins else None,
+        "avg_loss": round(-gross_loss / len(losses), 2) if losses else None,
+        "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+    }
+
+
+def confidence_calibration(resolved: list[dict]) -> dict:
+    """Buckets resolved trades by the confidence Claude reported at decision
+    time and shows the actual win rate in each bucket - lets the
+    self-correction loop notice if its own stated confidence is well
+    calibrated (a claimed 80% should win close to 80% of the time) rather
+    than just tracking whether it won or lost."""
+    buckets = [(0, 60), (60, 70), (70, 80), (80, 90), (90, 101)]
+    out: dict[str, dict] = {}
+    for lo, hi in buckets:
+        in_bucket = [t for t in resolved if lo <= t.get("confidence", 0) < hi]
+        if not in_bucket:
+            continue
+        label = f"{lo}-{min(hi, 100)}"
+        stats = _profit_stats(in_bucket)
+        out[label] = {"n": len(in_bucket), "win_rate_pct": stats["win_rate_pct"]}
+    return out
+
+
 def summarize_recent_performance(state: dict, limit: int = 8) -> dict:
-    """Recent resolved trades (with Claude's own past reasoning) plus a
-    per-setup-type win/loss tally, for the self-correction context."""
+    """Recent resolved trades (with Claude's own past reasoning), a
+    per-setup-type breakdown (win/loss counts, pnl, profit factor), overall
+    stats, and a confidence-calibration table - the fuller picture the
+    self-correction loop reasons from, not just a running tally."""
     history = state.get("trade_history", {})
     resolved = [t for t in history.values() if t.get("outcome") in ("WIN", "LOSS")]
     resolved.sort(key=lambda t: t.get("resolution_time") or "")
     recent = resolved[-limit:]
 
     by_setup: dict[str, dict] = {}
-    for t in resolved:
-        rec = by_setup.setdefault(t["setup_type"], {"wins": 0, "losses": 0})
-        rec["wins" if t["outcome"] == "WIN" else "losses"] += 1
+    for setup_type in {t["setup_type"] for t in resolved}:
+        by_setup[setup_type] = _profit_stats([t for t in resolved if t["setup_type"] == setup_type])
 
-    return {"recent_trades": recent, "by_setup_type": by_setup}
+    return {
+        "recent_trades": recent,
+        "by_setup_type": by_setup,
+        "overall": _profit_stats(resolved) if resolved else None,
+        "confidence_calibration": confidence_calibration(resolved),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -774,6 +929,8 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         f"H1 indicators: {json.dumps(snap.ind['H1'])}\n"
         f"M5 direction (mechanical read): {m5_direction}   Regime (M5 ADX): {regime}\n"
         f"M15 direction (mechanical read): {m15_direction}   H1 direction (mechanical read): {h1_direction}\n"
+        f"HTF gate alignment (live/forming-bar, cost pre-filter): {snap.htf_align} "
+        f"(strength {snap.htf_strength}/3 - 3 means all of M5/M15/H1 agree, not just a bare majority)\n"
         f"M5 MACD histogram, last {len(snap.macd_hist_m5)} bars (oldest->newest): {snap.macd_hist_m5}\n\n"
         f"Computed setup hints (advisory only, weigh them, don't just obey them): "
         f"{json.dumps(hints, default=str)}\n\n"
@@ -784,7 +941,13 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         "the limit.\n\n"
         f"RECENT PERFORMANCE HISTORY (your own past decisions and reasoning, paired with what "
         f"actually happened - read this before deciding, per the SELF-CORRECTION guidance above):\n"
-        f"Win/loss by setup type: {json.dumps(performance['by_setup_type'])}\n"
+        f"Overall (all resolved trades): {json.dumps(performance['overall'])}\n"
+        f"By setup type (wins/losses/pnl/profit_factor - profit_factor null means no losses yet to "
+        f"divide by, not a bad ratio): {json.dumps(performance['by_setup_type'])}\n"
+        f"Confidence calibration (win rate actually observed per confidence bucket you reported at "
+        f"decision time - if a bucket's win rate runs well below its own range, you have been "
+        f"overconfident there and should adjust, not just note the fact and repeat it): "
+        f"{json.dumps(performance['confidence_calibration'])}\n"
         f"Last {len(performance['recent_trades'])} resolved trades (oldest first): "
         f"{json.dumps(performance['recent_trades'])}\n\n"
         f"Recent M1 bars (last 15, oldest first):\n{snap.bars['M1'].tail(15).to_csv(index=False)}\n"
@@ -968,7 +1131,8 @@ def load_state(cfg: BotConfig) -> dict:
             log.warning("could not parse state file %s, starting fresh", cfg.state_file)
     return {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
             "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {},
-            "htf_gate_skips": 0}
+            "htf_gate_skips": 0, "daily_breaker_skips": 0, "spread_gate_skips": 0,
+            "daily": {}, "spread_history": []}
 
 
 def save_state(cfg: BotConfig, state: dict) -> None:
@@ -1016,6 +1180,12 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
     state["ack_lines_seen"] = ack_seen
     notify_fills(state, acks, snap, cfg)   # Telegram, if configured; a no-op otherwise
 
+    # Both trackers update every cycle (not just on a new M5 bar), so the
+    # daily breaker's pnl/trade_count and the spread gate's rolling median
+    # stay current even between bar closes.
+    update_daily_tracking(state, datetime.now(timezone.utc), acks, outcomes)
+    update_spread_history(state, snap.spread)
+
     m5_direction_now = direction_for(snap.ind["M5"])
     update_standdown(state, outcomes, m5_direction_now)
 
@@ -1045,6 +1215,27 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
         log.debug("no new M5 bar since %s, skipping this cycle", last_bar_time)
         return state
     state["last_bar_time"] = last_bar_time
+
+    # Daily circuit breaker: a blunt, whole-account halt for the rest of
+    # the UTC day once either limit trips, independent of setup type or
+    # standdown state. Checked before spending an API call, same as the
+    # HTF gate below.
+    daily_reason = daily_breaker_reason(state, cfg)
+    if daily_reason:
+        state["daily_breaker_skips"] = state.get("daily_breaker_skips", 0) + 1
+        log.info("daily circuit breaker tripped: %s - skipping the Claude call this cycle (%d skipped so far)",
+                  daily_reason, state["daily_breaker_skips"])
+        return state
+
+    # Mechanical spread-widening gate: skip when the live spread is
+    # abnormally wide vs. its own recent rolling median (disabled by
+    # default - see max_spread_mult).
+    spread_reason = spread_gate_reason(state, snap.spread, cfg)
+    if spread_reason:
+        state["spread_gate_skips"] = state.get("spread_gate_skips", 0) + 1
+        log.info("mechanical spread gate tripped: %s - skipping the Claude call this cycle (%d skipped so far)",
+                  spread_reason, state["spread_gate_skips"])
+        return state
 
     # Mechanical cost pre-filter: skip the Claude call entirely (no tokens
     # spent) when the EA's own htf_align says fewer than 2 of {M5,M15,H1}
@@ -1102,7 +1293,8 @@ def run_once(cfg: BotConfig, state: dict) -> dict:
         "setup_type": decision["setup_type"], "direction": decision["action"],
         "entry": decision["entry"], "sl": decision["sl"], "tp": decision["tp"],
         "atr_at_entry": snap.ind["M5"]["atr14"], "regime_adx": snap.ind["M5"]["adx14"],
-        "conviction": decision["confidence"], "outcome": "PENDING", "notes": notes,
+        "conviction": decision["confidence"], "hints_fired": hints_fired_summary(hints),
+        "outcome": "PENDING", "notes": notes,
     })
 
     if cfg.dry_run:
@@ -1175,11 +1367,12 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
         if htf_align == "NONE":
             m15_dir = h1_dir = "MIXED"
 
+    htf_strength = htf_strength_from_directions(m5_dir, m15_dir, h1_dir)
     lines = [
         f"#symbol={symbol} digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 "
         f"volume_max=50.00 volume_step=0.01 bid={m5_last - 0.1:.2f} ask={m5_last + 0.1:.2f} "
         f"spread=25 equity=5000.00 m5_dir={m5_dir} m15_dir={m15_dir} h1_dir={h1_dir} "
-        f"htf_align={htf_align} exported=2026.09.16T12:00:00",
+        f"htf_align={htf_align} htf_strength={htf_strength} exported=2026.09.16T12:00:00",
         "##INDICATORS",
         "tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower",
         f"M5,{ema9:.2f},{ema21:.2f},{rsi:.2f},{macd_hist:.2f},{adx:.2f},1.80,{bb_upper:.2f},{bb_lower:.2f}",
@@ -1229,6 +1422,52 @@ def selftest() -> None:
     assert htf_gate_from_directions("MIXED", "MIXED", "MIXED") == "NONE"
     print("  htf_gate_from_directions (mechanical 2-of-3 pre-filter): OK")
 
+    assert hints_fired_summary({"rsi_extreme_bounce": {"setup_type": "4.1"}, "trend_continuation_pullback": None,
+                                 "liquidity_sweep_reversal": None}) == "4.1"
+    assert hints_fired_summary({"rsi_extreme_bounce": {"setup_type": "4.1"}, "trend_continuation_pullback": None,
+                                 "liquidity_sweep_reversal": {"setup_type": "4.3"}}) == "4.1,4.3"
+    assert hints_fired_summary({"rsi_extreme_bounce": None, "trend_continuation_pullback": None,
+                                 "liquidity_sweep_reversal": None}) == ""
+    print("  hints_fired_summary lists which mechanical hints actually fired: OK")
+
+    # --- daily circuit breaker: a state-level unit test, independent of run_once wiring ---
+    daily_state: dict = {}
+    now0 = datetime(2026, 9, 16, 10, 0, tzinfo=timezone.utc)
+    update_daily_tracking(daily_state, now0, [{"status": "EXECUTED"}, {"status": "REJECTED"}],
+                           [{"profit": -5.0}])
+    assert daily_state["daily"]["trade_count"] == 1, "only EXECUTED acks count as a trade opened"
+    assert daily_state["daily"]["pnl"] == -5.0
+    cap_cfg = BotConfig(data_file=Path("x"), signal_file=Path("x"), ack_file=Path("x"),
+                         outcome_file=Path("x"), state_file=Path("x"), max_trades_per_day=1)
+    assert daily_breaker_reason(daily_state, cap_cfg) is not None
+    loss_cfg = BotConfig(data_file=Path("x"), signal_file=Path("x"), ack_file=Path("x"),
+                          outcome_file=Path("x"), state_file=Path("x"), max_daily_loss_usd=5.0)
+    assert daily_breaker_reason(daily_state, loss_cfg) is not None
+    unlimited_cfg = BotConfig(data_file=Path("x"), signal_file=Path("x"), ack_file=Path("x"),
+                               outcome_file=Path("x"), state_file=Path("x"))
+    assert daily_breaker_reason(daily_state, unlimited_cfg) is None
+    next_day = datetime(2026, 9, 17, 0, 5, tzinfo=timezone.utc)
+    update_daily_tracking(daily_state, next_day, [], [])
+    assert daily_state["daily"]["trade_count"] == 0 and daily_state["daily"]["pnl"] == 0.0, \
+        "a new UTC day must reset the tracker"
+    print("  daily_breaker_reason trips on trade-count and loss caps, and resets on a new UTC day: OK")
+
+    # --- mechanical spread gate: a state-level unit test ---
+    spread_cfg = BotConfig(data_file=Path("x"), signal_file=Path("x"), ack_file=Path("x"),
+                            outcome_file=Path("x"), state_file=Path("x"), max_spread_mult=2.0)
+    spread_state: dict = {}
+    for _ in range(SPREAD_HISTORY_MIN_SAMPLES):
+        update_spread_history(spread_state, 20)
+    assert spread_gate_reason(spread_state, 20, spread_cfg) is None
+    assert spread_gate_reason(spread_state, 50, spread_cfg) is not None   # 2.5x the median, over the 2.0x limit
+    disabled_cfg = BotConfig(data_file=Path("x"), signal_file=Path("x"), ack_file=Path("x"),
+                              outcome_file=Path("x"), state_file=Path("x"))   # max_spread_mult=0 (disabled)
+    assert spread_gate_reason(spread_state, 999, disabled_cfg) is None
+    cold_state: dict = {}
+    update_spread_history(cold_state, 20)
+    assert spread_gate_reason(cold_state, 999, spread_cfg) is None, "must not gate on a cold/short history"
+    print("  spread_gate_reason trips on an abnormally wide spread vs. the rolling median: OK")
+
     parsed = parse_claude_decision(
         'Sure, here you go:\n```json\n'
         '{"action": "SELL", "setup_type": "4.1", "sl": 2350.0, "tp": 2330.0, '
@@ -1262,7 +1501,14 @@ def selftest() -> None:
         assert snap.symbol == "XAUUSD"
         assert set(snap.bars) == {"M1", "M5", "M15", "H1"}
         assert snap.htf_align == "BUY"
-        print(f"  parse_chart_file: OK (M5 bars={len(snap.bars['M5'])}, ind keys={list(snap.ind)}, htf_align={snap.htf_align})")
+        assert snap.htf_strength == 3, "the trending fixture has all 3 timeframes BULLISH, unanimous"
+        print(f"  parse_chart_file: OK (M5 bars={len(snap.bars['M5'])}, ind keys={list(snap.ind)}, "
+              f"htf_align={snap.htf_align} htf_strength={snap.htf_strength})")
+
+        assert htf_strength_from_directions("BULLISH", "BULLISH", "MIXED") == 2
+        assert htf_strength_from_directions("BULLISH", "BULLISH", "BULLISH") == 3
+        assert htf_strength_from_directions("BULLISH", "BEARISH", "MIXED") == 0
+        print("  htf_strength_from_directions distinguishes a bare majority from unanimous: OK")
 
         # a header without htf_align at all (an older export file) must fall back to computing
         # it locally via the same rule, not silently gate everything open or closed
@@ -1272,7 +1518,8 @@ def selftest() -> None:
         no_field_file.write_text(no_field_text)
         snap_fallback = parse_chart_file(no_field_file)
         assert snap_fallback.htf_align == "BUY"
-        print("  parse_chart_file falls back to computing htf_align when the field is absent: OK")
+        assert snap_fallback.htf_strength == 3
+        print("  parse_chart_file falls back to computing htf_align/htf_strength when absent: OK")
 
         m5_dir = direction_for(snap.ind["M5"])
         regime = regime_for(snap.ind["M5"])
@@ -1378,6 +1625,40 @@ def selftest() -> None:
         assert nogate_state.get("htf_gate_skips", 0) == 0
         print("  --no-htf-gate (require_htf_gate=False) bypasses the gate and calls Claude anyway: OK")
 
+        # --- daily circuit breaker wired into run_once: must skip the Claude call, not just the trade ---
+        breaker_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "breaker_signals.txt",
+            ack_file=tmp_path / "breaker_ack.txt", outcome_file=tmp_path / "breaker_outcomes.txt",
+            state_file=tmp_path / "breaker_state.json", dry_run=True, api_key="test-key",
+            max_trades_per_day=1,
+        )
+        breaker_state = load_state(breaker_cfg)
+        breaker_state["daily"] = {"date": utc_date_str(), "trade_count": 1, "pnl": 0.0}
+        with patch(f"{__name__}.call_claude_analysis") as mock_call3:
+            breaker_state = run_once(breaker_cfg, breaker_state)
+        mock_call3.assert_not_called()
+        assert breaker_state["last_signal_id"] == 0
+        assert breaker_state["daily_breaker_skips"] == 1
+        print(f"  the daily circuit breaker skips the Claude call once max_trades_per_day is reached: OK "
+              f"(skips={breaker_state['daily_breaker_skips']})")
+
+        # --- mechanical spread gate wired into run_once ---
+        spread_gate_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "spreadgate_signals.txt",
+            ack_file=tmp_path / "spreadgate_ack.txt", outcome_file=tmp_path / "spreadgate_outcomes.txt",
+            state_file=tmp_path / "spreadgate_state.json", dry_run=True, api_key="test-key",
+            max_spread_mult=1.0,
+        )
+        spread_gate_state = load_state(spread_gate_cfg)
+        spread_gate_state["spread_history"] = [5] * SPREAD_HISTORY_MIN_SAMPLES   # normal spread=25 in the fixture is 5x that
+        with patch(f"{__name__}.call_claude_analysis") as mock_call4:
+            spread_gate_state = run_once(spread_gate_cfg, spread_gate_state)
+        mock_call4.assert_not_called()
+        assert spread_gate_state["last_signal_id"] == 0
+        assert spread_gate_state["spread_gate_skips"] == 1
+        print(f"  the mechanical spread gate skips the Claude call on an abnormally wide spread: OK "
+              f"(skips={spread_gate_state['spread_gate_skips']})")
+
         # --- self-correction feedback loop: outcome resolution feeds back into history ---
         resolve_pending(e2e_state, [
             {"signal_id": "1", "setup_type": "4.2", "direction": "BUY", "profit": -6.0, "outcome": "LOSS"},
@@ -1388,6 +1669,41 @@ def selftest() -> None:
         assert perf["by_setup_type"]["4.2"]["losses"] == 1
         assert perf["recent_trades"][0]["reasoning"] == good_decision["reasoning"]
         print(f"  resolve_pending feeds outcomes back into trade_history for self-correction: OK ({perf['by_setup_type']})")
+
+        # --- richer performance stats: overall totals + confidence calibration, not just win/loss counts ---
+        richer_state = load_state(cfg)
+        wins_losses = [
+            (True, 6.0, 80.0), (True, 4.0, 85.0), (False, -5.0, 80.0),    # 80-90 bucket: 2W/1L
+            (False, -3.0, 65.0), (False, -2.0, 65.0),                     # 60-70 bucket: 0W/2L
+        ]
+        for i, (is_win, profit, conf) in enumerate(wins_losses, start=1):
+            register_trade_history(richer_state, i, {
+                "setup_type": "4.1", "action": "BUY", "entry": 2340.0, "sl": 2338.0, "tp": 2344.0,
+                "confidence": conf, "reasoning": "test", "self_correction": "nothing notable", "hints": {},
+            })
+            resolve_pending(richer_state, [{"signal_id": str(i), "setup_type": "4.1", "direction": "BUY",
+                                             "profit": profit, "outcome": "WIN" if is_win else "LOSS"}])
+        richer_perf = summarize_recent_performance(richer_state)
+        assert richer_perf["overall"]["wins"] == 2 and richer_perf["overall"]["losses"] == 3
+        assert richer_perf["overall"]["profit_factor"] == round(10.0 / 10.0, 2)
+        assert richer_perf["by_setup_type"]["4.1"]["win_rate_pct"] == 40.0
+        cal = richer_perf["confidence_calibration"]
+        assert cal["80-90"]["n"] == 3 and cal["80-90"]["win_rate_pct"] == round(200 / 3, 1)
+        assert cal["60-70"]["n"] == 2 and cal["60-70"]["win_rate_pct"] == 0.0
+        print(f"  summarize_recent_performance reports overall profit factor + confidence calibration: OK "
+              f"(overall={richer_perf['overall']}, calibration={cal})")
+
+        # a trade with no losses yet must report profit_factor as null (undefined), not 0 or infinity
+        only_wins_state = load_state(cfg)
+        register_trade_history(only_wins_state, 1, {
+            "setup_type": "4.2", "action": "BUY", "entry": 2340.0, "sl": 2338.0, "tp": 2344.0,
+            "confidence": 90.0, "reasoning": "test", "self_correction": "nothing notable", "hints": {},
+        })
+        resolve_pending(only_wins_state, [{"signal_id": "1", "setup_type": "4.2", "direction": "BUY",
+                                            "profit": 5.0, "outcome": "WIN"}])
+        only_wins_perf = summarize_recent_performance(only_wins_state)
+        assert only_wins_perf["by_setup_type"]["4.2"]["profit_factor"] is None
+        print("  profit_factor is null (not 0/inf) when there are no losses yet to divide by: OK")
 
         # the prompt itself must actually surface that history to Claude, and must
         # reflect the ACTUAL configured cfg values, not a hardcoded placeholder
@@ -1519,6 +1835,9 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         max_atr_mult=args.max_atr_mult,
         max_concurrent_signals=args.max_concurrent_signals,
         require_htf_gate=not args.no_htf_gate,
+        max_daily_loss_usd=args.max_daily_loss_usd,
+        max_trades_per_day=args.max_trades_per_day,
+        max_spread_mult=args.max_spread_mult,
         telegram_bot_token=args.telegram_bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=args.telegram_chat_id or os.environ.get("TELEGRAM_CHAT_ID", ""),
         dry_run=args.dry_run,
@@ -1556,6 +1875,16 @@ def main(argv: list[str] | None = None) -> int:
                          help="disable the mechanical 2-of-3 HTF pre-filter (on by default) and call "
                               "Claude on every cycle regardless of htf_align - costs more, but doesn't "
                               "skip contrarian setups (RSI-extreme bounce, liquidity sweep) the gate would")
+    parser.add_argument("--max-daily-loss-usd", type=float, default=0.0,
+                         help="halt new signals for the rest of the UTC day once realized pnl today "
+                              "reaches -this many dollars; 0 disables the cap (default)")
+    parser.add_argument("--max-trades-per-day", type=int, default=0,
+                         help="halt new signals for the rest of the UTC day once this many trades have "
+                              "executed today; 0 disables the cap (default)")
+    parser.add_argument("--max-spread-mult", type=float, default=0.0,
+                         help="skip the cycle when the live spread exceeds this x the recent rolling "
+                              "median spread; 0 disables the gate (default) - calibrate to your own "
+                              "broker's normal range before enabling")
     parser.add_argument("--telegram-bot-token", default=None, help="defaults to $TELEGRAM_BOT_TOKEN")
     parser.add_argument("--telegram-chat-id", default=None, help="defaults to $TELEGRAM_CHAT_ID")
     parser.add_argument("--notify-test", action="store_true",

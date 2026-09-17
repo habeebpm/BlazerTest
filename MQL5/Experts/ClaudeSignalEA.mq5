@@ -20,9 +20,13 @@
 //|       - the last InpBarsM1/M5/M15/H1 raw OHLC bars per timeframe  |
 //|         (for structural-swing / liquidity-sweep detection)        |
 //|       - m5_dir/m15_dir/h1_dir (BULLISH/BEARISH/MIXED, the same     |
-//|         rule Python's direction_for() applies) and htf_align       |
-//|         (BUY/SELL/NONE - BUY/SELL when >= 2 of the 3 agree). These |
-//|         read the CURRENT, still-forming bar on each timeframe (the |
+//|         rule Python's direction_for() applies), htf_align          |
+//|         (BUY/SELL/NONE - BUY/SELL when >= 2 of the 3 agree), and   |
+//|         htf_strength (2 or 3 - how many of the 3 agreed; 0 for     |
+//|         NONE) - the strength value gates nothing further, it's     |
+//|         just handed to Claude so a bare majority reads differently |
+//|         from unanimous agreement. These read the CURRENT,          |
+//|         still-forming bar on each timeframe (the                   |
 //|         live reading in MT5 right now), unlike everything else in  |
 //|         this export which uses the last CLOSED bar - deliberately: |
 //|         this is a COST pre-filter, not a trading rule. By default  |
@@ -311,15 +315,20 @@ string DirectionLabel(const int hEma9, const int hEma21, const int hRsi, const i
 //| performance trade-off (it also skips setups - RSI-extreme bounces |
 //| and liquidity-sweep reversals - that are often contrarian to the  |
 //| higher timeframes by design, not just noise).                     |
+//| `strength` (out) is how many of the 3 agreed - 2 or 3 when the    |
+//| result is BUY/SELL, 0 for NONE - exported alongside so Claude can |
+//| tell a bare 2-of-3 majority from unanimous 3-of-3 agreement        |
+//| without it gating anything further in code.                       |
 //+------------------------------------------------------------------+
-string HtfAlignment(const string m5Dir, const string m15Dir, const string h1Dir)
+string HtfAlignment(const string m5Dir, const string m15Dir, const string h1Dir, int &strength)
 {
    int bulls = 0, bears = 0;
    if(m5Dir  == "BULLISH") bulls++; else if(m5Dir  == "BEARISH") bears++;
    if(m15Dir == "BULLISH") bulls++; else if(m15Dir == "BEARISH") bears++;
    if(h1Dir  == "BULLISH") bulls++; else if(h1Dir  == "BEARISH") bears++;
-   if(bulls >= 2) return("BUY");
-   if(bears >= 2) return("SELL");
+   if(bulls >= 2) { strength = bulls; return("BUY"); }
+   if(bears >= 2) { strength = bears; return("SELL"); }
+   strength = 0;
    return("NONE");
 }
 
@@ -405,14 +414,15 @@ void ExportChartData()
    string m5Dir  = DirectionLabel(hEma9M5, hEma21M5, hRsiM5, hMacdM5, 0);
    string m15Dir = DirectionLabel(hEma9M15, hEma21M15, hRsiM15, hMacdM15, 0);
    string h1Dir  = DirectionLabel(hEma9H1, hEma21H1, hRsiH1, hMacdH1, 0);
-   string htfAlign = HtfAlignment(m5Dir, m15Dir, h1Dir);
+   int    htfStrength = 0;
+   string htfAlign = HtfAlignment(m5Dir, m15Dir, h1Dir, htfStrength);
 
    FileWrite(handle, StringFormat(
       "#symbol=%s digits=%d point=%.5f tick_value=%.5f tick_size=%.5f volume_min=%.2f "
       "volume_max=%.2f volume_step=%.2f bid=%.5f ask=%.5f spread=%d equity=%.2f "
-      "m5_dir=%s m15_dir=%s h1_dir=%s htf_align=%s exported=%s",
+      "m5_dir=%s m15_dir=%s h1_dir=%s htf_align=%s htf_strength=%d exported=%s",
       _Symbol, digits, point, tickValue, tickSize, volMin, volMax, volStep,
-      tick.bid, tick.ask, spreadPts, equity, m5Dir, m15Dir, h1Dir, htfAlign, exportedStr));
+      tick.bid, tick.ask, spreadPts, equity, m5Dir, m15Dir, h1Dir, htfAlign, htfStrength, exportedStr));
 
    // --- §1/§2 indicator snapshot, last CLOSED bar, per timeframe ---
    FileWrite(handle, "##INDICATORS");

@@ -38,6 +38,14 @@ Claude for analysis" - so this version inverts it:
   - §9's 10-minute time-decay close - targeted at the specific stale
     position via `CLOSE_ID`, not a blanket close of everything open
   - §8's position-sizing arithmetic, applied to *Claude's* stop distance
+  - a daily circuit breaker (`--max-daily-loss-usd`/`--max-trades-per-day`,
+    both disabled by default) - a blunt, whole-account halt for the rest of
+    the UTC day, independent of setup type or standdown state, checked
+    before spending an API call at all (see below)
+  - a mechanical spread-widening gate (`--max-spread-mult`, disabled by
+    default) - skips the cycle when the live spread is abnormally wide
+    relative to its own recent rolling median, a cheap sign of a thin or
+    illiquid moment worth sitting out
 
 The constraints Claude is told about in its own system prompt (the ATR
 band, the confidence floor, the concurrency cap) are interpolated from the
@@ -55,18 +63,32 @@ Python/MQL5 and handed over as labeled hints), not code paths that decide.
 A one-shot analyst that never sees its own track record just repeats its
 mistakes. So every cycle, before Claude decides anything, `analyze_with_claude`
 hands it `state["trade_history"]` - its own past decisions (setup type,
-reasoning, stop/target) paired with what actually happened once the EA's
-outcome log resolved them (`resolve_pending` mutates the matching entry to
-`WIN`/`LOSS` as soon as it sees the outcome) - plus a win/loss tally per
-setup type (`summarize_recent_performance`). The system prompt's
-SELF-CORRECTION section asks Claude to read that before deciding: if a
-pattern shows up (a setup type losing repeatedly, a reasoning style that
-keeps misreading the regime, entries right as the HTF flips against them),
-say so and adjust, rather than repeat it next cycle. Claude's own answer to
-"what am I adjusting, if anything" comes back as a `self_correction` field
-alongside the trade decision, and gets written into the signal's reason and
-the trade log's notes so it's visible in the record, not just implicit in
-the number that came out.
+reasoning, stop/target, and which of the three mechanical setup hints
+actually fired that cycle - `hints_fired`, independent of the setup type
+Claude chose) paired with what actually happened once the EA's outcome log
+resolved them (`resolve_pending` mutates the matching entry to `WIN`/`LOSS`
+as soon as it sees the outcome) - plus a fuller performance picture from
+`summarize_recent_performance`: overall win rate/profit factor/avg win-loss,
+the same breakdown per setup type, and a confidence-calibration table
+(actual win rate observed in each confidence bucket Claude itself reported,
+so it can notice if a claimed 80% confidence has actually been winning
+closer to 50%, not just whether the last trade won or lost). The system
+prompt's SELF-CORRECTION section asks Claude to read all of that before
+deciding: if a pattern shows up (a setup type losing repeatedly, a
+reasoning style that keeps misreading the regime, entries right as the HTF
+flips against them, a confidence bucket running well below its own claimed
+rate), say so and adjust, rather than repeat it next cycle. Claude's own
+answer to "what am I adjusting, if anything" comes back as a
+`self_correction` field alongside the trade decision, and gets written into
+the signal's reason and the trade log's notes so it's visible in the
+record, not just implicit in the number that came out.
+
+`hints_fired` (also written to the trade log CSV) is telemetry, not another
+gate: it lets you separate, after the fact, three different patterns that
+otherwise look identical from `setup_type` alone - Claude agreeing with a
+mechanical hint that fired, trading `discretionary` with no hint firing at
+all, or going against what the hints show. Each is worth reading differently
+when deciding whether an archetype is carrying or dragging the account.
 
 This sits above, not instead of, the mechanical two-loss standdown: the
 standdown is a hard, guaranteed brake after exactly two losses; the
@@ -216,6 +238,47 @@ it. Either way, `state["htf_gate_skips"]` (live) and
 you see exactly how much the gate is actually doing on your own data, rather
 than trusting the number above to generalize.
 
+**`htf_strength`.** The EA also exports `htf_strength` (2 or 3 - how many of
+the 3 timeframes actually agreed; 0 when `htf_align` is `NONE`) alongside
+`htf_align`. It gates nothing further - the pass/fail decision is still the
+same binary 2-of-3 check - it's handed to Claude as context so a bare
+majority (2/3, one timeframe MIXED or opposed) reads differently from
+unanimous agreement (3/3) in its own reasoning, rather than collapsing both
+into the same "aligned" signal.
+
+## Two more mechanical, opt-in risk controls
+
+Both are disabled by default (0/unset) - existing behavior doesn't change
+unless you turn them on - and both gate the Claude call itself, the same
+place the HTF pre-filter does, so a tripped one costs nothing further in API
+spend either.
+
+**Daily circuit breaker** (`--max-daily-loss-usd`, `--max-trades-per-day`).
+A blunt, whole-account halt for the rest of the UTC day once either limit
+trips - unlike the §10 two-loss standdown (which is per setup type and
+clears once M5 returns to MIXED), this doesn't care which setup type is
+involved or why; it exists because nothing else in this system stops a bad
+session from compounding across *different* setup types one small loss at a
+time. `state["daily"]` (`trade_count`, `pnl`) is updated every cycle from
+the EA's ack/outcome logs and resets automatically at UTC midnight;
+`state["daily_breaker_skips"]` tracks how often it fired. Pick numbers that
+reflect your actual risk tolerance for a single day, not the per-trade risk
+% alone - `--risk-percent 2` with no daily cap still allows an unbounded
+losing streak in one session.
+
+**Mechanical spread-widening gate** (`--max-spread-mult`). The EA already
+exports the live spread every cycle; `update_spread_history` keeps a
+rolling window of the last 20 readings in state (there's no live EA to ask
+for a "normal" spread the way there is for `htf_align`), and the gate skips
+the cycle when the current spread exceeds `--max-spread-mult` times the
+window's median - a cheap, broker-agnostic way to sit out a thin/illiquid
+moment (rollover, a news spike) regardless of what the indicators say. It
+needs at least 10 samples before it will ever trip (a cold history never
+gates), and it's opt-in rather than on-by-default because "abnormal" is
+broker- and session-specific - watch `state["spread_history"]` for a while
+before picking a multiplier. `state["spread_gate_skips"]` tracks how often
+it fired.
+
 ## Why MQL5 still computes the indicators, not Python
 
 The spec only fetches 30 candles per timeframe - nowhere near enough history
@@ -347,7 +410,7 @@ line rather than failing.
 line, then `##`-delimited sections:
 
 ```
-#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY exported=2026.09.16T12:00:00
+#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY htf_strength=2 exported=2026.09.16T12:00:00
 ##INDICATORS
 tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower
 M5,2345.10,2344.80,58.20,0.35,27.40,1.85,2347.00,2340.20
@@ -367,13 +430,14 @@ time,open,high,low,close
 ```
 
 `adx14`/`atr14`/`bb_upper`/`bb_lower` are `NA` for M15/H1, since §1 only
-requires them on M5. The header's `m5_dir`/`m15_dir`/`h1_dir`/`htf_align`
-read the **current, still-forming bar** on each timeframe (the mechanical
-cost pre-filter, see below) - everything else in this file, including the
-`##INDICATORS` values just below, is the last **CLOSED** bar. The two can
-legitimately disagree (e.g. `m5_dir=BULLISH` here while `##INDICATORS`
-still shows the prior, not-yet-updated M5 close) - that's expected, not a
-bug.
+requires them on M5. The header's `m5_dir`/`m15_dir`/`h1_dir`/`htf_align`/
+`htf_strength` read the **current, still-forming bar** on each timeframe
+(the mechanical cost pre-filter, see above) - everything else in this file,
+including the `##INDICATORS` values just below, is the last **CLOSED** bar.
+The two can legitimately disagree (e.g. `m5_dir=BULLISH` here while
+`##INDICATORS` still shows the prior, not-yet-updated M5 close) - that's
+expected, not a bug. `htf_strength` is 2 or 3 (how many of the 3 timeframes
+agreed) and 0 whenever `htf_align=NONE`.
 
 **Trade signal** (`claude_trade_signals.txt`, one line, overwritten each
 cycle):
@@ -414,7 +478,7 @@ above - from `PENDING` to `WIN`/`LOSS`.
 
 | | Decided by |
 |---|---|
-| Whether Claude is even called this cycle | MQL5 (`htf_align`, mechanical 2-of-3 pre-filter), hard gate, `--no-htf-gate` to disable - see above |
+| Whether Claude is even called this cycle | MQL5 (`htf_align`, mechanical 2-of-3 pre-filter), hard gate, `--no-htf-gate` to disable; plus the opt-in daily circuit breaker and spread gate (both disabled by default) - see above |
 | Direction (BUY/SELL/NONE) | Claude, on every cycle the gate lets through, from live data |
 | Setup rationale (4.1/4.2/4.3/discretionary) | Claude |
 | Entry timing color, M1 sweep read | Claude |
@@ -430,7 +494,9 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | §9 time-decay close | Python, targeted at the specific stale position (`CLOSE_ID`), not everything open |
 | §10 two-loss standdown | Python, hard backstop (Claude is also told about it) |
 | Max concurrent signals | Python, hard backstop, default 1 (Claude is shown current pending count and told not to stack) |
-| §11 trade log / §13 report format | Python, populated with Claude's reasoning |
+| Daily loss/trade-count circuit breaker | Python, hard backstop, opt-in (`--max-daily-loss-usd`/`--max-trades-per-day`, both 0/disabled by default) |
+| Mechanical spread-widening gate | Python, hard backstop, opt-in (`--max-spread-mult`, 0/disabled by default) |
+| §11 trade log / §13 report format | Python, populated with Claude's reasoning + which mechanical hints actually fired (`hints_fired`) |
 | §12 DXY correlation / macro-news feeds | Not wired up - exposed to Claude as explicit "not evaluated" flags rather than silently ignored |
 
 ## Honest notes / risks

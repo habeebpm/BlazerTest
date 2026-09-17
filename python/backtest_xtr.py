@@ -182,8 +182,9 @@ def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m
     # "still-forming bar" to replay - every bar here is already closed - so
     # m5_row/m15_row/h1_row (closed-bar snapshots) are the closest
     # approximation available, not an exact replay of live behavior.
-    htf_align = bot.htf_gate_from_directions(
-        bot.direction_for(m5_row), bot.direction_for(m15_row), bot.direction_for(h1_row))
+    m5_dir, m15_dir, h1_dir = bot.direction_for(m5_row), bot.direction_for(m15_row), bot.direction_for(h1_row)
+    htf_align = bot.htf_gate_from_directions(m5_dir, m15_dir, h1_dir)
+    htf_strength = bot.htf_strength_from_directions(m5_dir, m15_dir, h1_dir)
 
     return bot.ChartSnapshot(
         symbol=symbol, digits=2, point=0.01, tick_value=1.0, tick_size=0.01,
@@ -191,6 +192,7 @@ def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m
         bid=close_price - half_spread, ask=close_price + half_spread,
         spread=int(round(spread_price / 0.01)), equity=equity, exported_at=as_of.isoformat(),
         htf_align=htf_align,
+        htf_strength=htf_strength,
         ind={"M5": m5_row, "M15": m15_row, "H1": h1_row},
         macd_hist_m5=macd_hist_m5,
         bars={"M1": _bars_frame(m1_closed), "M5": _bars_frame(m5_closed),
@@ -315,7 +317,8 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
 
     state = {"last_signal_id": 0, "last_bar_time": None, "outcome_lines_seen": 0,
              "ack_lines_seen": 0, "standdown": {}, "pending": {}, "trade_history": {},
-             "htf_gate_skips": 0}
+             "htf_gate_skips": 0, "daily_breaker_skips": 0, "spread_gate_skips": 0,
+             "daily": {}, "spread_history": []}
     equity = start_equity
     trades: list[dict] = []
     cycles_evaluated = 0
@@ -340,6 +343,28 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
 
         snap = build_snapshot_at(as_of, m1, m5, m15, h1, m5_ind, m15_ind, h1_ind, symbol, equity, spread_price)
         if snap is None:
+            continue
+
+        bot.update_spread_history(state, snap.spread)
+
+        # Same daily circuit breaker as the live pipeline (run_once) - a
+        # whole-account halt for the rest of the (simulated) UTC day once
+        # either limit trips, checked before spending a decision call.
+        daily_reason = bot.daily_breaker_reason(state, cfg)
+        if daily_reason:
+            state["daily_breaker_skips"] += 1
+            log(f"[{as_of}] daily circuit breaker tripped: {daily_reason}, skipping (no Claude call)")
+            continue
+
+        # Same mechanical spread-widening gate as run_once - with this
+        # harness's fixed synthetic --spread, the rolling median always
+        # equals the current reading, so this never trips unless spread is
+        # varied across the run; wired for parity, not because it matters
+        # against the default fixed-spread data.
+        spread_reason = bot.spread_gate_reason(state, snap.spread, cfg)
+        if spread_reason:
+            state["spread_gate_skips"] += 1
+            log(f"[{as_of}] spread gate tripped: {spread_reason}, skipping (no Claude call)")
             continue
 
         # Same mechanical cost pre-filter as the live pipeline (run_once) -
@@ -384,6 +409,10 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
                            "direction": decision["action"], "profit": result["profit"], "outcome": result["outcome"]}
         bot.resolve_pending(state, [outcome_record])
         bot.update_standdown(state, [outcome_record], m5_dir_now)
+        # The trade opens and resolves within this same iteration here (no
+        # live terminal in between), so both halves of the daily tracker -
+        # the trade_count from opening, the pnl from resolving - update together.
+        bot.update_daily_tracking(state, as_of, [{"status": "EXECUTED"}], [outcome_record])
 
         equity += result["profit"]
         open_exit_time = result["exit_time"]
@@ -398,11 +427,13 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
         log(f"[{as_of}] {decision['action']} {decision['setup_type']} conf={decision['confidence']:.0f} "
             f"-> {result['outcome']} ({result['reason']}) P&L={result['profit']:+.2f} equity={equity:.2f}")
 
-    return summarize(trades, start_equity, equity, cycles_evaluated, state["htf_gate_skips"])
+    return summarize(trades, start_equity, equity, cycles_evaluated, state["htf_gate_skips"],
+                      state["daily_breaker_skips"], state["spread_gate_skips"])
 
 
 def summarize(trades: list[dict], start_equity: float, end_equity: float,
-              cycles_evaluated: int, htf_gate_skips: int = 0) -> dict:
+              cycles_evaluated: int, htf_gate_skips: int = 0,
+              daily_breaker_skips: int = 0, spread_gate_skips: int = 0) -> dict:
     n = len(trades)
     wins = sum(1 for t in trades if t["profit"] >= 0)
     peak, max_dd, eq = start_equity, 0.0, start_equity
@@ -419,10 +450,11 @@ def summarize(trades: list[dict], start_equity: float, end_equity: float,
         if t["profit"] >= 0:
             rec["wins"] += 1
 
-    total_bars = cycles_evaluated + htf_gate_skips
+    total_bars = cycles_evaluated + htf_gate_skips + daily_breaker_skips + spread_gate_skips
     return {
         "cycles_evaluated": cycles_evaluated, "htf_gate_skips": htf_gate_skips,
         "htf_gate_skip_rate_pct": round(htf_gate_skips / total_bars * 100.0, 1) if total_bars else 0.0,
+        "daily_breaker_skips": daily_breaker_skips, "spread_gate_skips": spread_gate_skips,
         "trades": n, "wins": wins, "losses": n - wins,
         "win_rate_pct": round(wins / n * 100.0, 1) if n else 0.0,
         "start_equity": start_equity, "end_equity": round(end_equity, 2),
@@ -573,6 +605,45 @@ def selftest() -> None:
           f"{gated_report_same_window['htf_gate_skips']} skipped, "
           f"vs {nogate_report['cycles_evaluated']} calls with the gate off)")
 
+    # --- htf_strength: build_snapshot_at computes the same 2-vs-3 ordinal the live EA exports ---
+    assert snap.htf_strength in (0, 2, 3)
+    m5_dir_s = bot.direction_for(snap.ind["M5"])
+    m15_dir_s = bot.direction_for(snap.ind["M15"])
+    h1_dir_s = bot.direction_for(snap.ind["H1"])
+    assert snap.htf_strength == bot.htf_strength_from_directions(m5_dir_s, m15_dir_s, h1_dir_s)
+    print(f"  build_snapshot_at computes htf_strength consistently with htf_align: OK (strength={snap.htf_strength})")
+
+    # --- daily circuit breaker: a tight trade cap must measurably halt new signals mid-run ---
+    daily_cap_cfg = bot.BotConfig(
+        data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
+        outcome_file=Path("unused"), state_file=Path("unused"),
+        risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
+        min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
+        max_trades_per_day=1,
+    )
+    capped_report = run_backtest(m1_trend, daily_cap_cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
+                                  decide_fn=stub_decision, max_cycles=None)
+    assert capped_report["trades"] <= 1, "max_trades_per_day=1 must cap trades at 1 per simulated day"
+    if capped_report["cycles_evaluated"] + capped_report["htf_gate_skips"] < (
+            gated_report_same_window["cycles_evaluated"] + gated_report_same_window["htf_gate_skips"]):
+        assert capped_report["daily_breaker_skips"] > 0
+    print(f"  max_trades_per_day halts new signals once the cap is reached: OK "
+          f"(trades={capped_report['trades']} daily_breaker_skips={capped_report['daily_breaker_skips']})")
+
+    # --- spread gate: an artificially tight multiplier against a constant synthetic spread
+    #     must trip on every cycle once the rolling window has enough samples ---
+    tight_spread_cfg = bot.BotConfig(
+        data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
+        outcome_file=Path("unused"), state_file=Path("unused"),
+        risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
+        min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
+        max_spread_mult=1.0,
+    )
+    tight_state = {"spread_history": [10] * bot.SPREAD_HISTORY_MIN_SAMPLES}
+    assert bot.spread_gate_reason(tight_state, 25, tight_spread_cfg) is not None
+    assert bot.spread_gate_reason(tight_state, 10, tight_spread_cfg) is None
+    print("  spread_gate_reason trips once spread exceeds max_spread_mult x the rolling median: OK")
+
     # --- run_backtest wired to the REAL bot.analyze_with_claude path, with only the
     #     network call itself mocked - proves the harness calls production code, not a copy ---
     from unittest.mock import patch
@@ -614,6 +685,16 @@ def main(argv: list[str] | None = None) -> int:
                          help="disable the mechanical 2-of-3 HTF pre-filter (on by default) and call "
                               "Claude on every cycle - costs more API calls, but doesn't skip cycles a "
                               "contrarian 4.1/4.3 setup could fire on; see CLAUDE_SIGNAL_PIPELINE.md")
+    parser.add_argument("--max-daily-loss-usd", type=float, default=0.0,
+                         help="halt new signals for the rest of the (simulated) UTC day once realized "
+                              "pnl reaches -this many dollars; 0 disables the cap (default)")
+    parser.add_argument("--max-trades-per-day", type=int, default=0,
+                         help="halt new signals for the rest of the (simulated) UTC day once this many "
+                              "trades have executed; 0 disables the cap (default)")
+    parser.add_argument("--max-spread-mult", type=float, default=0.0,
+                         help="skip the cycle when the (synthetic, fixed) spread exceeds this x the "
+                              "recent rolling median; 0 disables the gate (default) - with a fixed "
+                              "--spread this gate never trips, it only matters if you vary spread yourself")
     parser.add_argument("--time-decay-seconds", type=float, default=600.0)
     parser.add_argument("--trail-usd", type=float, default=TRAIL_USD_DEFAULT)
     parser.add_argument("--spread", type=float, default=0.25,
@@ -649,6 +730,8 @@ def main(argv: list[str] | None = None) -> int:
         fallback_equity=args.start_equity, time_decay_seconds=args.time_decay_seconds,
         min_confidence=args.min_confidence, min_atr_mult=args.min_atr_mult, max_atr_mult=args.max_atr_mult,
         max_concurrent_signals=args.max_concurrent_signals, require_htf_gate=not args.no_htf_gate,
+        max_daily_loss_usd=args.max_daily_loss_usd, max_trades_per_day=args.max_trades_per_day,
+        max_spread_mult=args.max_spread_mult,
     )
     decide_fn = stub_decision if args.stub else None
     log = print if args.verbose else (lambda *a, **k: None)
