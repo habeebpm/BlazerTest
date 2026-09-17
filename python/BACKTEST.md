@@ -142,3 +142,11 @@ measured here.
   over the same data with the same model can produce different decisions.
   A backtest here is a sample of how Claude tends to decide on this data,
   not a single ground-truth answer.
+- **Trades are always strictly sequential, never overlapping.** Once a
+  signal opens, `run_backtest` skips every cycle (`open_exit_time`) until
+  that trade's outcome resolves, before the next one is even considered -
+  there's no live terminal here to plausibly open a second position while
+  the first is still working. That means `--max-concurrent-signals` above
+  1 is a live-only setting: this harness can never actually exercise
+  `validate_decision`'s max-concurrent-signals backstop, since by
+  construction there's never more than one signal pending at a time.

@@ -50,7 +50,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -136,18 +136,22 @@ def _bars_frame(df_slice: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m15: pd.DataFrame,
-                       h1: pd.DataFrame, m5_ind: dict, m15_ind: dict, h1_ind: dict,
-                       symbol: str, equity: float, spread_price: float) -> "bot.ChartSnapshot | None":
-    """Builds the exact same ChartSnapshot dataclass claude_signal_bot's
-    live path constructs from the EA's export file - here, from historical
-    bars instead. Returns None if there isn't yet enough closed history on
-    any timeframe (early in the warm-up window)."""
-    m1_closed = closed_bars_as_of(m1, 1, as_of, 30)
+def mechanical_context_at(as_of: pd.Timestamp, m5: pd.DataFrame, m15: pd.DataFrame, h1: pd.DataFrame,
+                           m5_ind: dict, m15_ind: dict, h1_ind: dict) -> dict | None:
+    """The subset of a snapshot needed to evaluate the mechanical HTF gate -
+    closed-bar indicator rows plus the resulting direction/htf_align/
+    htf_strength - without the heavier bar-frame construction
+    (`_bars_frame`, profiled at roughly a third of a full backtest's
+    runtime) a complete ChartSnapshot also carries. Split out so
+    run_backtest can check the (cheap) HTF gate, and the even cheaper
+    daily-breaker/spread gates ahead of it, before paying for that work on
+    a cycle any of the three is going to skip anyway. Returns None if
+    there isn't yet enough closed M5/M15/H1 history (early warm-up) or the
+    M5 basics aren't available yet."""
     m5_closed = closed_bars_as_of(m5, 5, as_of, 30)
     m15_closed = closed_bars_as_of(m15, 15, as_of, 30)
     h1_closed = closed_bars_as_of(h1, 60, as_of, 30)
-    if m1_closed.empty or m5_closed.empty or m15_closed.empty or h1_closed.empty:
+    if m5_closed.empty or m15_closed.empty or h1_closed.empty:
         return None
 
     idx5, idx15, idx1h = m5_closed.index[-1], m15_closed.index[-1], h1_closed.index[-1]
@@ -166,10 +170,6 @@ def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m
     if any(m5_row[k] is None for k in M5_IND_KEYS_BASIC):
         return None   # still inside the indicator warm-up window
 
-    macd_hist_m5 = m5_ind["macd_hist"].loc[:idx5].tail(10).tolist()
-    close_price = float(m5_closed["close"].iloc[-1])
-    half_spread = spread_price / 2.0
-
     # No live EA here to compute/export htf_align, so derive it locally via
     # the identical rule (bot.htf_gate_from_directions) - see that
     # function's docstring for why this is the one place Python computes
@@ -183,20 +183,51 @@ def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m
     # m5_row/m15_row/h1_row (closed-bar snapshots) are the closest
     # approximation available, not an exact replay of live behavior.
     m5_dir, m15_dir, h1_dir = bot.direction_for(m5_row), bot.direction_for(m15_row), bot.direction_for(h1_row)
-    htf_align = bot.htf_gate_from_directions(m5_dir, m15_dir, h1_dir)
-    htf_strength = bot.htf_strength_from_directions(m5_dir, m15_dir, h1_dir)
+    return {
+        "m5_closed": m5_closed, "m15_closed": m15_closed, "h1_closed": h1_closed, "idx5": idx5,
+        "m5_row": m5_row, "m15_row": m15_row, "h1_row": h1_row,
+        "htf_align": bot.htf_gate_from_directions(m5_dir, m15_dir, h1_dir),
+        "htf_strength": bot.htf_strength_from_directions(m5_dir, m15_dir, h1_dir),
+    }
+
+
+def build_snapshot_at(as_of: pd.Timestamp, m1: pd.DataFrame, m5: pd.DataFrame, m15: pd.DataFrame,
+                       h1: pd.DataFrame, m5_ind: dict, m15_ind: dict, h1_ind: dict,
+                       symbol: str, equity: float, spread_price: float,
+                       ctx: dict | None = None) -> "bot.ChartSnapshot | None":
+    """Builds the exact same ChartSnapshot dataclass claude_signal_bot's
+    live path constructs from the EA's export file - here, from historical
+    bars instead. Returns None if there isn't yet enough closed history on
+    any timeframe (early in the warm-up window).
+
+    `ctx`, if given, is a `mechanical_context_at(...)` result a caller
+    already computed (e.g. to check the HTF gate) - reused here instead of
+    recomputing the same closed-bar indicator rows. Computed internally if
+    omitted, so existing callers (selftest included) are unaffected."""
+    if ctx is None:
+        ctx = mechanical_context_at(as_of, m5, m15, h1, m5_ind, m15_ind, h1_ind)
+        if ctx is None:
+            return None
+
+    m1_closed = closed_bars_as_of(m1, 1, as_of, 30)
+    if m1_closed.empty:
+        return None
+
+    macd_hist_m5 = m5_ind["macd_hist"].loc[:ctx["idx5"]].tail(10).tolist()
+    close_price = float(ctx["m5_closed"]["close"].iloc[-1])
+    half_spread = spread_price / 2.0
 
     return bot.ChartSnapshot(
         symbol=symbol, digits=2, point=0.01, tick_value=1.0, tick_size=0.01,
         volume_min=0.01, volume_max=50.0, volume_step=0.01,
         bid=close_price - half_spread, ask=close_price + half_spread,
         spread=int(round(spread_price / 0.01)), equity=equity, exported_at=as_of.isoformat(),
-        htf_align=htf_align,
-        htf_strength=htf_strength,
-        ind={"M5": m5_row, "M15": m15_row, "H1": h1_row},
+        htf_align=ctx["htf_align"],
+        htf_strength=ctx["htf_strength"],
+        ind={"M5": ctx["m5_row"], "M15": ctx["m15_row"], "H1": ctx["h1_row"]},
         macd_hist_m5=macd_hist_m5,
-        bars={"M1": _bars_frame(m1_closed), "M5": _bars_frame(m5_closed),
-              "M15": _bars_frame(m15_closed), "H1": _bars_frame(h1_closed)},
+        bars={"M1": _bars_frame(m1_closed), "M5": _bars_frame(ctx["m5_closed"]),
+              "M15": _bars_frame(ctx["m15_closed"]), "H1": _bars_frame(ctx["h1_closed"])},
     )
 
 
@@ -230,8 +261,15 @@ def simulate_outcome(m1: pd.DataFrame, entry_time, direction: str, entry_price: 
     backtesting, not a claim about the true tick-level path.
     """
     horizon_end = entry_time + timedelta(seconds=decay_seconds)
+    # entry_time is the position's open instant, and (on continuous M1
+    # data) is also the OPEN label of the very next M1 bar - that bar spans
+    # [entry_time, entry_time+1min), i.e. entirely AFTER entry, so it's a
+    # real part of the trade's life and must be included, not skipped. An
+    # earlier version excluded it (`path.index > entry_time`), meaning
+    # every simulated trade was blind to its own first minute - a stop or
+    # target touched immediately after entry was silently missed and the
+    # trade evaluated as if it survived unscathed into the second minute.
     path = m1.loc[entry_time:horizon_end]
-    path = path[path.index > entry_time]
 
     trail_distance = (trail_usd / (lot * value_per_unit)) if (lot > 0 and value_per_unit > 0) else None
     current_sl = sl
@@ -323,6 +361,10 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
     trades: list[dict] = []
     cycles_evaluated = 0
     open_exit_time = None
+    # spread is a fixed, run-wide constant here (no live spread feed to vary
+    # it cycle to cycle), so it can be computed once rather than re-derived
+    # from a snapshot every cycle.
+    spread_int = int(round(spread_price / 0.01))
 
     for i in range(min(warmup_bars, len(m5) - 1), len(m5)):
         as_of = m5.index[i] + timedelta(minutes=5)
@@ -334,6 +376,15 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
             m5_dir_now = bot.direction_for(m5_basic)
         bot.update_standdown(state, [], m5_dir_now)   # cheap - lets standdown-reset tracking progress every bar
 
+        # Mirrors run_once calling update_daily_tracking on every cycle,
+        # whether or not a trade happens - the empty acks/outcomes here are
+        # a no-op except for rolling state["daily"] onto a new UTC day.
+        # Without this, a breaker tripped once would never reset for the
+        # rest of the backtest: nothing else ever calls
+        # update_daily_tracking once a tripped breaker stops any further
+        # trade from opening (and therefore resolving) to trigger it.
+        bot.update_daily_tracking(state, as_of, [], [])
+
         if open_exit_time is not None and as_of < open_exit_time:
             continue
         open_exit_time = None
@@ -341,15 +392,13 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
         if max_cycles is not None and cycles_evaluated >= max_cycles:
             break
 
-        snap = build_snapshot_at(as_of, m1, m5, m15, h1, m5_ind, m15_ind, h1_ind, symbol, equity, spread_price)
-        if snap is None:
-            continue
-
-        bot.update_spread_history(state, snap.spread)
+        bot.update_spread_history(state, spread_int)
 
         # Same daily circuit breaker as the live pipeline (run_once) - a
         # whole-account halt for the rest of the (simulated) UTC day once
-        # either limit trips, checked before spending a decision call.
+        # either limit trips, checked before spending a decision call. Both
+        # this and the spread gate below need no snapshot at all, so they're
+        # checked before paying for any indicator lookup.
         daily_reason = bot.daily_breaker_reason(state, cfg)
         if daily_reason:
             state["daily_breaker_skips"] += 1
@@ -361,19 +410,33 @@ def run_backtest(m1: pd.DataFrame, cfg: "bot.BotConfig", symbol: str, start_equi
         # equals the current reading, so this never trips unless spread is
         # varied across the run; wired for parity, not because it matters
         # against the default fixed-spread data.
-        spread_reason = bot.spread_gate_reason(state, snap.spread, cfg)
+        spread_reason = bot.spread_gate_reason(state, spread_int, cfg)
         if spread_reason:
             state["spread_gate_skips"] += 1
             log(f"[{as_of}] spread gate tripped: {spread_reason}, skipping (no Claude call)")
             continue
 
+        # The mechanical HTF gate only needs closed-bar indicator rows, not
+        # the full snapshot (raw M1/M5/M15/H1 bar frames, profiled at
+        # roughly a third of a full run's time) - so check it against the
+        # cheaper mechanical_context_at() first, and only pay for the full
+        # build_snapshot_at() on a cycle that's actually going through.
+        ctx = mechanical_context_at(as_of, m5, m15, h1, m5_ind, m15_ind, h1_ind)
+        if ctx is None:
+            continue   # still inside the indicator warm-up window
+
         # Same mechanical cost pre-filter as the live pipeline (run_once) -
         # counted separately from cycles_evaluated so the backtest report
         # shows the actual reduction in Claude calls, not just trade counts.
-        if cfg.require_htf_gate and snap.htf_align == "NONE":
+        if cfg.require_htf_gate and ctx["htf_align"] == "NONE":
             state["htf_gate_skips"] += 1
             log(f"[{as_of}] mechanical HTF gate: htf_align=NONE, skipping (no Claude call)")
             continue
+
+        snap = build_snapshot_at(as_of, m1, m5, m15, h1, m5_ind, m15_ind, h1_ind, symbol, equity,
+                                  spread_price, ctx=ctx)
+        if snap is None:
+            continue   # m1 warm-up edge case; effectively unreachable since m1 always warms up first
 
         cycles_evaluated += 1
 
@@ -547,6 +610,22 @@ def selftest() -> None:
     assert expired["reason"] == "EXPIRED"
     print(f"  simulate_outcome expires via time-decay when neither level is touched: OK ({expired})")
 
+    # --- regression: the bar labeled EXACTLY at entry_time (the position's
+    #     first minute - real on continuous M1 data, since entry_time is
+    #     also the open label of the very next M1 bar) must not be skipped.
+    #     An earlier version excluded it via `path.index > entry_time`,
+    #     making every simulated trade blind to a stop/target touched in
+    #     its own opening minute. ---
+    first_minute_path = pd.DataFrame(
+        {"open": [100.0], "high": [100.1], "low": [98.0], "close": [98.5]},
+        index=[entry_time],   # the bar spanning [entry_time, entry_time+1min) - real trade history
+    )
+    immediate_sl = simulate_outcome(first_minute_path, entry_time, "BUY", 100.0, 99.0, 105.0, 0.01, 100.0, 6000)
+    assert immediate_sl["reason"] == "SL" and immediate_sl["exit_time"] == entry_time, \
+        f"a stop touched in the trade's own first minute must not be missed: {immediate_sl}"
+    print(f"  simulate_outcome does not skip the M1 bar at entry_time itself (first-minute stops count): OK "
+          f"({immediate_sl})")
+
     # --- build_snapshot_at produces a real, usable ChartSnapshot ---
     m1_syn = _synthetic_m1(hours=30)
     m5 = resample_ohlc(m1_syn, 5)
@@ -613,7 +692,26 @@ def selftest() -> None:
     assert snap.htf_strength == bot.htf_strength_from_directions(m5_dir_s, m15_dir_s, h1_dir_s)
     print(f"  build_snapshot_at computes htf_strength consistently with htf_align: OK (strength={snap.htf_strength})")
 
-    # --- daily circuit breaker: a tight trade cap must measurably halt new signals mid-run ---
+    # --- daily circuit breaker: a per-day cap, not a permanent one-shot for the whole run ---
+    # Unit-level first: update_daily_tracking must roll the tracker over on
+    # a new UTC day even when called with no new activity that cycle - this
+    # is exactly what lets a tripped breaker recover the next day, rather
+    # than permanently halting the rest of the backtest. (run_backtest now
+    # calls it unconditionally every cycle for this reason - previously it
+    # was only called when a trade resolved, so once the breaker tripped,
+    # no further trade could ever open to resolve and roll the date, and
+    # the breaker stayed tripped for the rest of the run - a real bug this
+    # test would have caught.)
+    reset_state: dict = {}
+    day1 = datetime(2026, 9, 16, 10, 0, tzinfo=timezone.utc)
+    bot.update_daily_tracking(reset_state, day1, [{"status": "EXECUTED"}], [{"profit": -10.0}])
+    assert reset_state["daily"]["trade_count"] == 1
+    day2 = datetime(2026, 9, 17, 0, 5, tzinfo=timezone.utc)
+    bot.update_daily_tracking(reset_state, day2, [], [])   # no activity, must still roll onto the new day
+    assert reset_state["daily"]["trade_count"] == 0 and reset_state["daily"]["pnl"] == 0.0, \
+        "a new UTC day must reset the tracker even on a cycle with no new trade activity"
+    print("  update_daily_tracking rolls onto a new UTC day even on an activity-free cycle: OK")
+
     daily_cap_cfg = bot.BotConfig(
         data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
         outcome_file=Path("unused"), state_file=Path("unused"),
@@ -623,12 +721,14 @@ def selftest() -> None:
     )
     capped_report = run_backtest(m1_trend, daily_cap_cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
                                   decide_fn=stub_decision, max_cycles=None)
-    assert capped_report["trades"] <= 1, "max_trades_per_day=1 must cap trades at 1 per simulated day"
-    if capped_report["cycles_evaluated"] + capped_report["htf_gate_skips"] < (
-            gated_report_same_window["cycles_evaluated"] + gated_report_same_window["htf_gate_skips"]):
-        assert capped_report["daily_breaker_skips"] > 0
-    print(f"  max_trades_per_day halts new signals once the cap is reached: OK "
-          f"(trades={capped_report['trades']} daily_breaker_skips={capped_report['daily_breaker_skips']})")
+    by_day: dict[str, int] = {}
+    for t in capped_report["trade_log"]:
+        day = t["entry_time"].strftime("%Y-%m-%d")
+        by_day[day] = by_day.get(day, 0) + 1
+    assert all(n <= 1 for n in by_day.values()), f"max_trades_per_day=1 must cap trades at 1 PER DAY: {by_day}"
+    assert capped_report["daily_breaker_skips"] > 0, "the breaker must actually trip at least once for this to test anything"
+    print(f"  max_trades_per_day caps trades at 1 per simulated UTC day, resetting daily rather than "
+          f"halting the whole run: OK (trades by day={by_day}, daily_breaker_skips={capped_report['daily_breaker_skips']})")
 
     # --- spread gate: an artificially tight multiplier against a constant synthetic spread
     #     must trip on every cycle once the rolling window has enough samples ---
