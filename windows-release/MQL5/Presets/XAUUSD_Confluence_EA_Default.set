@@ -1,0 +1,79 @@
+; XAUUSD_Confluence_EA - default preset
+; In MT5: Strategy Tester > Expert Advisor: XAUUSD_Confluence_EA > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; Note: InpWorkTF and InpTrendTF are stored below as raw ENUM_TIMEFRAMES values
+; (5 = M5, 16388 = H4). If your MT5 build does not accept these lines for the
+; timeframe inputs, just set them manually in the Inputs tab:
+;   InpWorkTF  -> M5
+;   InpTrendTF -> H4
+;
+InpMagicNumber=20260908
+InpSlippagePoints=30
+InpTradeXAUUSDOnly=true
+InpMaxOpenPositions=4
+InpAllowOpposite=false
+InpWorkTF=5
+InpTrendTF=16388
+InpTrendEmaPeriod=200
+InpEmaFastPeriod=20
+InpEmaSlowPeriod=50
+InpCrossLookbackBars=8
+InpMacdFast=12
+InpMacdSlow=26
+InpMacdSignal=9
+InpRsiPeriod=14
+InpRsiUpperBlock=70.0
+InpRsiLowerBlock=30.0
+InpRsiMidline=50.0
+InpMinConfluences=2
+InpRequireConfirm=true
+InpMinConfirmed=1
+InpRequireTrendConfluence=false
+InpConfirmEmaGapAtr=0.25
+InpConfirmRsiMargin=5.0
+InpConfirmAdxLevel=28.0
+InpConfirmDiGap=8.0
+InpUseBandsVeto=true
+InpMinConfidence=50.0
+InpShowConfidence=true
+InpAdxPeriod=14
+InpAdxMinLevel=22.0
+InpAtrPeriod=14
+InpBandsPeriod=20
+InpBandsDeviation=2.0
+InpUseFixedLot=true
+InpFixedLot=0.01
+InpRiskPercent=0.2
+InpUseFixedStops=true
+InpFixedStopPips=60.0
+InpFixedTrailPips=30.0
+InpAtrSlMultiplier=5.8
+InpRiskRewardRatio=1.8
+InpMaxLotSize=5.0
+InpMaxDailyLossPct=1.0
+InpUseDailyTarget=false
+InpDailyTargetPct=0.5
+InpCloseOnTarget=true
+InpLockDailyGains=true
+InpLockAfterPct=0.5
+InpGiveBackPct=50.0
+InpMaxTradesPerDay=0
+InpBreakevenAtrMult=2.0
+InpBreakevenBufferPts=20
+InpTrailStartAtrMult=2.9
+InpTrailAtrMult=2.9
+InpUseBrokerSession=true
+InpEntryOpenBufferMin=5
+InpEntryCloseBufferMin=30
+InpFlattenBeforeClose=true
+InpFlattenBeforeCloseMin=10
+InpUseSessionFilter=true
+InpSessionGmtOffset=4.0
+InpSessionStartHour=6
+InpSessionStartMin=0
+InpSessionEndHour=23
+InpSessionEndMin=0
+InpCloseBeforeWeekend=true
+InpWeekendCloseHour=20
+InpMaxSpreadPoints=350
