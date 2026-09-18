@@ -1,0 +1,170 @@
+# Backtesting the XTR pipeline
+
+Short answer: **yes, it's possible, with one honest caveat** — a *real* backtest
+(one that reflects what Claude would actually have decided) has to call the
+real Claude API for every historical decision point, since that's the whole
+point of this pipeline (see `CLAUDE_SIGNAL_PIPELINE.md`). There's no rule
+table left to replay for free the way `simulate.py` replays the other,
+mechanical EA. What this harness (`backtest_xtr.py`) gives you is everything
+*around* that: real historical data, the exact production decision/
+validation/sizing code (not a reimplementation), and historically-accurate
+trade-outcome simulation — so a real run costs API calls, not engineering.
+
+## What's actually in this repo right now
+
+- **`backtest_xtr.py`** — the harness. Resamples M1 bars into M5/M15/H1,
+  computes the same MT5-matching indicators the EA exports live (via
+  `indicators.py`), builds a `ChartSnapshot` at each historical M5 close with
+  no look-ahead, and calls `claude_signal_bot.py`'s own `analyze_with_claude`
+  / `validate_decision` / `position_size` / `register_trade_history` /
+  `update_standdown` functions directly — the same functions the live loop
+  uses, imported, not copied. It then simulates each trade's outcome
+  (SL/TP/trailing-stop touch or time-decay) by scanning forward through the
+  M1 path.
+- **`backtest_data/xauusd_1min_sample.csv`** — 2,500 real M1 XAU/USD bars
+  (2026-09-14 23:12 through 2026-09-16 16:51 UTC), fetched live via the
+  Twelve Data API, in the exact format the harness expects. Real market
+  data, not synthetic — good for a first real run.
+- **Verified, end to end**: `python backtest_xtr.py --selftest` passes
+  (resampling, the no-look-ahead boundary logic, outcome simulation
+  including the trailing stop, and the full replay loop wired to the real
+  `bot.analyze_with_claude` with only the network call itself mocked). A
+  `--stub` run against the real sample CSV above completed cleanly — 250
+  cycles evaluated, 5 trades taken, a sensible equity curve. **Neither of
+  those is a performance backtest** — see the next section.
+
+## What I could not do in this session, and why
+
+I did **not** run a real Claude-powered backtest, because doing so needs an
+`ANTHROPIC_API_KEY` this session doesn't have. That's the one real blocker —
+not the data (fetched above), not the engineering (built and tested above).
+
+I also did not fabricate stand-in performance numbers. `--stub` mode exists
+so the harness's *mechanics* could be verified without a key, but its
+decisions come from a content-blind function that just takes whichever
+mechanical hint fires (see `stub_decision()` in `backtest_xtr.py`) — it
+applies no judgment, is not a strategy, and its win rate/P&L mean nothing
+about how Claude would actually have traded this data. Every place it
+appears (CLI output, the module docstring, the function's own docstring)
+says so explicitly, specifically so a `--stub` result never gets mistaken
+for a real one down the line.
+
+## How to run a real backtest
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# sanity check on a handful of cycles first - cheap, fast, confirms the setup
+python backtest_xtr.py --csv backtest_data/xauusd_1min_sample.csv --max-cycles 10 -v
+
+# the full sample file (see the cost estimate below before running this)
+python backtest_xtr.py --csv backtest_data/xauusd_1min_sample.csv --out trades.csv
+```
+
+Bring your own data for a longer or different window: any M1 OHLC CSV with a
+header `time,open,high,low,close`, ascending chronological order, `time`
+parseable by pandas. `python backtest_xtr.py --selftest` needs neither a key
+nor a data file.
+
+Useful flags: `--max-cycles N` (hard cap on API calls — the real cost
+control), `--start-equity`, `--risk-percent`, `--min-confidence`,
+`--min-atr-mult`/`--max-atr-mult`, `--max-concurrent-signals`,
+`--time-decay-seconds`, `--trail-usd`, `--spread` (fixed synthetic spread in
+price units), `--warmup-bars` (M5 bars skipped for indicator warm-up,
+default 250), `--out` (write the trade log to CSV). Also available, both
+disabled by default so they don't change existing results unless you opt
+in — see `CLAUDE_SIGNAL_PIPELINE.md` § "Two more mechanical, opt-in risk
+controls" for what they do live: `--max-daily-loss-usd`/
+`--max-trades-per-day` (the daily circuit breaker) and `--max-spread-mult`
+(the spread gate — with this harness's fixed `--spread`, the rolling
+median always equals the current reading, so it never actually trips
+unless you vary spread yourself; it's wired here for parity with the live
+bot, not because it does anything against the bundled sample). The report
+JSON's `daily_breaker_skips`/`spread_gate_skips` show whether either fired.
+
+## Cost estimate (measured, not guessed)
+
+I built a real snapshot from the sample data and measured the actual prompt
+`build_analysis_prompt` produces: **~2,950 tokens per cycle** (~1,490 system
++ ~1,460 user; grows somewhat as trade history accumulates — recent-trades
+context is capped at 8 entries). Output is capped at 700 tokens but a
+typical decision runs well under that. At Claude Sonnet 5 pricing ($2.00 /
+$10.00 per 1M input/output tokens):
+
+| Scope | Cycles (gate off) | Cycles (gate on, default) | Rough cost (gate on) |
+|---|---|---|---|
+| Sanity check (`--max-cycles 10`) | 10 | ~5-6 | ~$0.05 |
+| The bundled 2-day sample, full run | 250 | **137 (measured)** | ~$1.40 |
+| One month of M1 data | ~8,000 | ~4,400 (at the same ratio) | ~$40-45 |
+
+These are ballpark figures from a token/char estimate, not
+`messages.count_tokens` — close enough to plan a run, not precise enough to
+budget a large one exactly. **Always set `--max-cycles`** until you've seen
+one real run's actual `usage` and cost.
+
+The "gate on" cycle counts assume the mechanical 2-of-3 HTF pre-filter
+(`ClaudeSignalEA.mq5`'s `htf_align`, on by default - see
+`CLAUDE_SIGNAL_PIPELINE.md` § "The mechanical HTF pre-filter") is active.
+137/250 is a real measurement on the bundled sample, not an estimate -
+**a 45.2% reduction in Claude calls** for this window. It also trades away
+coverage of setups (RSI-extreme bounce, liquidity sweep) that don't need
+HTF agreement by design; pass `--no-htf-gate` to see every cycle instead, at
+the "gate off" cost.
+
+**One more caveat on that 45.2%:** the live EA computes `htf_align` from
+the *current, still-forming* bar (`shift=0`), on purpose - see
+`CLAUDE_SIGNAL_PIPELINE.md`. This backtest harness has no live/forming-bar
+data to replay (historical M1 bars are all already closed), so
+`build_snapshot_at()` necessarily computes `htf_align` on **closed** bars
+instead. 45.2% is real evidence that this style of gate meaningfully cuts
+calls; it is not a promise that a live run will skip exactly 45.2% of the
+time - that number is only ever accurate for the closed-bar approximation
+measured here.
+
+## Simplifications this harness makes (disclosed, not hidden)
+
+- **Fixed synthetic spread** (`--spread`, default $0.25), not the live
+  historical spread — Twelve Data's free time series doesn't include it.
+- **OHLC-only intrabar ordering.** A bar's high/low don't tell you which
+  came first. `simulate_outcome()` resolves an ambiguous bar stop-first
+  (conservative) and applies that bar's trailing-stop update before
+  checking the stop against it — standard, slightly conservative choices
+  for bar-level backtesting, not a claim about the true tick path. See the
+  function's own docstring.
+- **No weekend/holiday gap handling beyond what's in the data** — if your
+  CSV has a gap, the harness just resamples across it; it doesn't know the
+  market was closed.
+- **No news awareness at all** — the live EA can optionally query MT5's
+  Economic Calendar (see CLAUDE_SIGNAL_PIPELINE.md § "News check"); this
+  harness has no calendar data for historical dates, so `ChartSnapshot`'s
+  news fields are always unset here and `macro_news_context()` always
+  reports "not evaluated." A real backtest run's decisions never see the
+  news-awareness guidance in `TRADING_KNOWLEDGE` actually triggered.
+- **No historical DXY feed either** — same reasoning as news above:
+  `build_snapshot_at()` has no historical DXY-proxy data to replay, so
+  `ChartSnapshot.dxy_dir` is always its default `"NA"` here and
+  `dxy_correlation_context()` always reports "not evaluated."
+- **COT is real, current-date data, not historical** — unlike news/DXY,
+  `fetch_cot_gold()` always fetches the *latest* CFTC report regardless of
+  which historical dates the M1 data covers, so it's **off by default here**
+  (`--enable-cot` to turn it on), unlike the live bot where it's on by
+  default. A backtest over 2024 data would otherwise silently see today's
+  COT positioning, not 2024's - `--enable-cot` is there for exercising the
+  fetch/cache path itself (e.g. against very recent data), not for a
+  realistic historical backtest.
+- **The self-correction loop sees only this run's own history.** Realistic
+  in spirit (it's exactly what a live run would build up over time from a
+  cold start), but a backtest starting cold means the first several cycles
+  get no performance history to react to — by design, not a bug.
+- **Claude's real-time judgment isn't perfectly deterministic.** Two runs
+  over the same data with the same model can produce different decisions.
+  A backtest here is a sample of how Claude tends to decide on this data,
+  not a single ground-truth answer.
+- **Trades are always strictly sequential, never overlapping.** Once a
+  signal opens, `run_backtest` skips every cycle (`open_exit_time`) until
+  that trade's outcome resolves, before the next one is even considered -
+  there's no live terminal here to plausibly open a second position while
+  the first is still working. That means `--max-concurrent-signals` above
+  1 is a live-only setting: this harness can never actually exercise
+  `validate_decision`'s max-concurrent-signals backstop, since by
+  construction there's never more than one signal pending at a time.

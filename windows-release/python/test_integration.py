@@ -1,0 +1,377 @@
+"""
+Integration test: drives trader.py against a fake MetaTrader5 module.
+
+Runs anywhere (no Windows, no terminal, no broker) and exercises the real
+code paths - preflight, signal evaluation, order construction, the trailing
+stop and the entry guards - by injecting a stub into sys.modules.
+
+    python test_integration.py
+"""
+import pathlib
+import sys, types, time
+from dataclasses import replace
+from datetime import datetime, timedelta
+import numpy as np, pandas as pd
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+# ---------------- build a fake MetaTrader5 module ----------------
+m = types.ModuleType("MetaTrader5")
+for i, name in enumerate(["TIMEFRAME_M1","TIMEFRAME_M5","TIMEFRAME_M15","TIMEFRAME_M30",
+                          "TIMEFRAME_H1","TIMEFRAME_H4","TIMEFRAME_D1","TIMEFRAME_W1"]):
+    setattr(m, name, i+1)
+m.TRADE_ACTION_DEAL, m.TRADE_ACTION_SLTP = 1, 2
+m.ORDER_TYPE_BUY, m.ORDER_TYPE_SELL = 0, 1
+m.POSITION_TYPE_BUY, m.POSITION_TYPE_SELL = 0, 1
+m.ORDER_TIME_GTC = 0
+m.ORDER_FILLING_FOK, m.ORDER_FILLING_IOC, m.ORDER_FILLING_RETURN = 0, 1, 2
+m.TRADE_RETCODE_DONE = 10009
+m.TRADE_RETCODE_MARKET_CLOSED = 10018
+m.SYMBOL_TRADE_MODE_DISABLED, m.SYMBOL_TRADE_MODE_LONGONLY = 0, 1
+m.SYMBOL_TRADE_MODE_SHORTONLY, m.SYMBOL_TRADE_MODE_CLOSEONLY = 2, 3
+m.SYMBOL_TRADE_MODE_FULL = 4
+
+SPREAD_POINTS = 25
+STOPS_LEVEL = 0
+sent = []
+
+def realistic(n, start, drift, sigma, seed):
+    rng = np.random.default_rng(seed)
+    return start + np.cumsum(drift + rng.normal(0.0, sigma, n))
+
+PRICES_M15 = realistic(900, 2000.0, 0.20, 1.5, 17)
+
+def _rates(count, closes, minutes):
+    closes = closes[-count:]
+    end = datetime(2026, 9, 11, 15, 0)
+    times = [(end - timedelta(minutes=minutes*(len(closes)-1-i))).timestamp() for i in range(len(closes))]
+    rng = np.random.default_rng(1)
+    noise = np.abs(rng.normal(0, 0.4, len(closes)))
+    return np.array(
+        [(t, c-0.1, c+nz, c-nz, c, 100, SPREAD_POINTS, 0)
+         for t, c, nz in zip(times, closes, noise)],
+        dtype=[("time","<i8"),("open","<f8"),("high","<f8"),("low","<f8"),
+               ("close","<f8"),("tick_volume","<i8"),("spread","<i4"),("real_volume","<i8")])
+
+m.initialize = lambda **kw: True
+m.shutdown = lambda: None
+m.last_error = lambda: (0, "ok")
+m.symbol_select = lambda s, on: True
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10000.0, currency="USD", trade_allowed=True)
+m.symbol_info = lambda s: types.SimpleNamespace(
+    name=s, point=0.01, digits=2, trade_stops_level=STOPS_LEVEL, spread=SPREAD_POINTS,
+    volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    trade_tick_value=1.0, trade_tick_size=0.01, filling_mode=1,
+    trade_mode=m.SYMBOL_TRADE_MODE_FULL)
+
+# MARKET_OPEN drives whether the quote timestamp advances, which is exactly how
+# the bot decides the session is shut.
+MARKET_OPEN = True
+_frozen_stamp = time.time()
+
+def _tick(sym):
+    stamp = time.time() if MARKET_OPEN else _frozen_stamp
+    return types.SimpleNamespace(bid=PRICES_M15[-1],
+                                 ask=PRICES_M15[-1] + SPREAD_POINTS*0.01,
+                                 time=int(stamp), time_msc=int(stamp*1000))
+m.symbol_info_tick = lambda s: _tick(s)
+
+def copy_rates_from_pos(symbol, tf, start, count):
+    if tf == m.TIMEFRAME_M5:
+        return _rates(count, PRICES_M15, 5)
+    if tf == m.TIMEFRAME_M15:
+        return _rates(count, PRICES_M15, 15)
+    return _rates(count, PRICES_M15[::16], 240)
+m.copy_rates_from_pos = copy_rates_from_pos
+
+POSITIONS = []
+m.positions_get = lambda **kw: list(POSITIONS)
+def order_send(req):
+    sent.append(req)
+    return types.SimpleNamespace(retcode=m.TRADE_RETCODE_DONE, order=555, price=req.get("price", 0.0),
+                                 volume=req.get("volume", 0.0), comment="done")
+m.order_send = order_send
+sys.modules["MetaTrader5"] = m
+
+# ---------------- exercise the bot ----------------
+import mt5_client as mc, trader
+from config import TradeConfig
+trader.setup_logging()
+
+print("\n=== 1. preflight rejects a too-tight stop (6 broker points) ===")
+tight = TradeConfig(distance_unit="point", stop_loss_units=6.0, trailing_stop_units=3.0)
+bot = trader.Bot(tight, dry_run=True)
+problems = bot.start(probe_market=False)
+print("problems:", len(problems))
+for p in problems: print("   *", p)
+assert problems, "preflight MUST reject a 6-point stop against a 25-point spread"
+
+print("\n=== 2. preflight accepts the shipped default (60 pips / 30 pips) ===")
+# The session and weekend filters read the wall clock, which would make every
+# later assertion depend on what time the suite happens to run. They get their
+# own explicit checks in step 7b; disable them for the deterministic path.
+cfg2 = TradeConfig(use_session_filter=False, close_before_weekend=False)
+print(f"   SL {cfg2.stop_loss_units:g} {cfg2.distance_unit} = ${cfg2.sl_distance(0.01):.2f}, "
+      f"trail {cfg2.trailing_stop_units:g} {cfg2.distance_unit} = ${cfg2.trail_distance(0.01):.2f}")
+bot2 = trader.Bot(cfg2, dry_run=True)
+problems2 = bot2.start(probe_market=False)
+print("problems:", problems2)
+assert not problems2, "60 pips / 30 pips should pass preflight"
+
+print("\n=== 3. signal evaluation against mock bars ===")
+sig = bot2.latest_signal()
+print("  ", sig.summary())
+
+print("\n=== 4. dry-run entry (forced signal) ===")
+import strategy as st
+bot2.last_bar_time = None
+real_eval = bot2.latest_signal
+def forced():
+    s = real_eval()
+    s.direction = "buy"
+    s.buy.trend = s.buy.momentum = s.buy.strength = True
+    return s
+bot2.latest_signal = forced
+bot2.check_for_entry()
+print("   orders sent in dry-run:", len(sent), "(expected 0)")
+assert len(sent) == 0
+
+print("\n=== 5. LIVE entry path ===")
+live = trader.Bot(cfg2, dry_run=False)
+live.start(probe_market=False); live.latest_signal = forced; live.last_bar_time = None
+live.check_for_entry()
+assert len(sent) == 1, sent
+req = sent[0]
+entry = req["price"]
+print(f"   order: {'BUY' if req['type']==0 else 'SELL'} {req['volume']} lots @ {entry:.2f} "
+      f"sl={req['sl']:.2f} (distance ${entry-req['sl']:.2f}) magic={req['magic']}")
+# 60 pips = $6.00; SL is normalized to the symbol digits (2), so allow
+# half a cent of rounding
+assert abs((entry - req["sl"]) - 6.00) <= 0.005 + 1e-9, "SL must be $6.00 below entry"
+assert req["volume"] == cfg2.lots, f"lot size must be {cfg2.lots}"
+
+print("\n=== 6. trailing stop on a live position ===")
+POSITIONS.append(types.SimpleNamespace(ticket=555, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
+                                       volume=cfg2.lots, price_open=entry, sl=req["sl"], tp=0.0, magic=cfg2.magic))
+sent.clear()
+for bump in (1.0, 3.0, 5.0, 4.0, 9.0):
+    m.symbol_info_tick = (lambda b: (lambda s: types.SimpleNamespace(
+        bid=entry + b, ask=entry + b + SPREAD_POINTS*0.01, time=0)))(bump)
+    live.manage_trailing()
+    if sent:
+        new_sl = sent[-1]["sl"]
+        POSITIONS[0].sl = new_sl
+    print(f"   price +${bump:.2f} -> sl {POSITIONS[0].sl:.2f} "
+          f"({'trailed' if sent else 'unchanged'}, locked {POSITIONS[0].sl-entry:+.2f})")
+    sent.clear()
+assert abs(POSITIONS[0].sl - (entry + 9.0 - 3.0)) <= 0.005 + 1e-9, POSITIONS[0].sl
+print("   final stop is $3.00 behind the high -> $6.00 profit locked")
+m.symbol_info_tick = lambda s: _tick(s)   # restore the MARKET_OPEN-driven tick source
+
+print("\n=== 7. guards (position cap, no daily cap) ===")
+cap = cfg2.max_open_positions
+print(f"   config: timeframe={cfg2.working_timeframe} max_positions={cap} "
+      f"max_trades_per_day={cfg2.max_trades_per_day} (0=unlimited)")
+print(f"   1 position open -> entry_blocked: {live.entry_blocked()} (cap is {cap})")
+assert live.entry_blocked() is None, f"one position must not block with a cap of {cap}"
+
+# a same-direction entry is allowed; an opposing one is not
+print("   same-direction BUY blocked?", live.opposite_position_blocks("buy"))
+assert live.opposite_position_blocks("buy") is None
+opposing = live.opposite_position_blocks("sell")
+print("   SELL while a BUY is open ->", opposing.split(";")[0] if opposing else None)
+assert opposing is not None, "an opposing signal must be skipped"
+
+# fill every remaining slot -> now blocked, whatever the cap is
+extra = []
+for n in range(cap - len(POSITIONS)):
+    pos = types.SimpleNamespace(ticket=600 + n, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
+                                volume=cfg2.lots, price_open=entry, sl=req["sl"], tp=0.0,
+                                magic=cfg2.magic)
+    POSITIONS.append(pos); extra.append(pos)
+print(f"   {len(POSITIONS)} positions open -> entry_blocked: {live.entry_blocked()}")
+assert live.entry_blocked() is not None, "a full book must block new entries"
+
+# the daily cap is off: a high trade count must not block
+live.trades_today = 500
+freed = POSITIONS.pop()
+if freed in extra:
+    extra.remove(freed)
+print(f"   after {live.trades_today} trades today (a slot free) -> entry_blocked:",
+      live.entry_blocked())
+assert live.entry_blocked() is None, "max_trades_per_day=0 must mean unlimited"
+live.trades_today = 0
+for pos in extra:
+    POSITIONS.remove(pos)
+
+print("\n=== 7b. session filter (explicit, clock-independent) ===")
+# the window is evaluated in the SESSION ZONE (GMT + session_gmt_offset),
+# not the machine's local clock, so build the probes from that hour
+_hour = TradeConfig().session_now().hour
+# a window that definitely excludes the current hour
+_closed = TradeConfig(use_session_filter=True,
+                      session_start_hour=(_hour + 2) % 24,
+                      session_end_hour=(_hour + 3) % 24,
+                      close_before_weekend=False)
+_bot = trader.Bot(_closed, dry_run=True)
+_bot.start(probe_market=False)
+print(f"   zone hour {_hour}, window {_closed.session_start_hour}-{_closed.session_end_hour}"
+      f" -> entry_blocked: {_bot.entry_blocked()}")
+assert _bot.entry_blocked() is not None, "outside its window the session filter must block"
+
+# a window that definitely includes it
+# a window that opened an hour ago and closes in an hour, so we are clear of
+# both the open buffer and the close buffer
+_open_cfg = TradeConfig(use_session_filter=True,
+                        session_start_hour=(_hour - 1) % 24,
+                        session_end_hour=(_hour + 2) % 24,
+                        close_before_weekend=False)
+_bot2 = trader.Bot(_open_cfg, dry_run=True)
+_bot2.start(probe_market=False)
+print(f"   zone hour {_hour}, window {_open_cfg.session_start_hour}-{_open_cfg.session_end_hour}"
+      f" -> entry_blocked: {_bot2.entry_blocked()}")
+assert _bot2.entry_blocked() is None, "inside its window the session filter must allow"
+
+# the entry buffers: no entries in the first N minutes or the last N minutes
+_buf = TradeConfig(use_session_filter=True, session_start_hour=_hour,
+                   session_end_hour=(_hour + 2) % 24, close_before_weekend=False)
+_at_open = _buf.session_now().replace(hour=_hour, minute=1, second=0)
+_mid = _buf.session_now().replace(hour=_hour, minute=30, second=0)
+_near_close = _buf.session_now().replace(hour=(_hour + 1) % 24, minute=50, second=0)
+print(f"   open buffer  ({_buf.entry_open_buffer_min} min): "
+      f"1 min in -> can_enter={_buf.can_enter(_at_open)}")
+print(f"   mid-session: can_enter={_buf.can_enter(_mid)}")
+print(f"   close buffer ({_buf.entry_close_buffer_min} min): "
+      f"10 min to close -> can_enter={_buf.can_enter(_near_close)}")
+assert not _buf.can_enter(_at_open), "the open buffer must block early entries"
+assert _buf.can_enter(_mid), "mid-session entries must be allowed"
+assert not _buf.can_enter(_near_close), "the close buffer must block late entries"
+assert _buf.minutes_to_close(_near_close) <= _buf.flatten_before_close_min, \
+    "10 minutes out must be inside the flatten window"
+
+print("\n=== 7b2. risk-percent sizing scales the lot with equity ===")
+import mt5_client as _mc2
+_rp = replace(cfg2, use_risk_percent=True, risk_percent=0.2)
+_spec = _mc2.get_symbol_spec(_rp)
+_sl = _rp.sl_distance(_spec.point)
+print(f"   risking {_rp.risk_percent}% per trade with a ${_sl:.2f} stop:")
+_prev = 0.0
+for eq in (1000.0, 3000.0, 10000.0, 30000.0):
+    m.account_info = lambda e=eq: types.SimpleNamespace(login=123, server="Mock-Demo",
+        balance=e, equity=e, currency="USD", trade_allowed=True)
+    lots = _mc2.position_size(_rp, _spec, _sl)
+    risk = lots * (_sl / _spec.tick_size) * _spec.tick_value
+    print(f"     ${eq:>8,.0f} equity -> {lots:.2f} lots, risking ${risk:.2f} ({100*risk/eq:.2f}%)")
+    assert lots >= _prev, "lot size must not shrink as equity grows"
+    assert lots >= _spec.volume_min
+    _prev = lots
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10000.0, currency="USD", trade_allowed=True)
+# fixed mode is unaffected
+assert _mc2.position_size(cfg2, _spec, _sl) == cfg2.lots, "fixed mode must ignore equity"
+print(f"   fixed mode still returns {cfg2.lots} lots regardless of equity")
+
+print("\n=== 7c. daily profit target and loss cap ===")
+# the hard target ships OFF (the profit lock replaces it), so enable it here
+_tgt_cfg = replace(cfg2, use_daily_target=True, lock_daily_gains=False)
+_dt = trader.Bot(_tgt_cfg, dry_run=True)
+_dt.start(probe_market=False)
+print(f"   frame: target +{_tgt_cfg.daily_target_pct:g}% / cap -{_tgt_cfg.max_daily_loss_pct:g}% "
+      f"(ratio {_tgt_cfg.max_daily_loss_pct/_tgt_cfg.daily_target_pct:.1f}:1, "
+      f"break-even needs {100*_tgt_cfg.max_daily_loss_pct/(_tgt_cfg.daily_target_pct+_tgt_cfg.max_daily_loss_pct):.0f}% winning days)")
+_dt.day_start_equity = 10000.0
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10050.0, currency="USD", trade_allowed=True)
+_dt.roll_day()
+print(f"   equity +0.50% -> target hit: {_dt.daily_target_hit}, "
+      f"entry_blocked: {_dt.entry_blocked()}")
+assert _dt.daily_target_hit, "a +0.5% day must trip the target"
+assert _dt.entry_blocked() is not None, "no entries after the target"
+
+_dl = trader.Bot(_tgt_cfg, dry_run=True)
+_dl.start(probe_market=False)
+_dl.day_start_equity = 10000.0
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=9900.0, currency="USD", trade_allowed=True)
+_dl.roll_day()
+print(f"   equity -1.00% -> loss cap hit: {_dl.daily_loss_hit}, "
+      f"entry_blocked: {_dl.entry_blocked()}")
+assert _dl.daily_loss_hit, "a -1.0% day must trip the loss cap"
+
+# a small move trips neither
+_ok = trader.Bot(_tgt_cfg, dry_run=True); _ok.start(probe_market=False)
+_ok.day_start_equity = 10000.0
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10020.0, currency="USD", trade_allowed=True)
+_ok.roll_day()
+print(f"   equity +0.20% -> neither tripped: target={_ok.daily_target_hit} loss={_ok.daily_loss_hit}")
+assert not _ok.daily_target_hit and not _ok.daily_loss_hit
+m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo", balance=10000.0,
+                                               equity=10000.0, currency="USD", trade_allowed=True)
+
+print("\n=== 7d. profit lock (keeps trading, protects a run-up) ===")
+def _equity(v):
+    m.account_info = lambda: types.SimpleNamespace(login=123, server="Mock-Demo",
+        balance=10000.0, equity=v, currency="USD", trade_allowed=True)
+
+_lk = trader.Bot(cfg2, dry_run=True); _lk.start(probe_market=False)
+_lk.day_start_equity = 10000.0; _lk.day_peak_equity = 10000.0
+print(f"   lock arms above +{cfg2.lock_after_pct:g}%, stops on giving back "
+      f"{cfg2.give_back_pct:g}% of the peak")
+for eq, note in [(10050.0, "+0.50% - arms, keeps trading"),
+                 (10200.0, "+2.00% - new peak, keeps trading"),
+                 (10150.0, "+1.50% - above the +1.00% floor")]:
+    _equity(eq); _lk.roll_day()
+    print(f"   equity {note:<34} lock={_lk.daily_lock_hit} blocked={_lk.entry_blocked() is not None}")
+    assert not _lk.daily_lock_hit, f"lock must not fire at {note}"
+
+_equity(10100.0); _lk.roll_day()     # back to +1.00% = exactly the floor of a 2% peak
+print(f"   equity +1.00% - hits the floor of a +2.00% peak   lock={_lk.daily_lock_hit}")
+assert _lk.daily_lock_hit, "the lock must fire when half the peak gain is given back"
+assert _lk.entry_blocked() is not None
+_equity(10000.0)
+
+print("\n=== 8. market closed (quotes frozen) ===")
+import mt5_client as _mc
+MARKET_OPEN = False
+closed_bot = trader.Bot(cfg2, dry_run=False)
+open_flag, reason = _mc.market_status(cfg2, samples=2, gap=0.05)
+print("   market_status ->", open_flag, "|", reason.split(" (")[0])
+assert open_flag is False, "frozen quotes must read as a closed market"
+
+closed_bot.start(probe_market=False)
+closed_bot.market_open = True          # pretend we started while it was open
+closed_bot.quotes = _mc.QuoteMonitor(stale_after=0.0)
+closed_bot.refresh_market_state()      # first sample
+closed_bot.refresh_market_state()      # repeat sample -> frozen
+print("   after frozen quotes, bot.market_open =", closed_bot.market_open)
+assert closed_bot.market_open is False
+print("   entry_blocked:", closed_bot.entry_blocked())
+assert closed_bot.entry_blocked() == "market is closed"
+
+POSITIONS.append(types.SimpleNamespace(ticket=777, symbol="XAUUSD", type=m.POSITION_TYPE_BUY,
+                                       volume=cfg2.lots, price_open=2000.0, sl=1994.0, tp=0.0,
+                                       magic=cfg2.magic))
+sent.clear()
+closed_bot.manage_trailing()
+print("   trailing modifications attempted while closed:", len(sent), "(expected 0)")
+assert len(sent) == 0
+
+print("\n=== 9. preflight is advisory about spread while closed ===")
+tight_closed = trader.Bot(tight, dry_run=True)
+probs_closed = _mc.preflight_check(tight, tight_closed_spec := _mc.get_symbol_spec(tight),
+                                   market_open=False)
+print("   blocking problems while closed:", len(probs_closed), "(spread complaints demoted)")
+assert len(probs_closed) < len(problems), "spread issues should not block while closed"
+
+print("\n=== 10. quotes resume -> trading re-enables ===")
+assert closed_bot.market_open is False, "should still be closed going in"
+MARKET_OPEN = True
+time.sleep(1.1)                       # let the mock clock advance a second
+closed_bot.refresh_market_state()     # same monitor that was frozen
+print("   bot.market_open =", closed_bot.market_open)
+assert closed_bot.market_open is True, "moving quotes must re-enable trading"
+print("   entry_blocked now:", closed_bot.entry_blocked())
+
+print("\nALL MOCK-MT5 INTEGRATION CHECKS PASSED")

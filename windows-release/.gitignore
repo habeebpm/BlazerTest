@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+python/logs/*.log
+python/logs/*.csv
