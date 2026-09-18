@@ -89,6 +89,14 @@ TIME_DECAY_SECONDS = 10 * 60
 SETUP_TYPES = ("4.1", "4.2", "4.3", "discretionary")
 VALID_ACTIONS = {"BUY", "SELL", "NONE"}
 
+# CFTC Commitment of Traders, "Legacy Futures Only" report - free, public,
+# no-auth Socrata Open Data API; published weekly (Friday afternoon, data as
+# of the prior Tuesday). Used only as slow-moving institutional-positioning
+# context (see TRADING_KNOWLEDGE) - never a trigger by itself.
+COT_API_URL = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
+COT_GOLD_MARKET_LIKE = "GOLD - COMMODITY EXCHANGE%"   # SoQL LIKE pattern for COMEX gold
+COT_RETRY_BACKOFF_HOURS = 1.0   # don't hammer the API again this soon after a failed attempt
+
 # Knowledge given to Claude as context to reason WITH, not a rule table to
 # execute mechanically. It condenses the XTR spec's setup archetypes plus
 # general, widely-accepted intraday trading principles, so Claude's
@@ -157,6 +165,22 @@ GENERAL PRINCIPLES TO WEIGH ALONGSIDE THE ABOVE:
   any high-impact event nearby, this changes nothing.
 - Respect round-number price levels (whole-dollar handles) as places price
   often reacts, both for stop placement and target selection.
+- DXY correlation: the overlay context's dxy_correlation shows the US
+  Dollar Index's own direction, last closed bar, when a DXY feed is
+  configured. Gold and the dollar typically move inversely - USD strength
+  is a headwind for gold longs, USD weakness a tailwind. Use this only as
+  mild confirming/disconfirming context alongside gold's own structure,
+  never as an independent trigger, and never override clean gold price
+  action on DXY alone.
+- COT positioning: the overlay context's cot_positioning shows the latest
+  weekly CFTC Commitment of Traders reading for COMEX gold (noncommercial
+  = speculative "smart money" net position, commercial = hedgers, both net
+  long minus short). This is slow, lagging, and can be several days stale
+  by the time you see it - it says nothing about entry timing. Treat a
+  historically stretched noncommercial net long/short as a mild caution
+  about crowded positioning (more prone to sharp unwinds), not a
+  contrarian signal to trade against the current setup, and never let it
+  override what the live M1-H1 technical picture actually shows.
 - Never override an active two-loss standdown for a setup type - if that
   type just lost twice in a row, stand aside on it even if a fresh trigger
   looks tempting, until the underlying regime genuinely resets.
@@ -221,6 +245,8 @@ class BotConfig:
     max_daily_loss_usd: float = 0.0   # 0 = disabled; halt new signals once today's realized pnl <= -this
     max_trades_per_day: int = 0       # 0 = disabled; halt new signals once today's EXECUTED count reaches this
     max_spread_mult: float = 0.0      # 0 = disabled; skip the cycle when spread > this x the recent rolling median
+    enable_cot: bool = True           # fetch CFTC COT (COMEX gold) positioning as overlay context
+    cot_cache_max_age_hours: float = 24.0   # the report itself only updates weekly; no need to fetch more often
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_timeout: float = 10.0
@@ -257,6 +283,12 @@ class ChartSnapshot:
     news_next_name: str = ""
     news_recent_min: int | None = None
     news_recent_name: str = ""
+    # DXY (US Dollar Index) directional read from the broker's own DXY-proxy
+    # symbol (e.g. Pepperstone's "USDX"), last CLOSED bar - "NA" means the
+    # EA has DXY correlation disabled, the symbol isn't available on this
+    # broker/session, or this export predates the feature. See
+    # ClaudeSignalEA.mq5's own comment: those cases aren't distinguished.
+    dxy_dir: str = "NA"
 
 
 # --------------------------------------------------------------------------
@@ -405,6 +437,7 @@ def parse_chart_file(path: Path) -> ChartSnapshot:
         news_next_name=news_next_name,
         news_recent_min=news_recent_min,
         news_recent_name=news_recent_name,
+        dxy_dir=meta.get("dxy_dir", "NA"),
     )
 
 
@@ -978,11 +1011,115 @@ def macro_news_context(snap: ChartSnapshot) -> str | dict:
     }
 
 
-def build_overlay_context(snap: ChartSnapshot) -> dict:
+def dxy_correlation_context(snap: ChartSnapshot) -> str | dict:
+    """The EA's own DXY-proxy read (e.g. Pepperstone's "USDX" symbol),
+    last CLOSED bar, or an honest "not evaluated" string when there's
+    nothing to report - either the EA has DXY correlation disabled, the
+    symbol isn't available on this broker/session, or this export predates
+    the feature. Those cases are indistinguishable from the export alone
+    (see ChartSnapshot's own comment) - reported as one "not evaluated",
+    not guessed apart, the same pattern macro_news_context already uses."""
+    if snap.dxy_dir not in ("BULLISH", "BEARISH", "MIXED"):
+        return "not evaluated - no DXY feed configured (symbol unavailable, feature off, or older export)"
+    note = {
+        "BULLISH": "USD strength - a headwind for gold longs, tailwind for gold shorts",
+        "BEARISH": "USD weakness - a tailwind for gold longs, headwind for gold shorts",
+        "MIXED": "no clear USD direction right now",
+    }[snap.dxy_dir]
+    return {
+        "dxy_direction": snap.dxy_dir,
+        "note": (f"{note} (gold and the dollar index are typically inversely correlated; "
+                 "context only, never a primary trigger by itself)"),
+    }
+
+
+def fetch_cot_gold(state: dict, cfg: BotConfig) -> dict | None:
+    """Fetches the latest COMEX gold Commitment of Traders (Legacy Futures
+    Only) row from the CFTC's public Socrata API, caching it in
+    state["cot_cache"] for cfg.cot_cache_max_age_hours - the report itself
+    only updates once a week, so there's nothing to gain from fetching more
+    often. On ANY failure (network, parsing, an unexpected schema) this
+    returns the last good cache (or None) instead of raising: COT is
+    optional, slow-moving context, never worth blocking a trading cycle
+    over, and its exact response shape can't be verified from every
+    environment this bot runs in, so a wrong guess must degrade quietly."""
+    cache = state.get("cot_cache") or {}
+    now = datetime.now(timezone.utc)
+
+    def _hours_since(iso: str | None) -> float | None:
+        if not iso:
+            return None
+        try:
+            return (now - datetime.fromisoformat(iso)).total_seconds() / 3600.0
+        except ValueError:
+            return None
+
+    fresh_age = _hours_since(cache.get("fetched_at"))
+    if fresh_age is not None and fresh_age < cfg.cot_cache_max_age_hours:
+        return cache.get("data")
+
+    attempt_age = _hours_since(cache.get("last_attempt_at"))
+    if attempt_age is not None and attempt_age < COT_RETRY_BACKOFF_HOURS:
+        return cache.get("data")
+
+    cache["last_attempt_at"] = now.isoformat()
+    try:
+        params = urllib.parse.urlencode({
+            "$where": f"market_and_exchange_names like '{COT_GOLD_MARKET_LIKE}'",
+            "$order": "report_date_as_yyyy_mm_dd DESC",
+            "$limit": "1",
+        })
+        req = urllib.request.Request(f"{COT_API_URL}?{params}", headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            rows = json.loads(resp.read().decode("utf-8"))
+        row = rows[0]
+        data = {
+            "report_date": str(row["report_date_as_yyyy_mm_dd"])[:10],
+            "noncomm_long": int(float(row["noncomm_positions_long_all"])),
+            "noncomm_short": int(float(row["noncomm_positions_short_all"])),
+            "comm_long": int(float(row["comm_positions_long_all"])),
+            "comm_short": int(float(row["comm_positions_short_all"])),
+            "open_interest": int(float(row["open_interest_all"])),
+        }
+        cache["data"] = data
+        cache["fetched_at"] = now.isoformat()
+        state["cot_cache"] = cache
+        return data
+    except Exception:
+        log.warning("COT fetch failed, falling back to cached data if any", exc_info=True)
+        state["cot_cache"] = cache
+        return cache.get("data")
+
+
+def cot_context(state: dict, cfg: BotConfig) -> str | dict:
+    """Weekly, lagging institutional-positioning context (CFTC Commitment
+    of Traders, COMEX gold, Legacy Futures Only) - net non-commercial
+    (speculative) positioning is a crowd/extremes read, not a timing
+    signal, and the report itself can be several days stale by the time
+    it's read (see fetch_cot_gold). Reported honestly as "not evaluated"
+    when disabled or unavailable rather than guessed at."""
+    if not cfg.enable_cot:
+        return "not evaluated - COT disabled (--no-cot)"
+    data = fetch_cot_gold(state, cfg)
+    if data is None:
+        return "not evaluated - COT data unavailable (fetch failed and no cache yet)"
+    return {
+        "report_date": data["report_date"],
+        "noncommercial_net_contracts": data["noncomm_long"] - data["noncomm_short"],
+        "commercial_net_contracts": data["comm_long"] - data["comm_short"],
+        "open_interest": data["open_interest"],
+        "note": ("weekly CFTC data (COMEX gold, Legacy Futures Only), can be several days stale - "
+                 "positive noncommercial net = speculators net long; extremes can precede reversals "
+                 "but this is not a timing signal, weigh lightly and never as a primary trigger"),
+    }
+
+
+def build_overlay_context(snap: ChartSnapshot, state: dict, cfg: BotConfig) -> dict:
     return {
         "session": session_context(),
         "round_number": round_number_context(snap.bid),
-        "dxy_correlation": "not evaluated - no DXY feed configured",
+        "dxy_correlation": dxy_correlation_context(snap),
+        "cot_positioning": cot_context(state, cfg),
         "macro_news": macro_news_context(snap),
     }
 
@@ -1282,7 +1419,7 @@ def analyze_with_claude(snap: ChartSnapshot, state: dict, cfg: BotConfig) -> dic
     h1_direction = direction_for(snap.ind["H1"])
     regime = regime_for(snap.ind["M5"])
     hints = compute_hints(snap, m5_direction, regime)
-    overlay = build_overlay_context(snap)
+    overlay = build_overlay_context(snap, state, cfg)
     standdown_active = active_standdowns(state)
     performance = summarize_recent_performance(state)
     pending = state.get("pending", {})
@@ -1458,7 +1595,8 @@ def main_loop(cfg: BotConfig) -> None:
 def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
                         force_htf_align: str | None = None,
                         news_next_min: int | None = None, news_next_name: str = "",
-                        news_recent_min: int | None = None, news_recent_name: str = "") -> str:
+                        news_recent_min: int | None = None, news_recent_name: str = "",
+                        dxy_dir: str = "NA") -> str:
     n_m1, n_m5, n_m15, n_h1 = 30, 30, 30, 30
     base = 2340.0
 
@@ -1506,7 +1644,7 @@ def _sample_chart_text(symbol: str = "XAUUSD", *, trending: bool = True,
         f"volume_max=50.00 volume_step=0.01 bid={m5_last - 0.1:.2f} ask={m5_last + 0.1:.2f} "
         f"spread=25 equity=5000.00 m5_dir={m5_dir} m15_dir={m15_dir} h1_dir={h1_dir} "
         f"htf_align={htf_align} htf_strength={htf_strength} news_next_min={news_hdr_next} "
-        f"news_recent_min={news_hdr_recent} exported=2026.09.16T12:00:00",
+        f"news_recent_min={news_hdr_recent} dxy_dir={dxy_dir} exported=2026.09.16T12:00:00",
         "##INDICATORS",
         "tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower",
         f"M5,{ema9:.2f},{ema21:.2f},{rsi:.2f},{macd_hist:.2f},{adx:.2f},1.80,{bb_upper:.2f},{bb_lower:.2f}",
@@ -1693,10 +1831,26 @@ def selftest() -> None:
         assert next_only_snap.news_next_min == 8 and next_only_snap.news_recent_min is None
         print("  news_next/news_recent are parsed independently, not conflated: OK")
 
+        # --- DXY correlation: header field parsing + overlay context framing ---
+        assert snap.dxy_dir == "NA"
+        assert dxy_correlation_context(snap) == (
+            "not evaluated - no DXY feed configured (symbol unavailable, feature off, or older export)"
+        )
+        print("  parse_chart_file/dxy_correlation_context report 'not evaluated' when no DXY data is exported: OK")
+
+        dxy_file = tmp_path / "chart_dxy.txt"
+        dxy_file.write_text(_sample_chart_text(trending=True, dxy_dir="BULLISH"))
+        dxy_snap = parse_chart_file(dxy_file)
+        assert dxy_snap.dxy_dir == "BULLISH"
+        dxy_ctx = dxy_correlation_context(dxy_snap)
+        assert dxy_ctx["dxy_direction"] == "BULLISH" and "headwind for gold longs" in dxy_ctx["note"]
+        print(f"  parse_chart_file/dxy_correlation_context surface a real DXY read: OK ({dxy_ctx})")
+
         cfg = BotConfig(
             data_file=trending_file, signal_file=tmp_path / "signals.txt",
             ack_file=tmp_path / "ack.txt", outcome_file=tmp_path / "outcomes.txt",
             state_file=tmp_path / "state.json", dry_run=True, api_key="test-key",
+            enable_cot=False,   # selftest is offline-only; COT fetch is tested separately, mocked
         )
         atr = snap.ind["M5"]["atr14"]
 
@@ -1895,10 +2049,10 @@ def selftest() -> None:
             data_file=trending_file, signal_file=tmp_path / "signals2.txt",
             ack_file=tmp_path / "ack2.txt", outcome_file=tmp_path / "outcomes2.txt",
             state_file=tmp_path / "state2.json", dry_run=True, api_key="test-key",
-            min_atr_mult=0.5, max_atr_mult=2.0, min_confidence=72.0,
+            min_atr_mult=0.5, max_atr_mult=2.0, min_confidence=72.0, enable_cot=False,
         )
         system, user = build_analysis_prompt(
-            snap, m5_dir, "BULLISH", "BULLISH", regime, hints, build_overlay_context(snap),
+            snap, m5_dir, "BULLISH", "BULLISH", regime, hints, build_overlay_context(snap, {}, custom_cfg),
             [], perf, {"3": {"setup_type": "4.1"}}, custom_cfg,
         )
         assert "SELF-CORRECTION" in system
@@ -1950,6 +2104,65 @@ def selftest() -> None:
         body = urllib.parse.parse_qs(called_req.data.decode("utf-8"))
         assert body["chat_id"] == ["12345"] and body["text"] == ["hello from selftest"]
         print("  send_telegram_message builds the expected Bot API request: OK")
+
+        # --- COT (CFTC gold positioning): fetch, cache, and context framing, network mocked ---
+        cot_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "cot_signals.txt",
+            ack_file=tmp_path / "cot_ack.txt", outcome_file=tmp_path / "cot_outcomes.txt",
+            state_file=tmp_path / "cot_state.json", dry_run=True, api_key="test-key",
+        )
+        assert cot_context({}, BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "x", ack_file=tmp_path / "x",
+            outcome_file=tmp_path / "x", state_file=tmp_path / "x", enable_cot=False,
+        )) == "not evaluated - COT disabled (--no-cot)"
+        print("  cot_context reports 'not evaluated' when disabled (--no-cot): OK")
+
+        with patch(f"{__name__}.urllib.request.urlopen", side_effect=RuntimeError("network down")):
+            no_cache_ctx = cot_context({}, cot_cfg)
+        assert no_cache_ctx == "not evaluated - COT data unavailable (fetch failed and no cache yet)"
+        print("  cot_context reports 'not evaluated' when the fetch fails with no cache: OK")
+
+        class _FakeCotResponse:
+            def __init__(self, body: bytes):
+                self._body = body
+            def read(self): return self._body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        fake_cot_row = [{
+            "report_date_as_yyyy_mm_dd": "2026-09-15T00:00:00.000",
+            "market_and_exchange_names": "GOLD - COMMODITY EXCHANGE INC.",
+            "noncomm_positions_long_all": "250000", "noncomm_positions_short_all": "90000",
+            "comm_positions_long_all": "120000", "comm_positions_short_all": "280000",
+            "open_interest_all": "500000",
+        }]
+        cot_state: dict = {}
+        with patch(f"{__name__}.urllib.request.urlopen",
+                   return_value=_FakeCotResponse(json.dumps(fake_cot_row).encode("utf-8"))) as mock_cot_urlopen:
+            ctx = cot_context(cot_state, cot_cfg)
+        assert mock_cot_urlopen.call_count == 1
+        assert ctx["report_date"] == "2026-09-15" and ctx["noncommercial_net_contracts"] == 160000
+        assert ctx["commercial_net_contracts"] == -160000 and ctx["open_interest"] == 500000
+        assert "cot_cache" in cot_state and cot_state["cot_cache"]["data"]["open_interest"] == 500000
+        print(f"  cot_context fetches, parses, and caches a real COT row: OK ({ctx})")
+
+        # a second call within cot_cache_max_age_hours must use the cache, not fetch again
+        with patch(f"{__name__}.urllib.request.urlopen",
+                   return_value=_FakeCotResponse(json.dumps(fake_cot_row).encode("utf-8"))) as mock_cot_urlopen2:
+            cot_context(cot_state, cot_cfg)
+        assert mock_cot_urlopen2.call_count == 0
+        print("  fetch_cot_gold serves the cache instead of re-fetching within cot_cache_max_age_hours: OK")
+
+        # a failed fetch with a stale-but-present cache still returns that cached data
+        stale_state = {"cot_cache": {
+            "data": {"report_date": "2026-09-01", "noncomm_long": 1, "noncomm_short": 1,
+                      "comm_long": 1, "comm_short": 1, "open_interest": 1},
+            "fetched_at": "2000-01-01T00:00:00+00:00",
+        }}
+        with patch(f"{__name__}.urllib.request.urlopen", side_effect=RuntimeError("network down")):
+            fallback_ctx = cot_context(stale_state, cot_cfg)
+        assert fallback_ctx["report_date"] == "2026-09-01"
+        print("  fetch_cot_gold falls back to stale cached data on a failed fetch rather than raising: OK")
 
         # --- time-decay (§9): targeted close, not a blanket one ---
         state3 = load_state(cfg)
@@ -2061,6 +2274,8 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         max_daily_loss_usd=args.max_daily_loss_usd,
         max_trades_per_day=args.max_trades_per_day,
         max_spread_mult=args.max_spread_mult,
+        enable_cot=not args.no_cot,
+        cot_cache_max_age_hours=args.cot_cache_hours,
         telegram_bot_token=args.telegram_bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=args.telegram_chat_id or os.environ.get("TELEGRAM_CHAT_ID", ""),
         dry_run=args.dry_run,
@@ -2118,6 +2333,13 @@ def main(argv: list[str] | None = None) -> int:
                          help="skip the cycle when the live spread exceeds this x the recent rolling "
                               "median spread; 0 disables the gate (default) - calibrate to your own "
                               "broker's normal range before enabling")
+    parser.add_argument("--no-cot", action="store_true",
+                         help="disable the CFTC Commitment of Traders (COMEX gold) overlay context "
+                              "(on by default) - a weekly, free, no-auth fetch, cached and never "
+                              "blocking a cycle on failure")
+    parser.add_argument("--cot-cache-hours", type=float, default=24.0,
+                         help="max age before re-fetching COT data (default 24h; the report itself "
+                              "only updates weekly, so there's little reason to lower this)")
     parser.add_argument("--telegram-bot-token", default=None, help="defaults to $TELEGRAM_BOT_TOKEN")
     parser.add_argument("--telegram-chat-id", default=None, help="defaults to $TELEGRAM_CHAT_ID")
     parser.add_argument("--notify-test", action="store_true",

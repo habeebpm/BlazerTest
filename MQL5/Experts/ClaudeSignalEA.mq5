@@ -133,6 +133,10 @@ input string  InpNewsCurrency       = "USD";         // Currency to filter by (X
 input int     InpNewsLookaheadMin   = 60;            // Minutes ahead to scan for the next HIGH-importance event
 input int     InpNewsLookbackMin    = 60;            // Minutes back to scan for the most recent HIGH-importance event
 
+input group "=== DXY Correlation (optional, broker-dependent) ==="
+input bool    InpEnableDxy          = true;          // Read a DXY-proxy symbol's own direction as overlay context
+input string  InpDxySymbol          = "USDX";        // Broker's US Dollar Index symbol (Pepperstone: "USDX"; blank/unavailable disables this)
+
 //================================= STATE =====================================
 
 CTrade   trade;
@@ -145,6 +149,13 @@ string   g_gvName;
 int hEma9M5, hEma21M5, hRsiM5, hMacdM5, hAdxM5, hAtrM5, hBandsM5;
 int hEma9M15, hEma21M15, hRsiM15, hMacdM15;
 int hEma9H1, hEma21H1, hRsiH1, hMacdH1;
+
+// DXY-proxy handles: optional and broker-dependent (see OnInit) - deliberately
+// NOT part of the mandatory `handles[]` INIT_FAILED check below, since an
+// unavailable DXY symbol on some broker must degrade to "not evaluated",
+// never block the whole EA from starting.
+int  hEma9Dxy = INVALID_HANDLE, hEma21Dxy = INVALID_HANDLE, hRsiDxy = INVALID_HANDLE, hMacdDxy = INVALID_HANDLE;
+bool g_dxyAvailable = false;
 
 // Parallel arrays mapping an open position (by position id) back to the
 // setup type / signal id it was opened for, so OnTradeTransaction can
@@ -201,6 +212,27 @@ int OnInit()
       if(handles[i] == INVALID_HANDLE)
          return(INIT_FAILED);
 
+   // DXY correlation: optional and broker-dependent. Not every broker offers
+   // a US Dollar Index symbol (Pepperstone's is "USDX") - a missing/unselect-
+   // able symbol or a failed indicator handle here must NOT fail EA init,
+   // only disable this one overlay ("NA" in the export, see ExportChartData).
+   g_dxyAvailable = false;
+   if(InpEnableDxy && StringLen(InpDxySymbol) > 0 && SymbolSelect(InpDxySymbol, true))
+   {
+      hEma9Dxy  = CreateHandle(iMA(InpDxySymbol, PERIOD_H1, 9, 0, MODE_EMA, PRICE_CLOSE), "EMA9 DXY");
+      hEma21Dxy = CreateHandle(iMA(InpDxySymbol, PERIOD_H1, 21, 0, MODE_EMA, PRICE_CLOSE), "EMA21 DXY");
+      hRsiDxy   = CreateHandle(iRSI(InpDxySymbol, PERIOD_H1, 14, PRICE_CLOSE), "RSI14 DXY");
+      hMacdDxy  = CreateHandle(iMACD(InpDxySymbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE), "MACD DXY");
+      g_dxyAvailable = (hEma9Dxy != INVALID_HANDLE && hEma21Dxy != INVALID_HANDLE &&
+                         hRsiDxy != INVALID_HANDLE && hMacdDxy != INVALID_HANDLE);
+      if(!g_dxyAvailable)
+         PrintFormat("ClaudeSignalEA: DXY symbol '%s' selected but indicator handle creation failed - "
+                     "dxy_dir will export as NA.", InpDxySymbol);
+   }
+   else if(InpEnableDxy)
+      PrintFormat("ClaudeSignalEA: DXY symbol '%s' not available on this broker/session - "
+                  "dxy_dir will export as NA.", InpDxySymbol);
+
    g_gvName = "ClaudeSignalEA_" + _Symbol + "_" + (string)InpMagicNumber + "_lastid";
    if(GlobalVariableCheck(g_gvName))
       g_lastSignalId = (long)GlobalVariableGet(g_gvName);
@@ -226,6 +258,11 @@ void OnDeinit(const int reason)
    for(int i = 0; i < ArraySize(handles); i++)
       if(handles[i] != INVALID_HANDLE)
          IndicatorRelease(handles[i]);
+
+   int dxyHandles[] = {hEma9Dxy, hEma21Dxy, hRsiDxy, hMacdDxy};
+   for(int i = 0; i < ArraySize(dxyHandles); i++)
+      if(dxyHandles[i] != INVALID_HANDLE)
+         IndicatorRelease(dxyHandles[i]);
 }
 
 //+------------------------------------------------------------------+
@@ -509,14 +546,21 @@ void ExportChartData()
       FindNearestHighImpactNews(TimeCurrent(), InpNewsLookbackMin, InpNewsLookaheadMin, InpNewsCurrency,
                                  newsNextMin, newsNextName, newsRecentMin, newsRecentName);
 
+   // DXY correlation: last CLOSED H1 bar (shift=1), NOT the live shift=0 read
+   // used elsewhere in this function - this is analysis input Claude actually
+   // reasons with, not a cost-gate, so it must not repaint (see DirectionLabel).
+   string dxyDir = "NA";
+   if(g_dxyAvailable)
+      dxyDir = DirectionLabel(hEma9Dxy, hEma21Dxy, hRsiDxy, hMacdDxy, 1);
+
    FileWrite(handle, StringFormat(
       "#symbol=%s digits=%d point=%.5f tick_value=%.5f tick_size=%.5f volume_min=%.2f "
       "volume_max=%.2f volume_step=%.2f bid=%.5f ask=%.5f spread=%d equity=%.2f "
       "m5_dir=%s m15_dir=%s h1_dir=%s htf_align=%s htf_strength=%d news_next_min=%d "
-      "news_recent_min=%d exported=%s",
+      "news_recent_min=%d dxy_dir=%s exported=%s",
       _Symbol, digits, point, tickValue, tickSize, volMin, volMax, volStep,
       tick.bid, tick.ask, spreadPts, equity, m5Dir, m15Dir, h1Dir, htfAlign, htfStrength,
-      newsNextMin, newsRecentMin, exportedStr));
+      newsNextMin, newsRecentMin, dxyDir, exportedStr));
 
    // --- News event names (kept out of the header - see comment above) ---
    FileWrite(handle, "##NEWS");

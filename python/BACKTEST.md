@@ -140,6 +140,19 @@ measured here.
   news fields are always unset here and `macro_news_context()` always
   reports "not evaluated." A real backtest run's decisions never see the
   news-awareness guidance in `TRADING_KNOWLEDGE` actually triggered.
+- **No historical DXY feed either** — same reasoning as news above:
+  `build_snapshot_at()` has no historical DXY-proxy data to replay, so
+  `ChartSnapshot.dxy_dir` is always its default `"NA"` here and
+  `dxy_correlation_context()` always reports "not evaluated."
+- **COT is real, current-date data, not historical** — unlike news/DXY,
+  `--no-cot`/`--cot-cache-hours` DO reach a real network call during a
+  real (non-`--stub`) backtest run, since `fetch_cot_gold()` always fetches
+  the *latest* CFTC report regardless of which historical dates the M1
+  data covers. That's a mismatch worth knowing about: a backtest over 2024
+  data would still see today's COT positioning, not 2024's. Pass `--no-cot`
+  for a backtest run if you want to rule this out entirely; it's on by
+  default because it fails gracefully (cached/`None`) rather than because
+  it's meaningful against arbitrary historical bars.
 - **The self-correction loop sees only this run's own history.** Realistic
   in spirit (it's exactly what a live run would build up over time from a
   cold start), but a backtest starting cold means the first several cycles

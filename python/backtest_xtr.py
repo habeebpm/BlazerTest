@@ -654,7 +654,7 @@ def selftest() -> None:
         outcome_file=Path("unused"), state_file=Path("unused"),
         risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
         min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
-        require_full_htf_conviction=False,
+        require_full_htf_conviction=False, enable_cot=False,   # selftest is offline-only
     )
     report = run_backtest(m1_trend, cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
                            decide_fn=stub_decision, max_cycles=15)
@@ -830,6 +830,11 @@ def main(argv: list[str] | None = None) -> int:
                          help="skip the cycle when the (synthetic, fixed) spread exceeds this x the "
                               "recent rolling median; 0 disables the gate (default) - with a fixed "
                               "--spread this gate never trips, it only matters if you vary spread yourself")
+    parser.add_argument("--no-cot", action="store_true",
+                         help="disable the CFTC Commitment of Traders (COMEX gold) overlay context "
+                              "(on by default, real Claude runs only - --stub never calls it)")
+    parser.add_argument("--cot-cache-hours", type=float, default=24.0,
+                         help="max age before re-fetching COT data (default 24h)")
     parser.add_argument("--time-decay-seconds", type=float, default=600.0)
     parser.add_argument("--trail-usd", type=float, default=TRAIL_USD_DEFAULT)
     parser.add_argument("--spread", type=float, default=0.25,
@@ -868,6 +873,7 @@ def main(argv: list[str] | None = None) -> int:
         require_full_htf_conviction=not args.no_full_conviction_gate,
         max_daily_loss_usd=args.max_daily_loss_usd, max_trades_per_day=args.max_trades_per_day,
         max_spread_mult=args.max_spread_mult,
+        enable_cot=not args.no_cot, cot_cache_max_age_hours=args.cot_cache_hours,
     )
     decide_fn = stub_decision if args.stub else None
     log = print if args.verbose else (lambda *a, **k: None)

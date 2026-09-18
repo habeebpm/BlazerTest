@@ -412,6 +412,50 @@ The backtest harness (`backtest_xtr.py`) has no historical calendar data
 to replay, so this is always the "not evaluated" case there - see
 BACKTEST.md.
 
+## COT positioning and DXY correlation
+
+Two more overlay-context sources, both advisory-only (never gates), both
+reported as an honest "not evaluated" string when unavailable rather than
+guessed at - the same pattern the news check above already uses.
+
+**COT (CFTC Commitment of Traders, COMEX gold)** - `enable_cot` (on by
+default), `--no-cot` to disable. `fetch_cot_gold()` pulls the latest
+"Legacy Futures Only" row for COMEX gold from the CFTC's free, public,
+no-auth Socrata API (`publicreporting.cftc.gov`, dataset `6dca-aqww`),
+caches it in `state["cot_cache"]` for `--cot-cache-hours` (default 24 -
+the report itself only updates once a week, Friday afternoons, so there's
+nothing to gain from fetching more often), and reports net noncommercial
+(speculative) and commercial (hedger) positioning plus open interest via
+`cot_context()`. On ANY failure - network, unexpected schema, anything -
+this falls back to the last good cache, or `None`, rather than raising;
+COT is slow-moving context, never worth blocking a trading cycle over.
+
+Two honest caveats: this session could not live-verify the exact JSON
+field names/response shape against the real API (the sandbox this was
+written in blocks that domain at the network-policy level) - the fetch
+code was written from CFTC's documented schema and is defensive on
+purpose (broad try/except, graceful degrade to cache/None) precisely
+because of that; and the report itself can be several days stale by the
+time it's read, so it's framed to Claude as crowd-positioning context, not
+a timing signal (see `TRADING_KNOWLEDGE`). Verify it against a real run
+before trusting the numbers - `--once --dry-run -v` prints the overlay
+context that would go to Claude, `cot_positioning` included.
+
+**DXY correlation** - `ClaudeSignalEA.mq5`'s `InpEnableDxy` (on by
+default) and `InpDxySymbol` (default `"USDX"`, Pepperstone's own US Dollar
+Index symbol - see the Pepperstone section below). The EA selects that
+symbol in Market Watch, reads its own EMA9/EMA21/RSI14/MACD-histogram
+direction the same way it reads gold's (BULLISH/BEARISH/MIXED), on the
+last **closed** H1 bar (shift=1 - real analysis input, not a live cost
+gate, so it must not repaint), and exports it as `dxy_dir` in the header.
+Not every broker offers a DXY-equivalent symbol; when it's unavailable
+(blank/unselectable symbol, or a failed indicator handle) `g_dxyAvailable`
+stays false, `dxy_dir` exports as `NA`, and this never blocks `OnInit()` -
+same non-fatal, broker-dependent pattern the news check uses.
+`dxy_correlation_context()` on the Python side turns a real reading into
+mild confirming/disconfirming framing (USD strength = headwind for gold
+longs, USD weakness = tailwind), explicitly never a primary trigger.
+
 ## Why MQL5 still computes the indicators, not Python
 
 The spec only fetches 30 candles per timeframe - nowhere near enough history
@@ -455,6 +499,11 @@ is written for XAUUSD, but nothing hardcodes the symbol). Key inputs:
   from, and layered on top of, Claude's initial SL/TP.
 - `InpMaxOpenPositions` - a hard ceiling so a malfunctioning analysis loop
   can't compound risk indefinitely.
+- `InpEnableDxy` / `InpDxySymbol` - optional DXY correlation overlay (see
+  "COT positioning and DXY correlation" above); default symbol `"USDX"`
+  (Pepperstone's own US Dollar Index symbol - change it if your broker
+  names it differently, or leave `InpEnableDxy` on and it degrades to `NA`
+  gracefully if the symbol isn't found).
 
 **3. Run the Python bot.**
 
@@ -485,7 +534,39 @@ Claude's own stated confidence below this, default 60), `--min-atr-mult` /
 default 1 - raise it deliberately if you want this system to run more than
 one XTR scalp concurrently, which is not how the spec is written),
 `--no-htf-gate` (disable the mechanical 2-of-3 HTF pre-filter - see below;
-on by default).
+on by default), `--no-cot` / `--cot-cache-hours` (COT overlay context - see
+"COT positioning and DXY correlation" above; on by default, 24h cache).
+
+## Pepperstone-specific notes
+
+Nothing here is required to run against a different broker - the pipeline
+is broker-agnostic by design - but if Pepperstone is what you're actually
+running against, a few things are worth knowing up front:
+
+- **DXY symbol**: Pepperstone's US Dollar Index symbol is `"USDX"` - already
+  the default for `InpDxySymbol` above. If it's not showing in Market Watch,
+  add it there first (Market Watch -> right-click -> Symbols) - `SymbolSelect`
+  alone should also surface it, but the EA logs a clear "not available"
+  message and degrades to `dxy_dir=NA` rather than failing if it can't.
+- **Server time offset**: Pepperstone's MT5 servers run GMT+3 during US DST
+  and GMT+2 otherwise (broker "midnight" roughly aligns with the NY session
+  close), not UTC. `TimeCurrent()` inside the EA (news lookback/lookahead
+  windows, the exported bar timestamps) is in that server time, whereas
+  Python's `session_context()` uses real UTC - they're independent reads for
+  different purposes (server-local bar timing vs. a UTC session label for
+  Claude), not something that needs reconciling, but worth knowing if you're
+  ever comparing a timestamp between the two side by side.
+- **Built-in economic calendar**: Pepperstone's MT5 platform includes
+  MetaQuotes' own integrated Economic Calendar, so `InpEnableNewsCheck` (see
+  "News check" above) should work out of the box - this doesn't hold for
+  every broker's server.
+- **Typical XAUUSD spread (Razor account)**: starts around 0.08 points, with
+  a $0.05 minimum and roughly $0.18 average per the broker's own published
+  figures - a reasonable starting reference if you're calibrating
+  `--max-spread-mult` against `state["spread_history"]`, though watch your
+  own account's actual readings rather than trusting this number blindly
+  (spreads vary by session/liquidity and this wasn't independently verified
+  against a live feed in this session).
 
 ## Telegram fill notifications (optional)
 
@@ -543,7 +624,7 @@ line rather than failing.
 line, then `##`-delimited sections:
 
 ```
-#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY htf_strength=2 news_next_min=23 news_recent_min=-1 exported=2026.09.16T12:00:00
+#symbol=XAUUSD digits=2 point=0.01 tick_value=1.00 tick_size=0.01 volume_min=0.01 volume_max=50.00 volume_step=0.01 bid=2345.67 ask=2345.92 spread=25 equity=5000.00 m5_dir=BULLISH m15_dir=BULLISH h1_dir=MIXED htf_align=BUY htf_strength=2 news_next_min=23 news_recent_min=-1 dxy_dir=BEARISH exported=2026.09.16T12:00:00
 ##INDICATORS
 tf,ema9,ema21,rsi14,macd_hist,adx14,atr14,bb_upper,bb_lower
 M5,2345.10,2344.80,58.20,0.35,27.40,1.85,2347.00,2340.20
@@ -641,7 +722,8 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | Mechanical spread-widening gate | Python, hard backstop, opt-in (`--max-spread-mult`, 0/disabled by default) |
 | §11 trade log / §13 report format | Python, populated with Claude's reasoning + which mechanical hints actually fired (`hints_fired`) |
 | §12 macro-news check | MQL5's built-in Economic Calendar (`InpEnableNewsCheck`, on by default) - advisory context, not a gate; see "News check" above |
-| §12 DXY correlation | Not wired up - exposed to Claude as an explicit "not evaluated" flag rather than silently ignored |
+| §12 DXY correlation | MQL5's own DXY-proxy symbol read (`InpEnableDxy`/`InpDxySymbol`, on by default) - advisory context, not a gate; see "COT positioning and DXY correlation" above |
+| COT (CFTC gold positioning) | Python (`fetch_cot_gold`/`cot_context`), `enable_cot` on by default, `--no-cot` to disable - advisory context, not a gate; see "COT positioning and DXY correlation" above |
 
 ## Honest notes / risks
 
@@ -657,12 +739,20 @@ above - from `PENDING` to `WIN`/`LOSS`.
 - **API cost and latency are now on every cycle**, not just graded signals -
   Claude is doing the actual read every time there's a new M5 bar, whether
   or not it ends up trading.
-- **DXY correlation is still not evaluated** - logged as an explicit gap in
-  the overlay context rather than silently ignored; wiring up a real feed
-  is a natural next step. Macro/news IS now evaluated via MT5's built-in
-  Economic Calendar (see "News check" above), but only as advisory context
-  - untested against a real calendar in this session, and unable to tell
-  "no event" apart from "calendar unavailable on this broker."
+- **DXY correlation and COT positioning are now both wired up** (see "COT
+  positioning and DXY correlation" above), but neither has been run against
+  a live account/real API response in this session - the DXY MQL5 code
+  wasn't compiled (same caveat as the rest of `ClaudeSignalEA.mq5`, see
+  "News check" above), and the CFTC API's exact response shape could not be
+  live-verified from this sandboxed session (its domain is blocked at the
+  network-policy level here). Both degrade gracefully to "not evaluated" on
+  any failure by design, but verify both against a real run - `--once
+  --dry-run -v` prints the overlay context, `dxy_correlation` and
+  `cot_positioning` included - before trusting the numbers. Macro/news IS
+  now evaluated via MT5's built-in Economic Calendar (see "News check"
+  above), but only as advisory context - untested against a real calendar
+  in this session, and unable to tell "no event" apart from "calendar
+  unavailable on this broker."
 - **Time-decay and standdown persistence assume one long-running EA/bot
   pair.** An EA restart loses its in-memory signal-id -> position mapping (a
   documented limitation in the EA's own comments) - a `CLOSE_ID` for a
