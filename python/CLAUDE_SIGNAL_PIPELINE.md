@@ -592,7 +592,7 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | §4 setup *hints* shown to Claude | Python (`check_rsi_bounce`, `check_trend_pullback`, `check_liquidity_sweep`) - advisory only, not gates |
 | §5 HTF grade shown to Claude | Python (`htf_conviction`) - advisory only |
 | Side-of-price / stop-distance sanity check | Python, hard backstop on Claude's own numbers (fails safe - rejects the trade if ATR itself isn't available to check against) |
-| §8 position sizing | Python, arithmetic from Claude's stop distance |
+| §8 position sizing | Python, arithmetic from Claude's stop distance - or a fixed lot you choose (`--fixed-lot`, 0/disabled by default), still clamped to the broker's min/max/step either way |
 | §9 time-decay close | Python, targeted at the specific stale position (`CLOSE_ID`), not everything open |
 | §10 two-loss standdown | Python, hard backstop (Claude is also told about it) |
 | Max concurrent signals | Python, hard backstop, default 1 (Claude is shown current pending count and told not to stack) |

@@ -777,6 +777,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbol", default="XAUUSD")
     parser.add_argument("--start-equity", type=float, default=5000.0)
     parser.add_argument("--risk-percent", type=float, default=2.0)
+    parser.add_argument("--fixed-lot", type=float, default=0.0,
+                         help="use this lot size for every trade instead of risk-based sizing; 0 disables it (default)")
     parser.add_argument("--min-confidence", type=float, default=60.0)
     parser.add_argument("--min-atr-mult", type=float, default=0.25)
     parser.add_argument("--max-atr-mult", type=float, default=3.0)
@@ -826,7 +828,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = bot.BotConfig(
         data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
         outcome_file=Path("unused"), state_file=Path("unused"),
-        model=args.model, api_key=api_key, risk_percent=args.risk_percent,
+        model=args.model, api_key=api_key, risk_percent=args.risk_percent, fixed_lot=args.fixed_lot,
         fallback_equity=args.start_equity, time_decay_seconds=args.time_decay_seconds,
         min_confidence=args.min_confidence, min_atr_mult=args.min_atr_mult, max_atr_mult=args.max_atr_mult,
         max_concurrent_signals=args.max_concurrent_signals, require_htf_gate=not args.no_htf_gate,

@@ -203,6 +203,7 @@ class BotConfig:
     api_key: str = ""
     risk_percent: float = 2.0
     fallback_equity: float = 5000.0
+    fixed_lot: float = 0.0   # 0 = disabled (risk-based sizing); >0 overrides position_size() with this lot
     time_decay_seconds: float = TIME_DECAY_SECONDS
     min_confidence: float = 60.0
     min_atr_mult: float = 0.25   # sanity floor on the proposed stop distance
@@ -555,7 +556,18 @@ def compute_hints(snap: ChartSnapshot, m5_direction: str, regime: str) -> dict:
 
 def position_size(snap: ChartSnapshot, cfg: BotConfig, stop_distance: float) -> float:
     """risk_amount / (stop_distance x value_per_price_unit_per_lot), rounded
-    down to the broker's lot step."""
+    down to the broker's lot step - unless cfg.fixed_lot is set (>0), in
+    which case that lot is used directly instead of the risk-based
+    calculation. Even then, the broker's own min/max/step still apply -
+    that clamp is a mechanical safety check worth keeping regardless of
+    who chose the number, the same way it always has for the computed
+    value."""
+    step = snap.volume_step or 0.01
+    if cfg.fixed_lot > 0:
+        lots = math.floor(cfg.fixed_lot / step) * step
+        lots = max(snap.volume_min, min(lots, snap.volume_max))
+        return round(lots, 2)
+
     equity = snap.equity if snap.equity > 0 else cfg.fallback_equity
     risk_amount = equity * (cfg.risk_percent / 100.0)
     value_per_unit = (snap.tick_value / snap.tick_size) if snap.tick_size else 0.0
@@ -563,7 +575,6 @@ def position_size(snap: ChartSnapshot, cfg: BotConfig, stop_distance: float) -> 
         return snap.volume_min
 
     lots = risk_amount / (stop_distance * value_per_unit)
-    step = snap.volume_step or 0.01
     lots = math.floor(lots / step) * step
     lots = max(snap.volume_min, min(lots, snap.volume_max))
     return round(lots, 2)
@@ -1922,6 +1933,29 @@ def selftest() -> None:
         assert snap.volume_min <= lots <= snap.volume_max
         print(f"  position_size respects broker limits: OK (lots={lots})")
 
+        # --- fixed_lot override: user-chosen size instead of risk-based sizing ---
+        fixed_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "fixedlot_signals.txt",
+            ack_file=tmp_path / "fixedlot_ack.txt", outcome_file=tmp_path / "fixedlot_outcomes.txt",
+            state_file=tmp_path / "fixedlot_state.json", dry_run=True, api_key="test-key",
+            fixed_lot=0.05,
+        )
+        fixed_lots = position_size(snap, fixed_cfg, 2.0 * atr)
+        assert fixed_lots == 0.05, f"fixed_lot must be used as-is when it already fits the broker's step: {fixed_lots}"
+        # stop_distance is irrelevant once fixed_lot is set - same fixed size regardless
+        assert position_size(snap, fixed_cfg, 50.0 * atr) == 0.05
+        print(f"  position_size uses fixed_lot as-is, ignoring stop distance/risk %, when set: OK (lots={fixed_lots})")
+
+        over_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "overlot_signals.txt",
+            ack_file=tmp_path / "overlot_ack.txt", outcome_file=tmp_path / "overlot_outcomes.txt",
+            state_file=tmp_path / "overlot_state.json", dry_run=True, api_key="test-key",
+            fixed_lot=1000.0,   # far above snap.volume_max
+        )
+        assert position_size(snap, over_cfg, 2.0 * atr) == snap.volume_max, \
+            "fixed_lot must still be clamped to the broker's own volume_max, even when explicitly chosen"
+        print(f"  fixed_lot is still clamped to the broker's volume_max (safety check applies regardless of who picked the size): OK")
+
         # --- signal file write/round-trip ---
         write_signal(cfg, 1, "XAUUSD", "BUY", 0.01, snap.ask - 3.0, snap.ask + 5.0, "4.2", "test")
         content = cfg.signal_file.read_text().strip()
@@ -1953,6 +1987,7 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         api_key=args.api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
         risk_percent=args.risk_percent,
         fallback_equity=args.fallback_equity,
+        fixed_lot=args.fixed_lot,
         time_decay_seconds=args.time_decay_seconds,
         min_confidence=args.min_confidence,
         min_atr_mult=args.min_atr_mult,
@@ -1984,6 +2019,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--risk-percent", type=float, default=2.0, help="risk per trade, as %% of equity")
     parser.add_argument("--fallback-equity", type=float, default=5000.0,
                          help="used for sizing if the EA's exported equity is 0 (e.g. testing)")
+    parser.add_argument("--fixed-lot", type=float, default=0.0,
+                         help="use this lot size for every trade instead of risk-based sizing; "
+                              "0 disables it (default) - still clamped to the broker's min/max/step "
+                              "even when set, same as the computed value always has been")
     parser.add_argument("--time-decay-seconds", type=float, default=TIME_DECAY_SECONDS,
                          help="force-close if unresolved after this long")
     parser.add_argument("--min-confidence", type=float, default=60.0,
