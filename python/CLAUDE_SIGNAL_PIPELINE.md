@@ -418,17 +418,20 @@ Two more overlay-context sources, both advisory-only (never gates), both
 reported as an honest "not evaluated" string when unavailable rather than
 guessed at - the same pattern the news check above already uses.
 
-**COT (CFTC Commitment of Traders, COMEX gold)** - `enable_cot` (on by
-default), `--no-cot` to disable. `fetch_cot_gold()` pulls the latest
-"Legacy Futures Only" row for COMEX gold from the CFTC's free, public,
-no-auth Socrata API (`publicreporting.cftc.gov`, dataset `6dca-aqww`),
-caches it in `state["cot_cache"]` for `--cot-cache-hours` (default 24 -
-the report itself only updates once a week, Friday afternoons, so there's
-nothing to gain from fetching more often), and reports net noncommercial
-(speculative) and commercial (hedger) positioning plus open interest via
-`cot_context()`. On ANY failure - network, unexpected schema, anything -
-this falls back to the last good cache, or `None`, rather than raising;
-COT is slow-moving context, never worth blocking a trading cycle over.
+**COT (CFTC Commitment of Traders, COMEX gold)** - `enable_cot`, on by
+default in `claude_signal_bot.py` (`--no-cot` to disable). `fetch_cot_gold()`
+pulls the latest "Legacy Futures Only" row for COMEX gold from the CFTC's
+free, public, no-auth Socrata API (`publicreporting.cftc.gov`, dataset
+`6dca-aqww`), caches it in `state["cot_cache"]` for `--cot-cache-hours`
+(default 24 - the report itself only updates once a week, Friday
+afternoons, so there's nothing to gain from fetching more often), and
+reports net noncommercial (speculative) and commercial (hedger)
+positioning plus open interest via `cot_context()`. On ANY failure -
+network, unexpected schema, anything - this falls back to the last good
+cache, or `None`, rather than raising; COT is slow-moving context, never
+worth blocking a trading cycle over. `backtest_xtr.py` inverts the
+default (`--enable-cot`, OFF unless passed) - see "Honest notes / risks"
+below and BACKTEST.md for why.
 
 Two honest caveats: this session could not live-verify the exact JSON
 field names/response shape against the real API (the sandbox this was
@@ -723,7 +726,7 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | §11 trade log / §13 report format | Python, populated with Claude's reasoning + which mechanical hints actually fired (`hints_fired`) |
 | §12 macro-news check | MQL5's built-in Economic Calendar (`InpEnableNewsCheck`, on by default) - advisory context, not a gate; see "News check" above |
 | §12 DXY correlation | MQL5's own DXY-proxy symbol read (`InpEnableDxy`/`InpDxySymbol`, on by default) - advisory context, not a gate; see "COT positioning and DXY correlation" above |
-| COT (CFTC gold positioning) | Python (`fetch_cot_gold`/`cot_context`), `enable_cot` on by default, `--no-cot` to disable - advisory context, not a gate; see "COT positioning and DXY correlation" above |
+| COT (CFTC gold positioning) | Python (`fetch_cot_gold`/`cot_context`) - advisory context, not a gate; on by default in `claude_signal_bot.py` (`--no-cot` to disable), off by default in `backtest_xtr.py` (`--enable-cot` to opt in, since it's always today's report - see "COT positioning and DXY correlation" above) |
 
 ## Honest notes / risks
 

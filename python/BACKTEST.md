@@ -145,14 +145,13 @@ measured here.
   `ChartSnapshot.dxy_dir` is always its default `"NA"` here and
   `dxy_correlation_context()` always reports "not evaluated."
 - **COT is real, current-date data, not historical** — unlike news/DXY,
-  `--no-cot`/`--cot-cache-hours` DO reach a real network call during a
-  real (non-`--stub`) backtest run, since `fetch_cot_gold()` always fetches
-  the *latest* CFTC report regardless of which historical dates the M1
-  data covers. That's a mismatch worth knowing about: a backtest over 2024
-  data would still see today's COT positioning, not 2024's. Pass `--no-cot`
-  for a backtest run if you want to rule this out entirely; it's on by
-  default because it fails gracefully (cached/`None`) rather than because
-  it's meaningful against arbitrary historical bars.
+  `fetch_cot_gold()` always fetches the *latest* CFTC report regardless of
+  which historical dates the M1 data covers, so it's **off by default here**
+  (`--enable-cot` to turn it on), unlike the live bot where it's on by
+  default. A backtest over 2024 data would otherwise silently see today's
+  COT positioning, not 2024's - `--enable-cot` is there for exercising the
+  fetch/cache path itself (e.g. against very recent data), not for a
+  realistic historical backtest.
 - **The self-correction loop sees only this run's own history.** Realistic
   in spirit (it's exactly what a live run would build up over time from a
   cold start), but a backtest starting cold means the first several cycles
