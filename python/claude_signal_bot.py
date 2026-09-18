@@ -66,7 +66,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -119,8 +119,15 @@ XTR SETUP ARCHETYPES (apply with judgment, not as rigid triggers):
   EMA21, RSI vs 50, MACD histogram sign) grades your conviction: FULL when
   both M15 and H1 clearly agree with the M5 direction, REDUCED when one
   clearly agrees and the other is mixed/unclear, and NO_TRADE when M5 is
-  clearly opposed by either HTF or both are mixed/unclear - treat NO_TRADE
-  conviction as a hard pass in practice, not merely "more cautious."
+  clearly opposed by either HTF or both are mixed/unclear. This is now a
+  hard rule, not just advisory framing: only FULL conviction gets
+  executed (see the hard constraints below) - real trading results
+  showed REDUCED-conviction entries are the ones that keep getting
+  stopped out, on both sides (a mixed/borderline-conflicting HTF, or an
+  RSI extreme taken against the prevailing trend), while full all-three-
+  timeframe-aligned continuation trades are the winners. Don't propose a
+  REDUCED or NO_TRADE setup expecting it to fire - it will be rejected
+  and traded as NONE regardless of confidence.
 
 GENERAL PRINCIPLES TO WEIGH ALONGSIDE THE ABOVE:
 - Trade with dominant momentum and structure; do not fight a strong,
@@ -210,6 +217,7 @@ class BotConfig:
     max_atr_mult: float = 3.0    # sanity ceiling on the proposed stop distance
     max_concurrent_signals: int = 1   # pending (unresolved) signals allowed at once
     require_htf_gate: bool = True     # skip the Claude call entirely when htf_align == "NONE"
+    require_full_htf_conviction: bool = True  # reject BUY/SELL unless htf_conviction() is FULL (both M15+H1 clearly agree)
     max_daily_loss_usd: float = 0.0   # 0 = disabled; halt new signals once today's realized pnl <= -this
     max_trades_per_day: int = 0       # 0 = disabled; halt new signals once today's EXECUTED count reaches this
     max_spread_mult: float = 0.0      # 0 = disabled; skip the cycle when spread > this x the recent rolling median
@@ -1009,7 +1017,12 @@ def build_analysis_prompt(snap: ChartSnapshot, m5_direction: str, m15_direction:
         "don't actually mean; do not propose BUY/SELL if MAX CONCURRENT SIGNALS below shows "
         "the limit is already reached - a live position or pending signal already exists and "
         "adding another is not part of this system's design (10-minute single scalps, not "
-        "pyramiding).\n\n"
+        "pyramiding)"
+        + ("; a BUY/SELL will be rejected outright and traded as NONE unless HTF conviction "
+           "for that direction is FULL (both M15 and H1 clearly agree) - real trading results "
+           "showed REDUCED-conviction entries (a mixed or borderline-conflicting HTF) are the "
+           "ones that keep getting stopped out, so don't propose one expecting it to execute"
+           if cfg.require_full_htf_conviction else "") + ".\n\n"
         "Reply with STRICT JSON only, no markdown fences, no text outside the object: "
         '{"action": "BUY"|"SELL"|"NONE", "setup_type": "4.1"|"4.2"|"4.3"|"discretionary"|null, '
         '"sl": <number or null>, "tp": <number or null>, "confidence": <integer 0-100>, '
@@ -1141,6 +1154,24 @@ def validate_decision(decision: dict, snap: ChartSnapshot, state: dict, cfg: Bot
 
     if decision["confidence"] < cfg.min_confidence:
         return False, f"confidence {decision['confidence']:.0f} below floor {cfg.min_confidence:.0f}"
+
+    if cfg.require_full_htf_conviction:
+        # Recomputed directly from snap rather than trusting decision["hints"]
+        # to already carry it - keeps this backstop self-contained and
+        # correct regardless of what the caller happened to populate.
+        # Real trading results (tracked outside this repo) showed reduced-
+        # conviction entries - a mixed or borderline-conflicting HTF, or an
+        # RSI extreme taken against the prevailing trend - are the ones that
+        # keep getting stopped out, while full all-three-timeframe-aligned
+        # continuation trades are the winners. This makes that observation
+        # a hard rule instead of just advisory context Claude could weigh
+        # or ignore.
+        m15_dir = direction_for(snap.ind["M15"])
+        h1_dir = direction_for(snap.ind["H1"])
+        grade = htf_conviction(decision["action"], m15_dir, h1_dir)
+        if grade != "FULL":
+            return False, (f"HTF conviction is {grade}, not FULL (M15={m15_dir} H1={h1_dir}) - "
+                            f"only full three-timeframe agreement is executed")
 
     sl, tp = decision.get("sl"), decision.get("tp")
     if sl is None or tp is None:
@@ -1694,6 +1725,24 @@ def selftest() -> None:
         assert not ok
         print(f"  validate_decision rejects a stop far outside the ATR sanity band: OK ({reason})")
 
+        # --- hard FULL-conviction backstop: REDUCED (mixed HTF) is rejected by default ---
+        reduced_snap = replace(snap, ind={**snap.ind, "H1": {**snap.ind["H1"], "rsi14": 45.0}})
+        assert direction_for(reduced_snap.ind["H1"]) == "MIXED", "H1 must read MIXED for this to test REDUCED"
+        assert htf_conviction("BUY", direction_for(reduced_snap.ind["M15"]), "MIXED") == "REDUCED"
+        ok, reason = validate_decision(good_decision, reduced_snap, state, cfg)
+        assert not ok
+        print(f"  validate_decision rejects a REDUCED-conviction BUY (mixed H1) by default: OK ({reason})")
+
+        no_conviction_gate_cfg = BotConfig(
+            data_file=trending_file, signal_file=tmp_path / "noconv_signals.txt",
+            ack_file=tmp_path / "noconv_ack.txt", outcome_file=tmp_path / "noconv_outcomes.txt",
+            state_file=tmp_path / "noconv_state.json", dry_run=True, api_key="test-key",
+            require_full_htf_conviction=False,
+        )
+        ok, reason = validate_decision(good_decision, reduced_snap, state, no_conviction_gate_cfg)
+        assert ok, reason
+        print("  require_full_htf_conviction=False (--no-full-conviction-gate) lets a REDUCED-conviction trade through: OK")
+
         standdown_state = load_state(cfg)
         update_standdown(standdown_state, [
             {"signal_id": "1", "setup_type": "4.2", "direction": "BUY", "profit": -5.0, "outcome": "LOSS"},
@@ -2008,6 +2057,7 @@ def build_config_from_args(args: argparse.Namespace) -> BotConfig:
         max_atr_mult=args.max_atr_mult,
         max_concurrent_signals=args.max_concurrent_signals,
         require_htf_gate=not args.no_htf_gate,
+        require_full_htf_conviction=not args.no_full_conviction_gate,
         max_daily_loss_usd=args.max_daily_loss_usd,
         max_trades_per_day=args.max_trades_per_day,
         max_spread_mult=args.max_spread_mult,
@@ -2053,6 +2103,11 @@ def main(argv: list[str] | None = None) -> int:
                          help="disable the mechanical 2-of-3 HTF pre-filter (on by default) and call "
                               "Claude on every cycle regardless of htf_align - costs more, but doesn't "
                               "skip contrarian setups (RSI-extreme bounce, liquidity sweep) the gate would")
+    parser.add_argument("--no-full-conviction-gate", action="store_true",
+                         help="disable the hard FULL-htf_conviction backstop (on by default - only "
+                              "trades where both M15 and H1 clearly agree with M5 are executed; "
+                              "REDUCED/NO_TRADE-conviction signals are rejected and traded as NONE "
+                              "regardless of confidence)")
     parser.add_argument("--max-daily-loss-usd", type=float, default=0.0,
                          help="halt new signals for the rest of the UTC day once realized pnl today "
                               "reaches -this many dollars; 0 disables the cap (default)")

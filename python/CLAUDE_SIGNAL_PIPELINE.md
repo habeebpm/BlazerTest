@@ -291,6 +291,44 @@ majority (2/3, one timeframe MIXED or opposed) reads differently from
 unanimous agreement (3/3) in its own reasoning, rather than collapsing both
 into the same "aligned" signal.
 
+## The hard FULL-conviction backstop
+
+`htf_conviction()` (§5) grades a *specific proposed direction* against M15/H1
+- FULL when both clearly agree, REDUCED when one agrees and the other is
+mixed/unclear, NO_TRADE when either clearly opposes or both are mixed. Until
+now this was purely advisory context shown to Claude, the same as the setup
+hints - Claude could weigh it or override it.
+
+**It's now a hard backstop** (`require_full_htf_conviction`, on by default):
+`validate_decision` recomputes the grade directly from `snap` (not from
+whatever `decision["hints"]` happens to carry, so it's correct regardless of
+caller) and rejects, trading as NONE, any BUY/SELL that isn't FULL -
+regardless of Claude's stated confidence. Disable with
+`--no-full-conviction-gate` to go back to advisory-only.
+
+This came from a real, if informally tracked, pattern: full all-three-
+timeframe-aligned continuation trades were the winners, while REDUCED-
+conviction entries - a mixed or borderline-conflicting HTF, or an RSI
+extreme taken against the prevailing trend - kept getting stopped out, on
+both the long and short side. Rather than leave that as something Claude
+is merely *told* to weigh (per the self-correction loop), it's now enforced
+the same way the ATR sanity band and confidence floor are.
+
+**Read this before turning it on for real trading - it's strict.** 4.1
+(RSI-extreme bounce) fires in a RANGING regime specifically because the
+higher timeframes often aren't cleanly trending either way (see the HTF
+pre-filter section above), and 4.3 (liquidity-sweep reversal) is a
+reversal *against* the recent move, which is exactly when HTFs are still
+reading the old direction - both setups can genuinely struggle to ever
+reach FULL conviction by design, not just in the cases that were
+historically losing. Measured on the bundled 2-day sample with the
+content-blind `--stub` decider (not a judgment of Claude's real decisions -
+see BACKTEST.md): trades dropped from 5 to **0** with this gate on, because
+none of the stub's RSI-extreme picks in that window happened to have both
+M15 and H1 clearly agreeing. If you want to see the effect on Claude's
+actual judgment rather than the stub, run a real backtest with and without
+`--no-full-conviction-gate` over the same window and compare.
+
 ## Two more mechanical, opt-in risk controls
 
 Both are disabled by default (0/unset) - existing behavior doesn't change
@@ -593,7 +631,7 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | Self-correction note (what it's adjusting based on its own track record) | Claude, informed by `state["trade_history"]` (Python maintains the record, Claude interprets it) |
 | §2/§3 direction & regime *labels* shown to Claude | Python (`direction_for`, `regime_for`) - informational only |
 | §4 setup *hints* shown to Claude | Python (`check_rsi_bounce`, `check_trend_pullback`, `check_liquidity_sweep`) - advisory only, not gates |
-| §5 HTF grade shown to Claude | Python (`htf_conviction`) - advisory only |
+| §5 HTF grade shown to Claude | Python (`htf_conviction`) - hard backstop by default (`require_full_htf_conviction`; only FULL executes), `--no-full-conviction-gate` for advisory-only |
 | Side-of-price / stop-distance sanity check | Python, hard backstop on Claude's own numbers (fails safe - rejects the trade if ATR itself isn't available to check against) |
 | §8 position sizing | A fixed lot (`--fixed-lot`, defaults to 0.1, always used regardless of stop distance) - or switch to the system's recommended risk-based sizing from Claude's stop distance with `--fixed-lot 0`; either way, still clamped to the broker's min/max/step |
 | §9 time-decay close | Python, targeted at the specific stale position (`CLOSE_ID`), not everything open |

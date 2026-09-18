@@ -644,11 +644,17 @@ def selftest() -> None:
     # --- end-to-end with the stub decider - proves the whole loop runs and
     #     that state (standdown/trade_history) evolves, without any network call ---
     m1_trend = _synthetic_m1(hours=60, trend=0.05, seed=11)
+    # require_full_htf_conviction is off in these fixtures deliberately - they're
+    # testing the HTF gate/daily breaker/spread gate in isolation, the same reason
+    # min_atr_mult/max_atr_mult are set permissive here; the gate itself gets its
+    # own dedicated test below, run_backtest-wired rather than just at the
+    # validate_decision unit level (already covered in claude_signal_bot.py).
     cfg = bot.BotConfig(
         data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
         outcome_file=Path("unused"), state_file=Path("unused"),
         risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
         min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
+        require_full_htf_conviction=False,
     )
     report = run_backtest(m1_trend, cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
                            decide_fn=stub_decision, max_cycles=15)
@@ -669,7 +675,7 @@ def selftest() -> None:
         outcome_file=Path("unused"), state_file=Path("unused"),
         risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
         min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
-        require_htf_gate=False,
+        require_htf_gate=False, require_full_htf_conviction=False,
     )
     nogate_report = run_backtest(m1_trend, nogate_cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
                                   decide_fn=stub_decision, max_cycles=None)
@@ -683,6 +689,28 @@ def selftest() -> None:
           f"(gated {gated_report_same_window['cycles_evaluated']} calls + "
           f"{gated_report_same_window['htf_gate_skips']} skipped, "
           f"vs {nogate_report['cycles_evaluated']} calls with the gate off)")
+
+    # require_full_htf_conviction (on by default) must actually suppress trades
+    # relative to running with it off, run_backtest-wired (not just the
+    # validate_decision unit-level coverage in claude_signal_bot.py's own
+    # selftest) - proves the harness's default matches the live bot's.
+    full_conviction_cfg = bot.BotConfig(
+        data_file=Path("unused"), signal_file=Path("unused"), ack_file=Path("unused"),
+        outcome_file=Path("unused"), state_file=Path("unused"),
+        risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
+        min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
+        require_htf_gate=False, require_full_htf_conviction=True,
+    )
+    full_conviction_report = run_backtest(m1_trend, full_conviction_cfg, "XAUUSD", start_equity=5000.0,
+                                           warmup_bars=250, decide_fn=stub_decision, max_cycles=None)
+    assert full_conviction_report["trades"] < nogate_report["trades"], (
+        f"require_full_htf_conviction=True must suppress at least some of the trades "
+        f"require_full_htf_conviction=False allows on the same data: "
+        f"{full_conviction_report['trades']} vs {nogate_report['trades']}"
+    )
+    print(f"  require_full_htf_conviction (default True) suppresses REDUCED/NO_TRADE-conviction "
+          f"trades run_backtest-wired: OK ({full_conviction_report['trades']} trades vs "
+          f"{nogate_report['trades']} with the gate off)")
 
     # --- htf_strength: build_snapshot_at computes the same 2-vs-3 ordinal the live EA exports ---
     assert snap.htf_strength in (0, 2, 3)
@@ -717,7 +745,7 @@ def selftest() -> None:
         outcome_file=Path("unused"), state_file=Path("unused"),
         risk_percent=2.0, fallback_equity=5000.0, min_confidence=50.0,
         min_atr_mult=0.1, max_atr_mult=5.0, max_concurrent_signals=1, time_decay_seconds=600,
-        max_trades_per_day=1,
+        max_trades_per_day=1, require_full_htf_conviction=False,
     )
     capped_report = run_backtest(m1_trend, daily_cap_cfg, "XAUUSD", start_equity=5000.0, warmup_bars=250,
                                   decide_fn=stub_decision, max_cycles=None)
@@ -789,6 +817,9 @@ def main(argv: list[str] | None = None) -> int:
                          help="disable the mechanical 2-of-3 HTF pre-filter (on by default) and call "
                               "Claude on every cycle - costs more API calls, but doesn't skip cycles a "
                               "contrarian 4.1/4.3 setup could fire on; see CLAUDE_SIGNAL_PIPELINE.md")
+    parser.add_argument("--no-full-conviction-gate", action="store_true",
+                         help="disable the hard FULL-htf_conviction backstop (on by default - only "
+                              "trades where both M15 and H1 clearly agree with M5 are executed)")
     parser.add_argument("--max-daily-loss-usd", type=float, default=0.0,
                          help="halt new signals for the rest of the (simulated) UTC day once realized "
                               "pnl reaches -this many dollars; 0 disables the cap (default)")
@@ -834,6 +865,7 @@ def main(argv: list[str] | None = None) -> int:
         fallback_equity=args.start_equity, time_decay_seconds=args.time_decay_seconds,
         min_confidence=args.min_confidence, min_atr_mult=args.min_atr_mult, max_atr_mult=args.max_atr_mult,
         max_concurrent_signals=args.max_concurrent_signals, require_htf_gate=not args.no_htf_gate,
+        require_full_htf_conviction=not args.no_full_conviction_gate,
         max_daily_loss_usd=args.max_daily_loss_usd, max_trades_per_day=args.max_trades_per_day,
         max_spread_mult=args.max_spread_mult,
     )
