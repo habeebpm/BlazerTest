@@ -37,9 +37,10 @@ Claude for analysis" - so this version inverts it:
     signals are currently pending so it isn't surprised by the rejection)
   - §9's 10-minute time-decay close - targeted at the specific stale
     position via `CLOSE_ID`, not a blanket close of everything open
-  - §8's position sizing - a fixed lot by default (`--fixed-lot`, 0.05
-    unless you set it otherwise), or risk-based arithmetic applied to
-    *Claude's* stop distance if you pass `--fixed-lot 0`
+  - §8's position sizing - a fixed lot by default (`--fixed-lot`, 0.1
+    unless you set it otherwise), or the system's recommended risk-based
+    sizing (arithmetic applied to *Claude's* stop distance) if you
+    switch to it with `--fixed-lot 0`
   - a daily circuit breaker (`--max-daily-loss-usd`/`--max-trades-per-day`,
     both disabled by default) - a blunt, whole-account halt for the rest of
     the UTC day, independent of setup type or standdown state, checked
@@ -594,7 +595,7 @@ above - from `PENDING` to `WIN`/`LOSS`.
 | §4 setup *hints* shown to Claude | Python (`check_rsi_bounce`, `check_trend_pullback`, `check_liquidity_sweep`) - advisory only, not gates |
 | §5 HTF grade shown to Claude | Python (`htf_conviction`) - advisory only |
 | Side-of-price / stop-distance sanity check | Python, hard backstop on Claude's own numbers (fails safe - rejects the trade if ATR itself isn't available to check against) |
-| §8 position sizing | A fixed lot (`--fixed-lot`, defaults to 0.05, always used regardless of stop distance) - or Python's risk-based arithmetic from Claude's stop distance if you pass `--fixed-lot 0`; either way, still clamped to the broker's min/max/step |
+| §8 position sizing | A fixed lot (`--fixed-lot`, defaults to 0.1, always used regardless of stop distance) - or switch to the system's recommended risk-based sizing from Claude's stop distance with `--fixed-lot 0`; either way, still clamped to the broker's min/max/step |
 | §9 time-decay close | Python, targeted at the specific stale position (`CLOSE_ID`), not everything open |
 | §10 two-loss standdown | Python, hard backstop (Claude is also told about it) |
 | Max concurrent signals | Python, hard backstop, default 1 (Claude is shown current pending count and told not to stack) |

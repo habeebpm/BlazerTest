@@ -203,7 +203,7 @@ class BotConfig:
     api_key: str = ""
     risk_percent: float = 2.0
     fallback_equity: float = 5000.0
-    fixed_lot: float = 0.05  # always use this lot size; 0 falls back to risk-based sizing instead
+    fixed_lot: float = 0.1  # always use this lot size; 0 switches to the system's recommended (risk-based) sizing
     time_decay_seconds: float = TIME_DECAY_SECONDS
     min_confidence: float = 60.0
     min_atr_mult: float = 0.25   # sanity floor on the proposed stop distance
@@ -1929,36 +1929,36 @@ def selftest() -> None:
         print("  time-decay writes a targeted CLOSE_ID (original signal id in the lot column): OK")
 
         # --- position sizing ---
-        # cfg.fixed_lot defaults to 0.05 - always used regardless of stop distance,
-        # unless explicitly disabled (fixed_lot=0, opting back into risk-based sizing).
+        # cfg.fixed_lot defaults to 0.1 - always used regardless of stop distance,
+        # unless explicitly set to 0 (switching to the system's recommended, risk-based sizing).
         lots = position_size(snap, cfg, 2.0 * atr)
-        assert lots == 0.05, f"fixed_lot=0.05 is the default and must always be used as-is: {lots}"
-        assert position_size(snap, cfg, 50.0 * atr) == 0.05, "stop distance must not affect a fixed lot"
-        print(f"  position_size defaults to a fixed 0.05 lot, ignoring stop distance/risk %: OK (lots={lots})")
+        assert lots == 0.1, f"fixed_lot=0.1 is the default and must always be used as-is: {lots}"
+        assert position_size(snap, cfg, 50.0 * atr) == 0.1, "stop distance must not affect a fixed lot"
+        print(f"  position_size defaults to a fixed 0.1 lot, ignoring stop distance/risk %: OK (lots={lots})")
 
         risk_based_cfg = BotConfig(
             data_file=trending_file, signal_file=tmp_path / "riskbased_signals.txt",
             ack_file=tmp_path / "riskbased_ack.txt", outcome_file=tmp_path / "riskbased_outcomes.txt",
             state_file=tmp_path / "riskbased_state.json", dry_run=True, api_key="test-key",
-            fixed_lot=0.0,   # opt back into risk-based sizing
+            fixed_lot=0.0,   # switch to the system's recommended (risk-based) sizing
         )
         risk_lots = position_size(snap, risk_based_cfg, 2.0 * atr)
         assert snap.volume_min <= risk_lots <= snap.volume_max
         bigger_stop_lots = position_size(snap, risk_based_cfg, 4.0 * atr)
         assert bigger_stop_lots < risk_lots, "a wider stop must size down under risk-based sizing (fixed_lot=0)"
-        print(f"  fixed_lot=0 opts back into risk-based sizing, which still varies with stop distance: OK "
-              f"(lots={risk_lots} at 2x ATR, {bigger_stop_lots} at 4x ATR)")
+        print(f"  fixed_lot=0 switches to the system's recommended (risk-based) sizing, which still "
+              f"varies with stop distance: OK (lots={risk_lots} at 2x ATR, {bigger_stop_lots} at 4x ATR)")
 
-        # --- fixed_lot override: any chosen size is used as-is, not just the 0.05 default ---
+        # --- fixed_lot override: any chosen size is used as-is, not just the 0.1 default ---
         custom_fixed_cfg = BotConfig(
             data_file=trending_file, signal_file=tmp_path / "fixedlot_signals.txt",
             ack_file=tmp_path / "fixedlot_ack.txt", outcome_file=tmp_path / "fixedlot_outcomes.txt",
             state_file=tmp_path / "fixedlot_state.json", dry_run=True, api_key="test-key",
-            fixed_lot=0.10,
+            fixed_lot=0.20,
         )
-        assert position_size(snap, custom_fixed_cfg, 2.0 * atr) == 0.10
-        assert position_size(snap, custom_fixed_cfg, 50.0 * atr) == 0.10
-        print("  fixed_lot honors any explicitly chosen size, not just the 0.05 default: OK")
+        assert position_size(snap, custom_fixed_cfg, 2.0 * atr) == 0.20
+        assert position_size(snap, custom_fixed_cfg, 50.0 * atr) == 0.20
+        print("  fixed_lot honors any explicitly chosen size, not just the 0.1 default: OK")
 
         over_cfg = BotConfig(
             data_file=trending_file, signal_file=tmp_path / "overlot_signals.txt",
@@ -2033,10 +2033,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--risk-percent", type=float, default=2.0, help="risk per trade, as %% of equity")
     parser.add_argument("--fallback-equity", type=float, default=5000.0,
                          help="used for sizing if the EA's exported equity is 0 (e.g. testing)")
-    parser.add_argument("--fixed-lot", type=float, default=0.05,
+    parser.add_argument("--fixed-lot", type=float, default=0.1,
                          help="use this lot size for every trade instead of risk-based sizing "
-                              "(default 0.05, always applied); pass 0 to fall back to risk-based "
-                              "sizing instead - still clamped to the broker's min/max/step either way")
+                              "(default 0.1, always applied); pass 0 to switch to the system's "
+                              "recommended (risk-based) lot size instead - still clamped to the "
+                              "broker's min/max/step either way")
     parser.add_argument("--time-decay-seconds", type=float, default=TIME_DECAY_SECONDS,
                          help="force-close if unresolved after this long")
     parser.add_argument("--min-confidence", type=float, default=60.0,
