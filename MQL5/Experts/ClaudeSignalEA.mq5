@@ -342,72 +342,75 @@ string HtfAlignment(const string m5Dir, const string m15Dir, const string h1Dir,
 //| Economic-calendar news awareness (§ "News check" in the XTR       |
 //| logic). Uses MT5's own built-in Economic Calendar - broker-       |
 //| dependent: some demo/ECN servers don't populate it at all, in     |
-//| which case CalendarValueHistory simply returns 0 and these        |
-//| functions return false, degrading to "no data" rather than an     |
-//| error. NOTE: a false return here is ambiguous between "checked,   |
-//| no HIGH event in the window" and "calendar unavailable on this    |
-//| server" - the EA cannot tell those apart, and neither can Python; |
-//| documented in CLAUDE_SIGNAL_PIPELINE.md rather than hidden.       |
+//| which case CalendarValueHistory simply returns 0 and this         |
+//| function reports no data on both sides, rather than an error.     |
+//| NOTE: that is ambiguous between "checked, no HIGH event in the    |
+//| window" and "calendar unavailable on this server" - the EA        |
+//| cannot tell those apart, and neither can Python; documented in    |
+//| CLAUDE_SIGNAL_PIPELINE.md rather than hidden.                     |
 //| CalendarValueHistory's `time` values are in the trade server's    |
 //| own timezone, same as TimeCurrent() - directly comparable, no     |
 //| conversion needed.                                                 |
+//|                                                                    |
+//| One query over [now-lookbackMin, now+lookaheadMin], partitioned    |
+//| into "next" (time >= now) and "recent" (time < now) as it scans -  |
+//| covers both directions in a single CalendarValueHistory call       |
+//| instead of two separate, overlapping-range ones.                   |
 //+------------------------------------------------------------------+
-bool FindNextHighImpactNews(const datetime now, const int lookaheadMin, const string currency,
-                             int &outMinutes, string &outName)
+bool FindNearestHighImpactNews(const datetime now, const int lookbackMin, const int lookaheadMin, const string currency,
+                                int &outNextMinutes, string &outNextName,
+                                int &outRecentMinutes, string &outRecentName)
 {
-   MqlCalendarValue values[];
-   datetime to = now + lookaheadMin * 60;
-   int n = CalendarValueHistory(values, now, to, NULL, currency);
-   if(n <= 0) return(false);
+   outNextMinutes = -1; outNextName = "";
+   outRecentMinutes = -1; outRecentName = "";
 
-   datetime bestTime = 0;
-   string   bestName = "";
-   bool     found = false;
-   for(int i = 0; i < n; i++)
-   {
-      MqlCalendarEvent ev;
-      if(!CalendarEventById(values[i].event_id, ev)) continue;
-      if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
-      if(!found || values[i].time < bestTime)
-      {
-         bestTime = values[i].time;
-         bestName = ev.name;
-         found = true;
-      }
-   }
-   if(!found) return(false);
-   outMinutes = (int)((bestTime - now) / 60);
-   outName    = bestName;
-   return(true);
-}
-
-bool FindRecentHighImpactNews(const datetime now, const int lookbackMin, const string currency,
-                               int &outMinutes, string &outName)
-{
    MqlCalendarValue values[];
    datetime from = now - lookbackMin * 60;
-   int n = CalendarValueHistory(values, from, now, NULL, currency);
+   datetime to   = now + lookaheadMin * 60;
+   int n = CalendarValueHistory(values, from, to, NULL, currency);
    if(n <= 0) return(false);
 
-   datetime bestTime = 0;
-   string   bestName = "";
-   bool     found = false;
+   datetime bestNextTime = 0, bestRecentTime = 0;
+   string   bestNextName = "", bestRecentName = "";
+   bool     foundNext = false, foundRecent = false;
+
    for(int i = 0; i < n; i++)
    {
       MqlCalendarEvent ev;
       if(!CalendarEventById(values[i].event_id, ev)) continue;
       if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
-      if(!found || values[i].time > bestTime)
+
+      if(values[i].time >= now)
       {
-         bestTime = values[i].time;
-         bestName = ev.name;
-         found = true;
+         if(!foundNext || values[i].time < bestNextTime)
+         {
+            bestNextTime = values[i].time;
+            bestNextName = ev.name;
+            foundNext = true;
+         }
+      }
+      else
+      {
+         if(!foundRecent || values[i].time > bestRecentTime)
+         {
+            bestRecentTime = values[i].time;
+            bestRecentName = ev.name;
+            foundRecent = true;
+         }
       }
    }
-   if(!found) return(false);
-   outMinutes = (int)((now - bestTime) / 60);
-   outName    = bestName;
-   return(true);
+
+   if(foundNext)
+   {
+      outNextMinutes = (int)((bestNextTime - now) / 60);
+      outNextName    = bestNextName;
+   }
+   if(foundRecent)
+   {
+      outRecentMinutes = (int)((now - bestRecentTime) / 60);
+      outRecentName    = bestRecentName;
+   }
+   return(foundNext || foundRecent);
 }
 
 //+------------------------------------------------------------------+
@@ -497,16 +500,14 @@ void ExportChartData()
 
    // News awareness (XTR's "News check" step) - -1/"" means either "checked,
    // nothing found in the window" or "calendar unavailable on this broker's
-   // server"; see FindNextHighImpactNews's own comment for why the EA can't
-   // tell those apart. Names go in ##NEWS below, not the header, since they
-   // can contain spaces the header's key=value parsing can't handle.
+   // server"; see FindNearestHighImpactNews's own comment for why the EA
+   // can't tell those apart. Names go in ##NEWS below, not the header,
+   // since they can contain spaces the header's key=value parsing can't handle.
    int    newsNextMin = -1, newsRecentMin = -1;
    string newsNextName = "", newsRecentName = "";
    if(InpEnableNewsCheck)
-   {
-      FindNextHighImpactNews(TimeCurrent(), InpNewsLookaheadMin, InpNewsCurrency, newsNextMin, newsNextName);
-      FindRecentHighImpactNews(TimeCurrent(), InpNewsLookbackMin, InpNewsCurrency, newsRecentMin, newsRecentName);
-   }
+      FindNearestHighImpactNews(TimeCurrent(), InpNewsLookbackMin, InpNewsLookaheadMin, InpNewsCurrency,
+                                 newsNextMin, newsNextName, newsRecentMin, newsRecentName);
 
    FileWrite(handle, StringFormat(
       "#symbol=%s digits=%d point=%.5f tick_value=%.5f tick_size=%.5f volume_min=%.2f "
