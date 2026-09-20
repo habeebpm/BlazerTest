@@ -46,7 +46,6 @@ Partial Public Class DDR_Developer
     Protected WithEvents btnSaveAll As Global.System.Web.UI.WebControls.Button
 
     Protected WithEvents grdDDREntry As Global.System.Web.UI.WebControls.GridView
-    Protected WithEvents DDR_Entry_Source As Global.System.Web.UI.WebControls.SqlDataSource
 
     Protected WithEvents CTD_Search_Source As Global.System.Web.UI.WebControls.SqlDataSource
     Protected WithEvents RamzSource As Global.System.Web.UI.WebControls.SqlDataSource

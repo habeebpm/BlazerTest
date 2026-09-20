@@ -22,6 +22,22 @@ the existing `SmarTagsASP` Web Forms application, which provides:
 ## What changed vs. the original
 
 ### Bugs fixed
+- **"Add DDR Line" then "Save All" duplicated the existing rows**:
+  `grdDDREntry` was bound two competing ways — declaratively via
+  `DataSourceID="DDR_Entry_Source"` in the markup, and manually via
+  `grdDDREntry.DataSource = <in-memory DataTable>` in code whenever a row
+  was added/removed before saving. Toggling between the two across
+  postbacks let the framework's own auto-rebind-on-postback behavior for
+  `DataSourceID`-bound controls win at some point between the "Add DDR
+  Line" and "Save All" postbacks, resetting `DataKeys` back to the
+  DB-bound state — which made `btnSaveAll_Click` see every row's `DDR_ID`
+  as `0` and insert already-saved rows again instead of updating them.
+  `grdDDREntry` is no longer bound via `DataSourceID` at all (the
+  now-unused `DDR_Entry_Source` `SqlDataSource` was removed); a single
+  `LoadDdrGrid()` helper is the only thing that ever (re)binds it, on
+  initial load and after every save/delete/CSV-import, and adding or
+  removing a row always work from that grid's own current in-memory
+  state via `GetCurrentGridData()`.
 - **Duplicate event wiring**: several handlers (`btnAddDDR_Click`,
   `btnSaveAll_Click`, `DDR1`'s click, `CSV_Upload_Click`, and three
   `RowDataBound` handlers) were wired both via a markup `OnClick`/

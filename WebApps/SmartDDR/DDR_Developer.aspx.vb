@@ -22,7 +22,7 @@ Public Class DDR_Developer
             lblContext.Text = ctdId.ToString()
             lblRef.Text = ctdRef
 
-            Session("DDR_TEMP") = NewDdrTempTable()
+            LoadDdrGrid()
         End If
     End Sub
 
@@ -243,10 +243,54 @@ Public Class DDR_Developer
     End Function
 
     Private Sub RebindTempGrid(dt As DataTable)
-        Session("DDR_TEMP") = dt
-        grdDDREntry.DataSourceID = Nothing
         grdDDREntry.DataSource = dt
         grdDDREntry.DataBind()
+    End Sub
+
+    ''' <summary>
+    ''' Single source of truth for grdDDREntry: queries the current CTD's DDR
+    ''' lines fresh and rebinds from that DataTable. grdDDREntry is never bound
+    ''' via DataSourceID (see the .aspx comment history) - mixing a declarative
+    ''' SqlDataSource binding with the manual "add/remove unsaved rows" DataTable
+    ''' used to let the framework's own auto-rebind-on-postback behavior silently
+    ''' reset DataKeys back to 0 between the "Add DDR Line" and "Save All"
+    ''' postbacks, which made Save All treat already-saved rows as new inserts
+    ''' and duplicate them. Loading through one explicit path on every request
+    ''' removes that failure mode entirely.
+    ''' </summary>
+    Private Sub LoadDdrGrid()
+        Dim dt As DataTable = NewDdrTempTable()
+        Dim ctdId As Integer = Val(lblContext.Text)
+
+        Using con As New SqlConnection(ST_Common.WorleyDataConnString)
+            Using cmd As New SqlCommand(
+                "SELECT CTD_ID, DDR_ID, PLIP_ID, RAMZ_ID, Document_No, Document_Title, Man_Hours, " &
+                "Disc_Remarks, CRITICALITY, HO_REQ, HO_STATUS, Software " &
+                "FROM CTD_DDR_DISC WHERE CTD_ID = @CTD_ID", con)
+                cmd.Parameters.AddWithValue("@CTD_ID", ctdId)
+                con.Open()
+                Using rd As SqlDataReader = cmd.ExecuteReader()
+                    While rd.Read()
+                        Dim dr As DataRow = dt.NewRow()
+                        dr("CTD_ID") = rd("CTD_ID")
+                        dr("DDR_ID") = rd("DDR_ID")
+                        dr("PLIP_ID") = rd("PLIP_ID").ToString()
+                        dr("RAMZ_ID") = rd("RAMZ_ID").ToString()
+                        dr("Document_No") = rd("Document_No").ToString()
+                        dr("Document_Title") = rd("Document_Title").ToString()
+                        dr("Man_Hours") = rd("Man_Hours").ToString()
+                        dr("Disc_Remarks") = rd("Disc_Remarks").ToString()
+                        dr("CRITICALITY") = rd("CRITICALITY").ToString()
+                        dr("HO_REQ") = rd("HO_REQ").ToString()
+                        dr("HO_STATUS") = rd("HO_STATUS").ToString()
+                        dr("Software") = rd("Software").ToString()
+                        dt.Rows.Add(dr)
+                    End While
+                End Using
+            End Using
+        End Using
+
+        RebindTempGrid(dt)
     End Sub
 
     Protected Sub btnAddDDR_Click(sender As Object, e As EventArgs)
@@ -277,8 +321,7 @@ Public Class DDR_Developer
                     cmd.ExecuteNonQuery()
                 End Using
             End Using
-            grdDDREntry.DataSourceID = "DDR_Entry_Source"
-            grdDDREntry.DataBind()
+            LoadDdrGrid()
             ShowToast("success", "DDR line deleted.")
         Else
             Dim linkButton As LinkButton = TryCast(e.CommandSource, LinkButton)
@@ -301,9 +344,7 @@ Public Class DDR_Developer
     ''' actually part of DataKeyNames).
     ''' </summary>
     Private Function GetCurrentGridData() As DataTable
-        Dim dt As DataTable = TryCast(Session("DDR_TEMP"), DataTable)
-        If dt Is Nothing Then dt = NewDdrTempTable()
-        dt.Rows.Clear()
+        Dim dt As DataTable = NewDdrTempTable()
 
         For Each row As GridViewRow In grdDDREntry.Rows
             If row.RowType <> DataControlRowType.DataRow Then Continue For
@@ -520,8 +561,7 @@ Public Class DDR_Developer
             End Try
         End Using
 
-        grdDDREntry.DataSourceID = "DDR_Entry_Source"
-        grdDDREntry.DataBind()
+        LoadDdrGrid()
         ShowToast("success", "DDR records saved successfully.")
     End Sub
 
@@ -763,8 +803,7 @@ Public Class DDR_Developer
             End Try
         End Using
 
-        grdDDREntry.DataSourceID = "DDR_Entry_Source"
-        grdDDREntry.DataBind()
+        LoadDdrGrid()
         ShowToast("success", imported.ToString() & " DDR line(s) imported from CSV.")
     End Sub
 

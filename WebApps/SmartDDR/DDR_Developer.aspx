@@ -1104,7 +1104,6 @@ dialog.confirm-dialog::backdrop{
                     AutoGenerateColumns="False"
                     CssClass="gridview"
                     DataKeyNames="DDR_ID"
-                    DataSourceID="DDR_Entry_Source"
                     OnRowDataBound="grdDDREntry_RowDataBound"
                     OnRowCommand="grdDDREntry_RowCommand"
                     ShowHeaderWhenEmpty="True">
@@ -1283,43 +1282,6 @@ dialog.confirm-dialog::backdrop{
             </div>
         </div>
     </div>
-
-    <asp:SqlDataSource ID="DDR_Entry_Source" runat="server" ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
-        DeleteCommand="DELETE FROM [CTD_DDR_DISC] WHERE [DDR_ID] = @DDR_ID"
-        InsertCommand="INSERT INTO [CTD_DDR_DISC] ([CTD_ID], [PLIP_ID], [RAMZ_ID], [Document_No], [Document_Title], [Man_Hours], [HO_STATUS], [CRITICALITY], [HO_REQ], [Disc_Remarks], [Software]) VALUES (@CTD_ID, @PLIP_ID, @RAMZ_ID, @Document_No, @Document_Title, @Man_Hours, @HO_STATUS, @CRITICALITY, @HO_REQ, @Disc_Remarks, @Software)"
-        SelectCommand="SELECT [CTD_ID], [DDR_ID], [PLIP_ID], [RAMZ_ID], [Document_No], [Document_Title], [Man_Hours], [HO_STATUS], [CRITICALITY], [HO_REQ], [Disc_Remarks], [Software] FROM [CTD_DDR_DISC] WHERE ([CTD_ID] = @CTD_ID)"
-        UpdateCommand="UPDATE [CTD_DDR_DISC] SET [PLIP_ID] = @PLIP_ID, [RAMZ_ID] = @RAMZ_ID, [Document_No] = @Document_No, [Document_Title] = @Document_Title, [Man_Hours] = @Man_Hours, [HO_STATUS] = @HO_STATUS, [Disc_Remarks] = @Disc_Remarks, [Software] = @Software WHERE [DDR_ID] = @DDR_ID">
-        <DeleteParameters>
-            <asp:Parameter Name="DDR_ID" Type="Int32" />
-        </DeleteParameters>
-        <InsertParameters>
-            <asp:Parameter Name="CTD_ID" Type="Int32" />
-            <asp:Parameter Name="PLIP_ID" Type="String" />
-            <asp:Parameter Name="RAMZ_ID" Type="String" />
-            <asp:Parameter Name="Document_No" Type="String" />
-            <asp:Parameter Name="Document_Title" Type="String" />
-            <asp:Parameter Name="Man_Hours" Type="Decimal" />
-            <asp:Parameter Name="HO_STATUS" Type="String" />
-            <asp:Parameter Name="CRITICALITY" Type="String" />
-            <asp:Parameter Name="HO_REQ" Type="String" />
-            <asp:Parameter Name="Disc_Remarks" Type="String" />
-            <asp:Parameter Name="Software" Type="String" />
-        </InsertParameters>
-        <SelectParameters>
-            <asp:QueryStringParameter DefaultValue="0" Name="CTD_ID" QueryStringField="CTD_ID" Type="Int32" />
-        </SelectParameters>
-        <UpdateParameters>
-            <asp:Parameter Name="PLIP_ID" Type="String" />
-            <asp:Parameter Name="RAMZ_ID" Type="String" />
-            <asp:Parameter Name="Document_No" Type="String" />
-            <asp:Parameter Name="Document_Title" Type="String" />
-            <asp:Parameter Name="Man_Hours" Type="Decimal" />
-            <asp:Parameter Name="HO_STATUS" Type="String" />
-            <asp:Parameter Name="Disc_Remarks" Type="String" />
-            <asp:Parameter Name="Software" Type="String" />
-            <asp:Parameter Name="DDR_ID" Type="Int32" />
-        </UpdateParameters>
-    </asp:SqlDataSource>
 
     <asp:SqlDataSource ID="CTD_Search_Source" runat="server" ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
         SelectCommand="SELECT [CTD_ID],[Discipline],[Del_Item_Ref],[Deliverable],[CTD Hrs],[DDR Hrs],[CTD Qty],[DDR Qty] FROM [ACAD_DATA].[dbo].[SDDR_CTD_VIEW] WHERE PROJECT_NO=@PROJECT_NO AND DISCIPLINE=@DISCIPLINE">
