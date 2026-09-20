@@ -22,6 +22,22 @@ the existing `SmarTagsASP` Web Forms application, which provides:
 ## What changed vs. the original
 
 ### Bugs fixed
+- **"DDR + Activity" silently turned the activity row into a normal
+  document row**: `grdDDREntry_RowDataBound`'s "smart defaults" for a new,
+  unsaved row unconditionally generated and wrote a document number into
+  `txtDocumentNo`, overwriting the `"ACTIVITY"` sentinel that
+  `AddBlankDdrRow(dt, "ACTIVITY")` had just set — and the markup's
+  `Enabled`/`Text` bindings for the PLIP and Area fields, and whether
+  `Save All` would store `"ACTIVITY"` at all, all key off that exact
+  value. `grdDDREntry_RowDataBound` now checks for it first and returns
+  before running the PLIP/document defaults, leaving the row untouched.
+- **"Prev" jumped to the very first CTD instead of the previous one**:
+  `NavigateToAdjacentCtd`'s query always sorted `ORDER BY CTD_ID ASC`
+  (inherited from the original page, which had the same bug in its own
+  `CTD_Prev`), so `CTD_ID < @CurrentID ORDER BY CTD_ID ASC` returned the
+  *smallest* ID below the current one rather than the *largest* — i.e.
+  the first record in the list, not the adjacent one. "Prev" now sorts
+  `DESC` while "Next" keeps `ASC`.
 - **"Add DDR Line" then "Save All" duplicated the existing rows**:
   `grdDDREntry` was bound two competing ways — declaratively via
   `DataSourceID="DDR_Entry_Source"` in the markup, and manually via
@@ -89,6 +105,13 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   `RegisterStartupScript` JS string with a naive `.Replace("'", "")`,
   which is not a safe way to escape into JavaScript. Replaced with a
   `ShowToast` helper that uses `HttpUtility.JavaScriptStringEncode`.
+- **Misleading CSV error line numbers**: blank lines were stripped
+  (`StringSplitOptions.RemoveEmptyEntries`) before indexing into the
+  file, so a `"Line N"` error could point at the wrong physical line
+  once any blank line preceded it. Blank lines are now skipped
+  individually inside the loop instead, keeping line numbers accurate;
+  a CSV with only blank data rows now reports "no data rows" instead of
+  silently reporting 0 imported with no explanation.
 
 ### Removed dead / non-functional code
 - `PopulateAreaCombo`, `SetDDLValue`, `CTD_Grid_SelectedIndexChanged`,

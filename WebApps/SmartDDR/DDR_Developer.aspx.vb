@@ -53,7 +53,11 @@ Public Class DDR_Developer
         End If
 
         Dim comparisonOperator As String = If(goForward, ">", "<")
-        Dim orderDirection As String = "ASC"
+        ' Next wants the smallest ID above current (ASC); Prev wants the
+        ' largest ID below current (DESC) - both hard-coded to ASC previously,
+        ' which made "Prev" jump to the very first matching CTD every time
+        ' instead of the immediately preceding one.
+        Dim orderDirection As String = If(goForward, "ASC", "DESC")
         Dim sql As String = "SELECT TOP 1 CTD_ID FROM CTD_MASTER " &
             "WHERE CTD_ID " & comparisonOperator & " @CurrentID " &
             "AND [Discipline] = '13. Process' AND [Project_No] = '40087' " &
@@ -410,6 +414,15 @@ Public Class DDR_Developer
 
         If ddrId <> 0 Then Return
 
+        Dim documentNo As String = DataBinder.Eval(e.Row.DataItem, "Document_No").ToString()
+        If documentNo.ToUpperInvariant().Contains("ACTIVITY") Then
+            ' Activity rows (added via "DDR + Activity") carry no PLIP/document
+            ' defaults - Document_No must stay exactly "ACTIVITY" since the
+            ' markup's Enabled/Text bindings for PLIP and Area key off it.
+            ddlType.SelectedValue = "ACTIVITY"
+            Return
+        End If
+
         ' New, unsaved row: pre-fill from the most common PLIP/document used on
         ' this deliverable, mirroring the original "smart defaults" behaviour.
         Dim docMode As String = If(Session("Doc_Mode"), "").ToString()
@@ -526,8 +539,7 @@ Public Class DDR_Developer
                 errors.Add(rowLabel & ": Hours must be numeric.")
             End If
 
-            Dim ddrId As Integer
-            Integer.TryParse(grdDDREntry.DataKeys(row.RowIndex).Value?.ToString(), ddrId)
+            Dim ddrId As Integer = Convert.ToInt32(grdDDREntry.DataKeys(row.RowIndex).Value)
             If ddrId = 0 Then
                 rowsToInsert.Add(row)
             Else
@@ -714,15 +726,14 @@ Public Class DDR_Developer
             Return
         End If
 
+        ' StringSplitOptions.None (rather than RemoveEmptyEntries) keeps blank
+        ' lines in place so "Line N" in an error message below matches the
+        ' actual line number in the uploaded file; blank lines are skipped
+        ' individually inside the loop instead.
         Dim lines() As String
         Using reader As New StreamReader(fuCsv.PostedFile.InputStream)
-            lines = reader.ReadToEnd().Split({Environment.NewLine, vbLf}, StringSplitOptions.RemoveEmptyEntries)
+            lines = reader.ReadToEnd().Split({Environment.NewLine, vbLf}, StringSplitOptions.None)
         End Using
-
-        If lines.Length <= 1 Then
-            ShowToast("error", "The CSV file has no data rows.")
-            Return
-        End If
 
         Dim defaultCtdId As Integer = Val(lblContext.Text)
         Dim imported As Integer = 0
@@ -733,6 +744,8 @@ Public Class DDR_Developer
             Dim tran As SqlTransaction = conn.BeginTransaction()
             Try
                 For i As Integer = 1 To lines.Length - 1
+                    If String.IsNullOrWhiteSpace(lines(i)) Then Continue For
+
                     Dim fields = ParseCsvLine(lines(i))
                     If fields.Count < CsvColumns.Length Then
                         rowErrors.Add("Line " & (i + 1) & ": expected " & CsvColumns.Length & " columns, found " & fields.Count & ".")
@@ -792,6 +805,12 @@ Public Class DDR_Developer
                 If rowErrors.Count > 0 Then
                     tran.Rollback()
                     ShowValidationErrors(rowErrors)
+                    Return
+                End If
+
+                If imported = 0 Then
+                    tran.Rollback()
+                    ShowToast("error", "The CSV file has no data rows.")
                     Return
                 End If
 
