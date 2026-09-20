@@ -72,6 +72,11 @@ def test_parser() -> bool:
     ok &= check("direction with no SL/TP flags both as missing", sig.action == "open"
                 and sig.sl is None and not sig.tps and len(sig.errors) == 2, sig)
 
+    sig = parse_signal("BUY GOLD 2350 SL 2340 TP 2360, move SL to breakeven after TP1")
+    ok &= check("a breakeven MENTION inside a real open signal must not eat the signal",
+                sig.action == "open" and sig.direction == "buy" and sig.entry == 2350.0
+                and sig.sl == 2340.0 and sig.tps == [2360.0], sig)
+
     return ok
 
 
@@ -137,6 +142,11 @@ def test_verifier() -> bool:
                          chat_id="chan1", **common)
     ok &= check("risk:reward below the configured minimum is rejected", not weak_rr.accepted,
                 weak_rr.reasons)
+
+    v9b = SignalVerifier(CopierConfig(min_risk_reward=3.0))
+    no_tp_rr = v9b.verify(parse_signal("BUY XAUUSD @ 2350 SL 2340"), chat_id="chan1", **common)
+    ok &= check("a minimum risk:reward with no usable TP fails closed, not silently through",
+                not no_tp_rr.accepted, no_tp_rr.reasons)
 
     v10 = SignalVerifier(cfg)
     capped = v10.verify(good, chat_id="chan2", current_price=2350.0, point=spec.point,

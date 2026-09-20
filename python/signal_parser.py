@@ -122,12 +122,21 @@ def parse_signal(text: str, symbol_aliases: dict | None = None) -> ParsedSignal:
         sig.direction, _ = _find_direction(clean)
         return sig
 
-    if _BREAKEVEN_RE.search(clean) and _SL_MENTION_RE.search(clean):
-        sig.action = "modify_sl"
-        sig.direction, _ = _find_direction(clean)
-        return sig
-
     direction, order_type = _find_direction(clean)
+
+    # A breakeven mention only means "this whole message IS a breakeven
+    # instruction" when there's no actual trade data alongside it - a
+    # signal like "BUY GOLD 2350 SL 2340 TP 2360, move SL to breakeven
+    # after TP1" is an open signal that happens to mention breakeven
+    # management, not a standalone "move SL to breakeven" command, and
+    # must not have its entry/SL/TP discarded.
+    has_trade_data = bool(
+        (_ENTRY_RE.search(clean) or _AT_RE.search(clean)) or _SL_RE.search(clean)
+    )
+    if _BREAKEVEN_RE.search(clean) and _SL_MENTION_RE.search(clean) and not (direction and has_trade_data):
+        sig.action = "modify_sl"
+        sig.direction = direction
+        return sig
 
     if _CLOSE_RE.search(clean) and direction is None:
         sig.action = "close"

@@ -469,7 +469,30 @@ void ParseSignalText(const string &rawText, SignalMsg &msg)
    bool hasBE = (StringFind(upper, "BREAK EVEN") >= 0) || (StringFind(upper, "BREAKEVEN") >= 0);
    int slLabelEnd;
    int slPosAny = FindSlLabel(upper, 0, slLabelEnd);
-   if(hasBE && slPosAny >= 0)
+
+   // A breakeven mention only means "this whole message IS a breakeven
+   // instruction" when there's no actual trade data alongside it - e.g.
+   // "BUY GOLD 4342 SL 4335 TP 4349, move SL to breakeven after TP1" is an
+   // open signal that happens to mention breakeven management, not a
+   // standalone "move SL to breakeven" command, and must not have its
+   // entry/SL/TP discarded.
+   bool hasTradeData = false;
+   if(msgDir != DIR_NONE)
+   {
+      if(slPosAny >= 0)
+      {
+         double tmpVal; int tmpEnd;
+         if(ExtractNumberAt(upper, slLabelEnd, tlen, 10, tmpVal, tmpEnd)) hasTradeData = true;
+      }
+      if(!hasTradeData)
+      {
+         int dirPosTmp = (msgDir == DIR_BUY) ? buyPos : sellPos;
+         double tmpVal2; int tmpEnd2;
+         if(ExtractNumberAt(upper, dirPosTmp + 3, tlen, 30, tmpVal2, tmpEnd2)) hasTradeData = true;
+      }
+   }
+
+   if(hasBE && slPosAny >= 0 && !(msgDir != DIR_NONE && hasTradeData))
    {
       msg.action    = ACTION_MODIFY_SL;
       msg.direction = msgDir;

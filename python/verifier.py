@@ -174,6 +174,14 @@ class SignalVerifier:
                 return Verdict(False, [
                     f"risk:reward {rr:.2f} is below the minimum {cfg.min_risk_reward:g}"
                 ])
+        elif cfg.min_risk_reward:
+            # A minimum R:R is configured but there's no usable TP to check it
+            # against - fail closed rather than silently letting the signal
+            # through with an unverified reward.
+            return Verdict(False, [
+                f"no usable take-profit to check against the minimum risk:reward "
+                f"{cfg.min_risk_reward:g}"
+            ])
 
         return Verdict(True, notes, direction=sig.direction, entry_reference=entry_ref,
                         sl=sl, tps=tps, risk_reward=rr)

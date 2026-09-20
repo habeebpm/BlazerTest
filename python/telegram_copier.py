@@ -72,10 +72,22 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
+SIGNAL_LOG_FIELDS = [
+    "time", "chat_id", "direction", "entry_reference", "sl", "tp", "lots",
+    "fill_price", "mode", "retcode", "ticket",
+]
+
+
 def record_signal(row: dict) -> None:
+    """Append a row to logs/copier_signals.csv under a fixed column set.
+
+    Fieldnames are pinned rather than derived from `row` so a future change
+    to the row's shape can't silently misalign columns against whatever
+    header an existing long-running log file was already started with.
+    """
     new_file = not SIGNAL_LOG.exists()
     with SIGNAL_LOG.open("a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(row))
+        writer = csv.DictWriter(fh, fieldnames=SIGNAL_LOG_FIELDS)
         if new_file:
             writer.writeheader()
         writer.writerow(row)
@@ -204,7 +216,12 @@ class Copier:
             self.cfg, self.spec, ev.verdict.direction, ev.lots,
             ev.verdict.sl, ev.verdict.tps[0] if ev.verdict.tps else 0.0, self.dry_run,
         )
-        self.trades_today += 1
+        # Dry-run (result is None) and a broker rejection (bad retcode) must
+        # not count against max_trades_per_day - neither one actually opened
+        # a position, and counting them would let a string of rejections
+        # lock out real signals for the rest of the day.
+        if result is not None and result.retcode == mc.mt5().TRADE_RETCODE_DONE:
+            self.trades_today += 1
         self.verify_execution(ev, result)
         record_signal({
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -383,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         overrides["symbol"] = args.symbol.upper()
     if args.channels:
         overrides["allowed_chats"] = [c.strip() for c in args.channels.split(",") if c.strip()]
-    if args.lots:
+    if args.lots is not None:
         overrides["lots"] = args.lots
     if args.risk_percent is not None:
         overrides["risk_percent"] = args.risk_percent
