@@ -35,7 +35,19 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   the `Enabled='<%# %>'` attribute from the markup and set
   `ddlArea.Enabled` in `grdDDREntry_RowDataBound` instead (for every row,
   not just unsaved ones — a saved `"ACTIVITY"` row needs it disabled
-  too).
+  too). A follow-up audit (after this crash was reported from an actual
+  run) exhaustively scanned every `DataSourceID`-bound control in the
+  markup for the same combination — `ddlArea` was the only one; the rest
+  either have no `<%# %>` expression on themselves (`ddlRamz`) or are
+  ordinary `GridView`s using `Eval()` inside their own row templates,
+  which is the normal, safe pattern.
+- **Manually switching a row's Type dropdown to ACTIVITY didn't actually
+  mark it as one**: `ddlType_SelectedIndexChanged`'s `"ACTIVITY"` case
+  disabled the PLIP/Area fields but never set `Document_No` to
+  `"ACTIVITY"` — the literal value every `Enabled`/`Text` binding (and
+  the save logic) actually keys off. Only rows added via the "DDR +
+  Activity" button got it right. Fixed to set it there too, and to clear
+  it back out if the user switches the type away from ACTIVITY again.
 - **"DDR + Activity" silently turned the activity row into a normal
   document row**: `grdDDREntry_RowDataBound`'s "smart defaults" for a new,
   unsaved row unconditionally generated and wrote a document number into

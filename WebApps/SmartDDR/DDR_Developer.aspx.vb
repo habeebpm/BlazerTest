@@ -503,6 +503,7 @@ Public Class DDR_Developer
         Dim txtPLIP As TextBox = CType(row.FindControl("txtPLIP"), TextBox)
         Dim btnPLIPSearch As LinkButton = CType(row.FindControl("btnPLIPSearch"), LinkButton)
         Dim ddlArea As DropDownList = CType(row.FindControl("ddlArea"), DropDownList)
+        Dim txtDocumentNo As TextBox = CType(row.FindControl("txtDocumentNo"), TextBox)
 
         Select Case ddlType.SelectedValue
             Case "ACTIVITY"
@@ -510,10 +511,18 @@ Public Class DDR_Developer
                 txtPLIP.Enabled = False
                 btnPLIPSearch.Visible = False
                 ddlArea.Enabled = False
+                ' Document_No must actually be "ACTIVITY" - it's the marker every
+                ' other Enabled/Text binding and the save logic key off, not just
+                ' a UI state. Manually switching Type here needs to set it too,
+                ' matching what "DDR + Activity" already does when adding the row.
+                txtDocumentNo.Text = "ACTIVITY"
             Case Else
                 txtPLIP.Enabled = True
                 btnPLIPSearch.Visible = True
                 ddlArea.Enabled = True
+                If txtDocumentNo.Text.Trim().ToUpperInvariant() = "ACTIVITY" Then
+                    txtDocumentNo.Text = ""
+                End If
         End Select
     End Sub
 
