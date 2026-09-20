@@ -1202,8 +1202,7 @@ dialog.confirm-dialog::backdrop{
                                     Width="50px"
                                     DataSourceID="AreaSource"
                                     DataTextField="AU_CODE"
-                                    DataValueField="AU_CODE"
-                                    Enabled='<%# Not Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY") %>'>
+                                    DataValueField="AU_CODE">
                                 </asp:DropDownList>
 
                                 <asp:TextBox ID="txtArea"

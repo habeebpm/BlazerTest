@@ -22,6 +22,20 @@ the existing `SmarTagsASP` Web Forms application, which provides:
 ## What changed vs. the original
 
 ### Bugs fixed
+- **Page crashed with "Databinding methods such as Eval(), XPath(), and
+  Bind() can only be used in the context of a databound control."**:
+  `ddlArea` (the Area dropdown in the DDR grid) had both its own
+  `DataSourceID="AreaSource"` *and* an `Eval()`-based `Enabled` attribute
+  declared directly on it. A control with its own `DataSourceID` defers
+  its own `DataBind()` (and the evaluation of any `<%# %>` expression on
+  it) to `PreRender`, by which point the GridView row's `DataItem`
+  context that `Eval()` needs is gone — so it throws, and takes the whole
+  page down with it. This existed in the originally uploaded file too;
+  it just never got exercised until the page was actually run. Removed
+  the `Enabled='<%# %>'` attribute from the markup and set
+  `ddlArea.Enabled` in `grdDDREntry_RowDataBound` instead (for every row,
+  not just unsaved ones — a saved `"ACTIVITY"` row needs it disabled
+  too).
 - **"DDR + Activity" silently turned the activity row into a normal
   document row**: `grdDDREntry_RowDataBound`'s "smart defaults" for a new,
   unsaved row unconditionally generated and wrote a document number into

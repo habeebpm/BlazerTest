@@ -412,10 +412,22 @@ Public Class DDR_Developer
         Integer.TryParse(DataBinder.Eval(e.Row.DataItem, "DDR_ID").ToString(), ddrId)
         ddlType.Visible = (ddrId = 0)
 
+        ' ddlArea has its own DataSourceID, which defers its DataBind() (and
+        ' the evaluation of any <%# %> expression declared on it) to
+        ' PreRender - by then the GridView row's DataItem context is gone, so
+        ' an Eval()-based "Enabled" attribute directly on that control throws
+        ' "Databinding methods such as Eval()... can only be used in the
+        ' context of a databound control." and crashes the whole page. Set it
+        ' here instead, for every row (not just unsaved ones, since a saved
+        ' "ACTIVITY" row needs it disabled too).
+        Dim documentNo As String = DataBinder.Eval(e.Row.DataItem, "Document_No").ToString()
+        Dim isActivity As Boolean = documentNo.ToUpperInvariant().Contains("ACTIVITY")
+        Dim ddlArea As DropDownList = CType(e.Row.FindControl("ddlArea"), DropDownList)
+        ddlArea.Enabled = Not isActivity
+
         If ddrId <> 0 Then Return
 
-        Dim documentNo As String = DataBinder.Eval(e.Row.DataItem, "Document_No").ToString()
-        If documentNo.ToUpperInvariant().Contains("ACTIVITY") Then
+        If isActivity Then
             ' Activity rows (added via "DDR + Activity") carry no PLIP/document
             ' defaults - Document_No must stay exactly "ACTIVITY" since the
             ' markup's Enabled/Text bindings for PLIP and Area key off it.
