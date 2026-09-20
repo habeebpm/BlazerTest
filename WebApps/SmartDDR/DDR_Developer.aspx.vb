@@ -608,22 +608,65 @@ Public Class DDR_Developer
 
 #Region "CSV import / export"
 
+    ''' <summary>
+    ''' CSV import/export against CTD_DDR_DISC is intentionally limited to these
+    ''' seven fields (per business requirement) - Software, Remarks, Criticality
+    ''' and PLIP_HO are not part of the CSV contract and are left untouched by
+    ''' both directions.
+    ''' </summary>
     Private Shared ReadOnly CsvColumns() As String = {
-        "Document_No", "Document_Title", "Man_Hours", "RAMZ_ID", "PLIP_ID", "Software", "Remarks", "HO_STATUS"
+        "CTD_ID", "Ramz_ID", "PLIP_ID", "Document_No", "Document_Title", "Man_Hours", "HO_Status"
     }
 
+    ''' <summary>
+    ''' Exports the current CTD's DDR lines (limited to the seven CSV columns).
+    ''' With no saved lines yet, this downloads just the header row, which
+    ''' doubles as an import template.
+    ''' </summary>
     Protected Sub CSV_Template_Click(sender As Object, e As EventArgs)
+        Dim ctdId As Integer = Val(lblContext.Text)
+
         Dim sb As New StringBuilder()
         sb.AppendLine(String.Join(",", CsvColumns))
-        sb.AppendLine("AAA-UU-DOC-DUMMY-0001,Sample Document Title,4,R-001,P-0001,AutoCAD,Optional remarks,APP")
+
+        Using con As New SqlConnection(ST_Common.WorleyDataConnString)
+            Using cmd As New SqlCommand(
+                "SELECT CTD_ID, RAMZ_ID, PLIP_ID, DOCUMENT_NO, DOCUMENT_TITLE, MAN_HOURS, HO_STATUS " &
+                "FROM CTD_DDR_DISC WHERE CTD_ID = @CTD_ID ORDER BY DDR_ID", con)
+                cmd.Parameters.AddWithValue("@CTD_ID", ctdId)
+                con.Open()
+                Using rd As SqlDataReader = cmd.ExecuteReader()
+                    While rd.Read()
+                        sb.AppendLine(String.Join(",", {
+                            EscapeCsvField(rd("CTD_ID").ToString()),
+                            EscapeCsvField(rd("RAMZ_ID").ToString()),
+                            EscapeCsvField(rd("PLIP_ID").ToString()),
+                            EscapeCsvField(rd("DOCUMENT_NO").ToString()),
+                            EscapeCsvField(rd("DOCUMENT_TITLE").ToString()),
+                            EscapeCsvField(rd("MAN_HOURS").ToString()),
+                            EscapeCsvField(rd("HO_STATUS").ToString())
+                        }))
+                    End While
+                End Using
+            End Using
+        End Using
 
         Response.Clear()
         Response.ContentType = "text/csv"
-        Response.AddHeader("Content-Disposition", "attachment; filename=DDR_Import_Template.csv")
+        Response.AddHeader("Content-Disposition", "attachment; filename=DDR_Export_CTD_" & ctdId & ".csv")
         Response.Write(sb.ToString())
         Response.Flush()
         HttpContext.Current.ApplicationInstance.CompleteRequest()
     End Sub
+
+    ''' <summary>Wraps a CSV field in quotes and escapes embedded quotes when needed.</summary>
+    Private Function EscapeCsvField(value As String) As String
+        If value Is Nothing Then Return ""
+        If value.IndexOfAny({","c, """"c, ControlChars.Cr, ControlChars.Lf}) >= 0 Then
+            Return """" & value.Replace("""", """""") & """"
+        End If
+        Return value
+    End Function
 
     Protected Sub CSV_Upload_Click(sender As Object, e As EventArgs)
         If Not fuCsv.HasFile Then
@@ -641,7 +684,7 @@ Public Class DDR_Developer
             Return
         End If
 
-        Dim ctdId As Integer = Val(lblContext.Text)
+        Dim defaultCtdId As Integer = Val(lblContext.Text)
         Dim imported As Integer = 0
         Dim rowErrors As New List(Of String)
 
@@ -656,17 +699,23 @@ Public Class DDR_Developer
                         Continue For
                     End If
 
-                    Dim documentNo = fields(0).Trim()
-                    Dim documentTitle = fields(1).Trim()
-                    Dim manHoursText = fields(2).Trim()
-                    Dim ramzId = fields(3).Trim()
-                    Dim plipId = fields(4).Trim()
-                    Dim software = fields(5).Trim()
-                    Dim remarks = fields(6).Trim()
-                    Dim hoStatus = fields(7).Trim()
+                    Dim ctdIdText = fields(0).Trim()
+                    Dim ramzId = fields(1).Trim()
+                    Dim plipId = fields(2).Trim()
+                    Dim documentNo = fields(3).Trim()
+                    Dim documentTitle = fields(4).Trim()
+                    Dim manHoursText = fields(5).Trim()
+                    Dim hoStatus = fields(6).Trim().ToUpperInvariant()
 
-                    If documentNo = "" OrElse documentTitle = "" OrElse ramzId = "" Then
-                        rowErrors.Add("Line " & (i + 1) & ": Document_No, Document_Title and RAMZ_ID are required.")
+                    ' CTD_ID is optional per row: falls back to the CTD currently open on the page.
+                    Dim ctdId As Integer = defaultCtdId
+                    If ctdIdText <> "" AndAlso Not Integer.TryParse(ctdIdText, ctdId) Then
+                        rowErrors.Add("Line " & (i + 1) & ": CTD_ID must be numeric.")
+                        Continue For
+                    End If
+
+                    If ctdId <= 0 OrElse documentNo = "" OrElse documentTitle = "" OrElse ramzId = "" Then
+                        rowErrors.Add("Line " & (i + 1) & ": CTD_ID, Document_No, Document_Title and RAMZ_ID are required.")
                         Continue For
                     End If
 
@@ -676,21 +725,24 @@ Public Class DDR_Developer
                         Continue For
                     End If
 
+                    If hoStatus <> "" AndAlso hoStatus <> "AFC" AndAlso hoStatus <> "APP" Then
+                        rowErrors.Add("Line " & (i + 1) & ": HO_Status must be AFC or APP (or blank).")
+                        Continue For
+                    End If
+
                     Const sql As String = "
                         INSERT INTO CTD_DDR_DISC
-                            (CTD_ID, PLIP_ID, RAMZ_ID, DOCUMENT_NO, DOCUMENT_TITLE, MAN_HOURS, DISC_REMARKS, SOFTWARE, HO_STATUS)
+                            (CTD_ID, RAMZ_ID, PLIP_ID, DOCUMENT_NO, DOCUMENT_TITLE, MAN_HOURS, HO_STATUS)
                         VALUES
-                            (@CTD_ID, @PLIP_ID, @RAMZ_ID, @DOCUMENT_NO, @DOCUMENT_TITLE, @MAN_HOURS, @DISC_REMARKS, @SOFTWARE, @HO_STATUS)"
+                            (@CTD_ID, @RAMZ_ID, @PLIP_ID, @DOCUMENT_NO, @DOCUMENT_TITLE, @MAN_HOURS, @HO_STATUS)"
 
                     Using cmd As New SqlCommand(sql, conn, tran)
                         cmd.Parameters.AddWithValue("@CTD_ID", ctdId)
-                        cmd.Parameters.AddWithValue("@PLIP_ID", plipId)
                         cmd.Parameters.AddWithValue("@RAMZ_ID", ramzId)
+                        cmd.Parameters.AddWithValue("@PLIP_ID", plipId)
                         cmd.Parameters.AddWithValue("@DOCUMENT_NO", documentNo)
                         cmd.Parameters.AddWithValue("@DOCUMENT_TITLE", documentTitle)
                         cmd.Parameters.AddWithValue("@MAN_HOURS", manHours)
-                        cmd.Parameters.AddWithValue("@DISC_REMARKS", remarks)
-                        cmd.Parameters.AddWithValue("@SOFTWARE", software)
                         cmd.Parameters.AddWithValue("@HO_STATUS", hoStatus)
                         cmd.ExecuteNonQuery()
                     End Using

@@ -1068,7 +1068,8 @@ dialog.confirm-dialog::backdrop{
                     <asp:Button ID="Plip_Search" runat="server" Text="PLIP Search" CssClass="btn"
                         OnClientClick="openPLIPDrawer(); return false;" />
 
-                    <asp:Button ID="CSV_Template" runat="server" Text="Download CSV Template" CssClass="btn"
+                    <asp:Button ID="CSV_Template" runat="server" Text="Export CSV" CssClass="btn"
+                        ToolTip="Exports this CTD's DDR lines (CTD_ID, Ramz_ID, PLIP_ID, Document_No, Document_Title, Man_Hours, HO_Status); downloads just the header if none are saved yet"
                         OnClick="CSV_Template_Click" CausesValidation="False" />
 
                     <asp:FileUpload ID="fuCsv" runat="server" />
