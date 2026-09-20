@@ -21,6 +21,9 @@ not predict future results.
   button) instead of retyping every parameter.
 - `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
   cheat sheet.
+- `MQL5/Experts/TelegramSMC_Copier.mq5` — a separate EA that copies XAUUSD
+  BUY/SELL zone calls posted in a Telegram channel into MT5, independent of
+  the confluence strategy above. See "Telegram SMC Copier (MQL5)" below.
 - `python/` — a Python port of the same strategy that trades through the
   MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
@@ -286,3 +289,112 @@ only says what each one would imply. Measure it in the Strategy Tester first.
 5. Confirm your broker's XAUUSD contract specification (tick value, tick
    size, stops level, filling mode) matches the assumptions used for lot
    sizing and order placement.
+
+## Telegram SMC Copier (MQL5)
+
+`MQL5/Experts/TelegramSMC_Copier.mq5` is a separate, self-contained EA for a
+different job: instead of generating its own signals, it copies XAUUSD
+BUY/SELL zone calls posted in a Telegram channel — the kind that read like
+
+```
+XAUUSD BUY 4342-4339
+TP1: 4349
+TP2: 4356
+TP3: 4364
+StopLoss: 4335
+```
+
+into MT5, with an independent price-action check before anything is sent.
+It does not share any code or state with the confluence EA above and can run
+on the same or a different chart.
+
+### How it reaches Telegram
+
+MQL5 cannot read a Telegram channel directly, so the EA polls the [Telegram
+Bot API](https://core.telegram.org/bots/api) with `WebRequest` — no Python
+process, no bridge file, nothing outside MT5. One-time setup:
+
+1. Talk to **@BotFather** in Telegram, `/newbot`, and copy the token it gives
+   you into `InpBotToken`.
+2. Add that bot to the signal channel/group **as an admin** — a bot only
+   receives channel posts if it is one.
+3. In MT5: **Tools → Options → Expert Advisors** → tick "Allow WebRequest for
+   listed URL" and add `https://api.telegram.org` — WebRequest is refused
+   otherwise, and the EA logs exactly this instruction if it happens.
+4. Leave `InpAllowedChatId` at `0` for the first run and attach the EA: every
+   message the bot can see is logged with its chat id. Copy that id into
+   `InpAllowedChatId` and restart, so only that one chat can trigger trades.
+
+The EA ships with **`InpDryRun = true`**. Nothing above logs-only behavior
+happens until you set it to `false`, and that should only follow watching the
+log agree with the channel for a while.
+
+### Entry, exit and what the signal's own numbers are used for
+
+- **Entry** is `InpFixedLot` (default 0.05) lots at the **upper bound** of the
+  zone for a BUY, the **lower bound** for a SELL — the edge price reaches
+  first. Whether that becomes a pending order or a market order is decided
+  from the live price, not the message's wording: price still on the far
+  side of the zone gets a BUY/SELL LIMIT at that bound; price already inside
+  the zone gets a market order now; price already through the *whole* zone
+  is skipped as stale. `InpPendingExpiryMin` cancels an unfilled limit order
+  after a while, since a Smart-Money zone goes stale faster than a
+  fixed-distance order would.
+- **Stop-loss** is used exactly as given in the signal (after the sanity
+  checks below).
+- **Take-profit ignores the signal's TP1/TP2/TP3.** `InpTp1Points` (default
+  `4.0`) is a real, broker-side take-profit set the moment the trade opens —
+  it survives a disconnect. Once floating profit reaches that many **price
+  units** (4.0 = $4.00 on XAUUSD — not a broker "point" of $0.01 and not a
+  "pip" of $0.10), the fixed TP is dropped and an `InpTrailPoints` (default
+  `3.0`) trailing stop takes over for the rest of the move, tightening only.
+  The signal's own TP1/TP2/TP3 are logged for reference and otherwise
+  ignored; only one take-profit level exists per MT5 position, so this EA
+  does not split volume across partial targets.
+- Sanity checks reject a signal before it reaches the market: no stop-loss
+  (`InpMinSlDistancePips`/`InpMaxSlDistancePips` also catch a stop that's
+  implausibly tight or wide — a likely fat-finger), and a current price that
+  has drifted more than `InpMaxEntryDeviationPips` from the signaled zone.
+
+### SMC validation (`InpUseSmcFilter`, on by default)
+
+Independent of whatever the message *says* about market structure, the EA
+checks the actual price history on `InpSmcTF` (default M15):
+
+1. **Liquidity sweep** — within the last `InpSweepRecentBars` closed bars,
+   price must have pierced beyond the extreme of the prior
+   `InpSweepRefBars` bars (below a prior low for a BUY, above a prior high
+   for a SELL) and closed back on the right side of it — a stop-hunt-then-
+   reclaim, not a clean breakout.
+2. **Premium/discount** — the entry must sit in the cheaper half of the
+   combined swing range for a BUY, the richer half for a SELL.
+3. The signal's own stop-loss should sit beyond the swept extreme (the level
+   that failed), not inside it.
+
+This is a deliberately simplified, fully computable proxy for SMC entry
+logic — two rolling min/max windows, not a full fractal/order-block engine.
+Tune `InpSweepRecentBars`/`InpSweepRefBars`/`InpSweepMinPiercePips`, or turn
+`InpUseSmcFilter` off, if it is too strict or too loose for the channel you
+follow. Every check, pass or fail, is printed to the Experts log with the
+actual price levels it compared.
+
+### Honest limitations
+
+- **No backtest.** There is no historical Telegram feed to replay, so the EA
+  disables its own polling inside the Strategy Tester. It can only be
+  meaningfully evaluated live or on a demo account.
+- **One symbol, one magic number, no per-setup tracking.** CLOSE, CANCEL and
+  "move SL to breakeven" messages act on *every* position/pending order this
+  EA currently has open on the chart's symbol, because the messages carry no
+  ticket or setup id to act on selectively.
+- **The parser is best-effort, not a general NLP engine.** It looks for
+  BUY/SELL/LONG/SHORT, a price or price range, SL/STOPLOSS/S-L, and
+  TP/TP1/TP2/…, and leaves anything it can't make sense of alone rather than
+  guessing. Unusual phrasing may simply be logged as "did not parse as an
+  actionable signal."
+- This executes real orders from text messages it did not originate and
+  cannot fully verify the reasoning behind. The SMC filter and sanity checks
+  catch stale or obviously broken signals, not bad trading calls. Demo-test
+  with `InpDryRun = true` until you trust the channel, the parser's log
+  output for every message it sees, **and** this EA's behavior, in that
+  order.

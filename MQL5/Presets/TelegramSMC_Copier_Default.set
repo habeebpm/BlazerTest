@@ -1,0 +1,39 @@
+; TelegramSMC_Copier - default preset
+; In MT5: Strategy Tester > Expert Advisor: TelegramSMC_Copier > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; You MUST still fill in InpBotToken (from @BotFather) and, after the first
+; run tells you the chat id in the Experts log, InpAllowedChatId - this
+; preset ships them blank/0 on purpose rather than with placeholder values
+; that look real. Ships with InpDryRun=true; only flip it once you trust the
+; log output for every message the channel posts.
+;
+; Note: InpSmcTF is stored below as a raw ENUM_TIMEFRAMES value (15 = M15).
+; If your MT5 build does not accept this line, set it manually in the
+; Inputs tab: InpSmcTF -> M15.
+;
+InpBotToken=
+InpAllowedChatId=0
+InpPollSeconds=5
+InpHttpTimeoutMs=5000
+InpMaxSignalAgeSec=180
+InpDryRun=true
+InpTradeXAUUSDOnly=true
+InpFixedLot=0.05
+InpMagicNumber=20260918
+InpSlippagePoints=30
+InpMaxOpenPositions=4
+InpMaxTradesPerDay=0
+InpPendingExpiryMin=240
+InpMinSlDistancePips=10.0
+InpMaxSlDistancePips=250.0
+InpMaxEntryDeviationPips=200.0
+InpTp1Points=4.0
+InpTrailPoints=3.0
+InpUseSmcFilter=true
+InpSmcTF=15
+InpSweepRecentBars=20
+InpSweepRefBars=30
+InpSweepMinPiercePips=3.0
+InpRequirePremiumDiscount=true
+InpRequireSlBeyondSweep=true
