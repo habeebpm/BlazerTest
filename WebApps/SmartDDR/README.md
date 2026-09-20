@@ -171,6 +171,32 @@ the existing `SmarTagsASP` Web Forms application, which provides:
 - Empty-state messaging for grids with no rows yet.
 - Sticky, scrollable grid headers; grid width no longer forces a fixed
   1700px—unused rules were consolidated.
+- **Sidebar redesign**: the general-purpose actions (PLIP Search, Export
+  CSV, Upload CSV) used to live in a toolbar above the CTD grid in the
+  main content, mixed in with page-specific controls. They now live in
+  the sidebar as a proper navigation list — grouped into "Navigation",
+  "CTD / DDR Hours", "Quick Actions" and "Import / Export" sections with
+  small uppercase labels — alongside Back/Home/"DDR + Activity", which
+  used to be a visually inconsistent mix of gradient pill buttons and ad
+  hoc white "smart-card" boxes. All of these are now one consistent
+  `.nav-item` row style (icon + label, flat, hover highlight) with
+  lightweight inline SVG icons instead of emoji, which reads as a single
+  coherent navigation rail rather than a handful of unrelated widgets.
+  The CTD/DDR hours mini-table keeps its own white `.stat-card` since
+  it's data, not an action. The old toolbar this replaced (and its
+  now-dead `.header` CSS) was removed from the main content, along with
+  the sidebar's leftover "Session context ... See context bar above the
+  grids →" filler text — the same project/discipline/ref values are
+  already shown properly in the main content's context bar; the sidebar
+  now just holds the underlying state labels with no visible text.
+  Because `Plip_Search`/`CSV_Template`/`CSV_Upload`/`DDR1`/`btnHome`
+  needed to render an icon *and* a label inside one clickable element —
+  something `asp:Button` can't do, since it renders as a childless
+  `<input type="submit">` — they were changed from `asp:Button` to
+  `asp:LinkButton` (which renders as an `<a>` and accepts child markup);
+  this is a same-signature swap (`LinkButton.Click` uses the same
+  `EventHandler` delegate as `Button.Click`), so no code-behind changes
+  were needed beyond updating the designer file's field types to match.
 
 ## Known limitations / follow-ups worth doing next
 - `NavigateToAdjacentCtd` still hardcodes `Discipline = '13. Process'`

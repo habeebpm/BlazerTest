@@ -16,12 +16,12 @@ Partial Public Class DDR_Developer
     Protected WithEvents lblDiscipline As Global.System.Web.UI.WebControls.Label
     Protected WithEvents lblDocMode As Global.System.Web.UI.WebControls.Label
 
-    Protected WithEvents btnHome As Global.System.Web.UI.WebControls.Button
+    Protected WithEvents btnHome As Global.System.Web.UI.WebControls.LinkButton
 
     Protected WithEvents ctd_ddr_match As Global.System.Web.UI.WebControls.GridView
     Protected WithEvents CTDDDRSOURCE As Global.System.Web.UI.WebControls.SqlDataSource
 
-    Protected WithEvents DDR1 As Global.System.Web.UI.WebControls.Button
+    Protected WithEvents DDR1 As Global.System.Web.UI.WebControls.LinkButton
 
     Protected WithEvents hfSelectedRow As Global.System.Web.UI.WebControls.HiddenField
 
@@ -37,10 +37,10 @@ Partial Public Class DDR_Developer
     Protected WithEvents CTD_Grid As Global.System.Web.UI.WebControls.GridView
     Protected WithEvents CTD_Source As Global.System.Web.UI.WebControls.SqlDataSource
 
-    Protected WithEvents Plip_Search As Global.System.Web.UI.WebControls.Button
-    Protected WithEvents CSV_Template As Global.System.Web.UI.WebControls.Button
+    Protected WithEvents Plip_Search As Global.System.Web.UI.WebControls.LinkButton
+    Protected WithEvents CSV_Template As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents fuCsv As Global.System.Web.UI.WebControls.FileUpload
-    Protected WithEvents CSV_Upload As Global.System.Web.UI.WebControls.Button
+    Protected WithEvents CSV_Upload As Global.System.Web.UI.WebControls.LinkButton
 
     Protected WithEvents btnAddDDR As Global.System.Web.UI.WebControls.Button
     Protected WithEvents btnSaveAll As Global.System.Web.UI.WebControls.Button

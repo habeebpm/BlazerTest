@@ -169,66 +169,106 @@ a{ color:inherit; }
 .side-nav{
     display:flex;
     flex-direction:column;
-    gap:8px;
 }
 
-.side-context{
-    background:rgba(255,255,255,.08);
-    border-radius:10px;
-    padding:10px 12px;
-    font-size:12px;
-    line-height:1.6;
-    margin-bottom:10px;
+.nav-section{
+    margin-bottom:20px;
 }
 
-.side-context b{
-    display:block;
-    font-size:11px;
+.nav-section-label{
+    font-size:10px;
+    font-weight:700;
     text-transform:uppercase;
-    letter-spacing:.06em;
-    color:#CBD5E1;
-    margin-bottom:2px;
+    letter-spacing:.08em;
+    color:rgba(255,255,255,.45);
+    padding:0 10px 6px;
 }
 
-.smart-card{
-    background:white;
-    color:#1E293B;
+.nav-item{
     display:flex;
     align-items:center;
     gap:10px;
+    width:100%;
+    padding:9px 10px;
+    margin-bottom:2px;
+    border-radius:8px;
+    background:none;
+    border:none;
+    color:rgba(255,255,255,.85);
+    font-size:13px;
+    font-weight:500;
+    font-family:inherit;
+    text-align:left;
+    text-decoration:none;
+    cursor:pointer;
+    transition:background .15s,color .15s;
+}
+
+.nav-item:hover{
+    background:rgba(255,255,255,.1);
+    color:white;
+}
+
+.nav-item[disabled]{
+    opacity:.5;
+    cursor:not-allowed;
+}
+
+.nav-icon{
+    flex:0 0 auto;
+    width:16px;
+    height:16px;
+    display:inline-flex;
+}
+
+.nav-icon svg{
+    width:16px;
+    height:16px;
+    stroke:currentColor;
+    stroke-width:2;
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+}
+
+.nav-upload-row{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    padding:2px 10px 6px;
+}
+
+.nav-file-input{
+    width:100%;
+    font-size:11px;
+    color:rgba(255,255,255,.85);
+    background:rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.15);
+    border-radius:8px;
+    padding:6px 8px;
+}
+
+.nav-file-input::file-selector-button{
+    background:rgba(255,255,255,.18);
+    color:white;
+    border:none;
+    border-radius:6px;
+    padding:4px 8px;
+    margin-right:8px;
+    font-size:11px;
+    cursor:pointer;
+}
+
+.nav-file-input::file-selector-button:hover{
+    background:rgba(255,255,255,.28);
+}
+
+.stat-card{
+    background:white;
+    color:#1E293B;
     border-radius:12px;
     padding:10px 12px;
     border:1px solid rgba(0,0,0,.04);
-    margin-bottom:10px;
-    transition:.2s;
-}
-
-.smart-card:hover{
-    transform:translateY(-1px);
-    box-shadow:0 8px 20px rgba(0,0,0,.12);
-}
-
-.card-icon{
-    width:34px;
-    height:34px;
-    flex:0 0 auto;
-    border-radius:9px;
-    background:#ECFEFF;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    font-size:16px;
-}
-
-.card-btn{
-    flex:1;
-    background:none !important;
-    border:none !important;
-    color:#1E293B !important;
-    font-weight:600;
-    cursor:pointer;
-    text-align:left;
-    font-size:13px;
 }
 
 .match-table{
@@ -288,15 +328,6 @@ a{ color:inherit; }
    TOOLBAR / BUTTONS
 ========================== */
 
-.header{
-    background:var(--card);
-    border-radius:var(--radius);
-    padding:16px;
-    margin-bottom:16px;
-    border:1px solid var(--border);
-    box-shadow:var(--shadow);
-}
-
 .toolbar{
     display:flex;
     flex-wrap:wrap;
@@ -324,7 +355,7 @@ a{ color:inherit; }
 .btn:focus-visible,
 .btn-primary:focus-visible,
 .circle-btn:focus-visible,
-.card-btn:focus-visible{
+.nav-item:focus-visible{
     outline:3px solid var(--secondary);
     outline-offset:2px;
 }
@@ -892,67 +923,100 @@ dialog.confirm-dialog::backdrop{
                 <small>DDR Developer</small>
             </div>
 
-            <div class="side-context">
-                <b>Session context</b>
-                <asp:Label ID="lblProject" runat="server" Text="" CssClass="visually-hidden" />
-                <asp:Label ID="lblContext" runat="server" Text="" CssClass="visually-hidden" />
-                <asp:Label ID="lblRef" runat="server" Text="" CssClass="visually-hidden" />
-                <asp:Label ID="lblDiscipline" runat="server" Text="" CssClass="visually-hidden" />
-                <asp:Label ID="lblDocMode" runat="server" Visible="false" Text="" />
-                See context bar above the grids &rarr;
+            <div class="visually-hidden">
+                <asp:Label ID="lblProject" runat="server" Text="" />
+                <asp:Label ID="lblContext" runat="server" Text="" />
+                <asp:Label ID="lblRef" runat="server" Text="" />
+                <asp:Label ID="lblDiscipline" runat="server" Text="" />
             </div>
+            <asp:Label ID="lblDocMode" runat="server" Visible="false" Text="" />
 
-            <div class="side-nav">
-                <button type="button" class="btn" onclick="history.back();">&#8592; Back</button>
-
-                <asp:Button ID="btnHome"
-                    runat="server"
-                    Text="Home"
-                    CssClass="btn"
-                    OnClick="Home_Go" />
-
-                <div class="smart-card">
-                    <asp:GridView ID="ctd_ddr_match"
-                        runat="server"
-                        CssClass="match-table"
-                        OnRowDataBound="ctd_ddr_match_RowDataBound"
-                        AutoGenerateColumns="False"
-                        DataSourceID="CTDDDRSOURCE"
-                        ShowHeaderWhenEmpty="True"
-                        GridLines="None">
-                        <Columns>
-                            <asp:BoundField DataField="CTD Hrs" HeaderText="CTD Hrs" SortExpression="CTD Hrs" />
-                            <asp:BoundField DataField="DDR Hrs" HeaderText="DDR Hrs" SortExpression="DDR Hrs" />
-                        </Columns>
-                        <EmptyDataTemplate>
-                            <span class="field-hint">No CTD/DDR hours yet.</span>
-                        </EmptyDataTemplate>
-                    </asp:GridView>
-
-                    <asp:SqlDataSource ID="CTDDDRSOURCE" runat="server"
-                        ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
-                        SelectCommand="SELECT [CTD Hrs],[DDR Hrs] FROM [ACAD_DATA].[dbo].[SDDR_CTD_VIEW] WHERE CTD_ID=@CTD_ID">
-                        <SelectParameters>
-                            <asp:QueryStringParameter DefaultValue="0" Name="CTD_ID" QueryStringField="CTD_ID" Type="Int32" />
-                        </SelectParameters>
-                    </asp:SqlDataSource>
+            <nav class="side-nav">
+                <div class="nav-section">
+                    <div class="nav-section-label">Navigation</div>
+                    <button type="button" class="nav-item" onclick="history.back();">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7" /></svg></span>
+                        <span>Back</span>
+                    </button>
+                    <asp:LinkButton ID="btnHome" runat="server" CssClass="nav-item" OnClick="Home_Go">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9.5 12 3l9 6.5" /><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" /></svg></span>
+                        <span>Home</span>
+                    </asp:LinkButton>
                 </div>
 
-                <div class="smart-card">
-                    <div class="card-icon" aria-hidden="true">&#128196;</div>
-                    <asp:Button ID="DDR1" runat="server"
-                        Text="DDR + Activity"
-                        CssClass="card-btn"
+                <div class="nav-section">
+                    <div class="nav-section-label">CTD / DDR Hours</div>
+                    <div class="stat-card">
+                        <asp:GridView ID="ctd_ddr_match"
+                            runat="server"
+                            CssClass="match-table"
+                            OnRowDataBound="ctd_ddr_match_RowDataBound"
+                            AutoGenerateColumns="False"
+                            DataSourceID="CTDDDRSOURCE"
+                            ShowHeaderWhenEmpty="True"
+                            GridLines="None">
+                            <Columns>
+                                <asp:BoundField DataField="CTD Hrs" HeaderText="CTD Hrs" SortExpression="CTD Hrs" />
+                                <asp:BoundField DataField="DDR Hrs" HeaderText="DDR Hrs" SortExpression="DDR Hrs" />
+                            </Columns>
+                            <EmptyDataTemplate>
+                                <span class="field-hint">No CTD/DDR hours yet.</span>
+                            </EmptyDataTemplate>
+                        </asp:GridView>
+
+                        <asp:SqlDataSource ID="CTDDDRSOURCE" runat="server"
+                            ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
+                            SelectCommand="SELECT [CTD Hrs],[DDR Hrs] FROM [ACAD_DATA].[dbo].[SDDR_CTD_VIEW] WHERE CTD_ID=@CTD_ID">
+                            <SelectParameters>
+                                <asp:QueryStringParameter DefaultValue="0" Name="CTD_ID" QueryStringField="CTD_ID" Type="Int32" />
+                            </SelectParameters>
+                        </asp:SqlDataSource>
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Quick Actions</div>
+                    <asp:LinkButton ID="DDR1" runat="server" CssClass="nav-item"
                         OnClick="DDR1_Click"
                         OnClientClick="showLoader();"
-                        ToolTip="Add one document row and one activity row" />
+                        ToolTip="Add one document row and one activity row">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></svg></span>
+                        <span>DDR + Activity</span>
+                    </asp:LinkButton>
+                    <asp:LinkButton ID="Plip_Search" runat="server" CssClass="nav-item"
+                        CausesValidation="False"
+                        OnClientClick="openPLIPDrawer(); return false;">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" /></svg></span>
+                        <span>PLIP Search</span>
+                    </asp:LinkButton>
                 </div>
 
-                <div id="loaderOverlay" class="loader-overlay" role="status" aria-live="assertive">
-                    <div class="cmd-loader">
-                        <span>C:\&gt;</span>
-                        <span>Processing request&hellip;</span>
+                <div class="nav-section">
+                    <div class="nav-section-label">Import / Export</div>
+                    <asp:LinkButton ID="CSV_Template" runat="server" CssClass="nav-item"
+                        CausesValidation="False"
+                        OnClick="CSV_Template_Click"
+                        ToolTip="Exports this CTD's DDR lines (CTD_ID, Ramz_ID, PLIP_ID, Document_No, Document_Title, Man_Hours, HO_Status); downloads just the header if none are saved yet">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v11" /><path d="M7 10l5 5 5-5" /><path d="M5 21h14" /></svg></span>
+                        <span>Export CSV</span>
+                    </asp:LinkButton>
+
+                    <div class="nav-upload-row">
+                        <asp:FileUpload ID="fuCsv" runat="server" CssClass="nav-file-input" />
+                        <asp:LinkButton ID="CSV_Upload" runat="server" CssClass="nav-item"
+                            CausesValidation="False"
+                            OnClick="CSV_Upload_Click">
+                            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 21V10" /><path d="M7 15l5-5 5 5" /><path d="M5 3h14" /></svg></span>
+                            <span>Upload CSV</span>
+                        </asp:LinkButton>
                     </div>
+                </div>
+            </nav>
+
+            <div id="loaderOverlay" class="loader-overlay" role="status" aria-live="assertive">
+                <div class="cmd-loader">
+                    <span>C:\&gt;</span>
+                    <span>Processing request&hellip;</span>
                 </div>
             </div>
         </div>
@@ -1060,22 +1124,6 @@ dialog.confirm-dialog::backdrop{
                         <asp:QueryStringParameter DefaultValue="0" Name="CTD_ID" QueryStringField="CTD_ID" Type="Int32" />
                     </SelectParameters>
                 </asp:SqlDataSource>
-            </div>
-
-            <!-- Action Toolbar -->
-            <div class="header">
-                <div class="toolbar">
-                    <asp:Button ID="Plip_Search" runat="server" Text="PLIP Search" CssClass="btn"
-                        OnClientClick="openPLIPDrawer(); return false;" />
-
-                    <asp:Button ID="CSV_Template" runat="server" Text="Export CSV" CssClass="btn"
-                        ToolTip="Exports this CTD's DDR lines (CTD_ID, Ramz_ID, PLIP_ID, Document_No, Document_Title, Man_Hours, HO_Status); downloads just the header if none are saved yet"
-                        OnClick="CSV_Template_Click" CausesValidation="False" />
-
-                    <asp:FileUpload ID="fuCsv" runat="server" />
-                    <asp:Button ID="CSV_Upload" runat="server" Text="Upload CSV" CssClass="btn"
-                        OnClick="CSV_Upload_Click" CausesValidation="False" />
-                </div>
             </div>
 
             <!-- DDR Items -->
