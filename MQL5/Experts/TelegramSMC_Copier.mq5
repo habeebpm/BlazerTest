@@ -95,6 +95,7 @@
 #property description "Copies XAUUSD BUY/SELL zone signals from a Telegram channel (via the Bot API, no external bridge) into MT5, gated by an independent SMC liquidity-sweep/premium-discount check, with a fixed 4pt-arm/3pt-trail exit. Educational use - demo-test with InpDryRun=true before risking real capital."
 
 #include <Trade\Trade.mqh>
+#include <TelegramSMC_Common.mqh>
 
 //================================= CONSTANTS ====================================
 #define DIR_NONE        (-1)
@@ -204,13 +205,21 @@ void     ExpirePendingOrders();
 void     CloseAllMine();
 void     CancelAllPendingMine();
 void     BreakevenAllMine();
-void     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double sl);
+bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double sl,
+                           string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode);
 void     ManageOpenPositions();
-void     ProcessSignal(const SignalMsg &msg, long chatId);
+void     ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText);
 bool     TelegramGetUpdates(string &jsonOut);
 void     ExtractUpdates(const string &json, TgUpdate &updates[]);
 void     TelegramPoll();
 void     StripUnicodeEscapes(string &s);
+string   DirToStr(int dir);
+void     LogSignalRow(long chatId, const string &action, const string &direction, bool symbolOk,
+                       double entryLow, double entryHigh, double sl, const string &tpsJoined,
+                       bool smcUsed, bool smcPass, const string &smcReason,
+                       bool sanityPass, const string &sanityReason, bool accepted,
+                       const string &orderType, double orderPrice, double lots, bool dryRun,
+                       long orderTicket, int retcode, const string &rawText);
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -750,14 +759,26 @@ void BreakevenAllMine()
 //+------------------------------------------------------------------+
 //| Places the copied order: LIMIT if price hasn't reached the zone,  |
 //| MARKET if it's already inside it, skipped if already through it.  |
+//| Reports what happened via the out-parameters so ProcessSignal can |
+//| log one complete row per signal regardless of which path was      |
+//| taken. Returns false only for the "stale, zone already breached"  |
+//| case - true otherwise, even for a dry-run log-only line or a live |
+//| order the broker rejected (outRetcode/outTicket show which).      |
 //+------------------------------------------------------------------+
-void PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double sl)
+bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double sl,
+                       string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode)
 {
+   outOrderType  = "";
+   outOrderPrice = 0.0;
+   outTicket     = 0;
+   outRetcode    = 0;
+
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick))
    {
       Print("TelegramSMC_Copier: no tick available, cannot place order.");
-      return;
+      outOrderType = "NO_TICK";
+      return(false);
    }
 
    double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -776,7 +797,8 @@ void PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double s
       {
          PrintFormat("TelegramSMC_Copier: BUY zone %.2f-%.2f already breached (ask=%.2f) - stale, skipping.",
                      lowerBound, upperBound, tick.ask);
-         return;
+         outOrderType = "STALE_SKIPPED";
+         return(false);
       }
       else { orderPrice = tick.ask; isPending = false; }
    }
@@ -787,7 +809,8 @@ void PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double s
       {
          PrintFormat("TelegramSMC_Copier: SELL zone %.2f-%.2f already breached (bid=%.2f) - stale, skipping.",
                      lowerBound, upperBound, tick.bid);
-         return;
+         outOrderType = "STALE_SKIPPED";
+         return(false);
       }
       else { orderPrice = tick.bid; isPending = false; }
    }
@@ -797,11 +820,14 @@ void PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double s
    tp = NormalizeDouble(tp, digits);
    sl = NormalizeDouble(sl, digits);
 
+   outOrderType  = isPending ? "LIMIT" : "MARKET";
+   outOrderPrice = orderPrice;
+
    if(InpDryRun)
    {
       PrintFormat("TelegramSMC_Copier: [DRY-RUN] would place %s %s %.2f lots @ %.2f sl=%.2f tp=%.2f",
                   isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", InpFixedLot, orderPrice, sl, tp);
-      return;
+      return(true);
    }
 
    bool ok;
@@ -812,15 +838,21 @@ void PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double s
       ok = isBuy ? trade.Buy(InpFixedLot, _Symbol, orderPrice, sl, tp, comment)
                  : trade.Sell(InpFixedLot, _Symbol, orderPrice, sl, tp, comment);
 
+   outRetcode = (int)trade.ResultRetcode();
+   outTicket  = (long)trade.ResultOrder();
+
    if(ok)
    {
       g_tradesToday++;
-      PrintFormat("TelegramSMC_Copier: %s %s placed - %.2f lots @ %.2f sl=%.2f tp=%.2f",
-                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", InpFixedLot, orderPrice, sl, tp);
+      PrintFormat("TelegramSMC_Copier: %s %s placed - %.2f lots @ %.2f sl=%.2f tp=%.2f ticket=%I64u",
+                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", InpFixedLot, orderPrice, sl, tp,
+                  outTicket);
    }
    else
       PrintFormat("TelegramSMC_Copier: order failed. retcode=%d desc=%s",
                   trade.ResultRetcode(), trade.ResultRetcodeDescription());
+
+   return(true);
 }
 
 //+------------------------------------------------------------------+
@@ -901,18 +933,69 @@ void ManageOpenPositions()
    }
 }
 
+string DirToStr(int dir)
+{
+   if(dir == DIR_BUY)  return("BUY");
+   if(dir == DIR_SELL) return("SELL");
+   return("");
+}
+
+//+------------------------------------------------------------------+
+//| Appends one row to TelegramSMC_Signals.csv for every Telegram      |
+//| message this EA evaluates - accepted or not - so the signals log   |
+//| is a complete record, not just the ones that traded.               |
+//+------------------------------------------------------------------+
+void LogSignalRow(long chatId, const string &action, const string &direction, bool symbolOk,
+                   double entryLow, double entryHigh, double sl, const string &tpsJoined,
+                   bool smcUsed, bool smcPass, const string &smcReason,
+                   bool sanityPass, const string &sanityReason, bool accepted,
+                   const string &orderType, double orderPrice, double lots, bool dryRun,
+                   long orderTicket, int retcode, const string &rawText)
+{
+   int handle = TsmcOpenCsvForAppend(TSMC_SIGNALS_FILE, TSMC_SIGNALS_HEADER, false);
+   if(handle == INVALID_HANDLE) return;
+
+   string ts  = TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
+   string line = ts + "," +
+                 IntegerToString(chatId) + "," +
+                 TsmcCsvField(action) + "," +
+                 TsmcCsvField(direction) + "," +
+                 (symbolOk ? "1" : "0") + "," +
+                 DoubleToString(entryLow, 2) + "," +
+                 DoubleToString(entryHigh, 2) + "," +
+                 DoubleToString(sl, 2) + "," +
+                 TsmcCsvField(tpsJoined) + "," +
+                 (smcUsed ? "1" : "0") + "," +
+                 (smcPass ? "1" : "0") + "," +
+                 TsmcCsvField(smcReason) + "," +
+                 (sanityPass ? "1" : "0") + "," +
+                 TsmcCsvField(sanityReason) + "," +
+                 (accepted ? "1" : "0") + "," +
+                 TsmcCsvField(orderType) + "," +
+                 DoubleToString(orderPrice, 2) + "," +
+                 DoubleToString(lots, 2) + "," +
+                 (dryRun ? "1" : "0") + "," +
+                 IntegerToString(orderTicket) + "," +
+                 IntegerToString(retcode) + "," +
+                 TsmcCsvField(rawText);
+
+   FileWriteString(handle, line + "\r\n");
+   FileClose(handle);
+}
+
 //+------------------------------------------------------------------+
 //| Dispatch a parsed signal: management actions act broadly (this EA |
 //| tracks one symbol/magic, and messages carry no per-setup ticket), |
 //| OPEN signals go through sanity + SMC validation before copying.   |
+//| Every branch logs exactly one row to TelegramSMC_Signals.csv.      |
 //+------------------------------------------------------------------+
-void ProcessSignal(const SignalMsg &msg, long chatId)
+void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 {
    if(InpAllowedChatId != 0 && chatId != InpAllowedChatId)
    {
       PrintFormat("TelegramSMC_Copier: ignoring message from chat %I64d (allowed chat is %I64d)",
                   chatId, InpAllowedChatId);
-      return;
+      return;   // not this EA's chat - deliberately not logged as a signal at all
    }
 
    if(msg.action == ACTION_CLOSE)
@@ -920,46 +1003,70 @@ void ProcessSignal(const SignalMsg &msg, long chatId)
       Print("TelegramSMC_Copier: CLOSE signal - closing positions and cancelling pending orders.");
       CloseAllMine();
       CancelAllPendingMine();
+      LogSignalRow(chatId, "CLOSE", "", msg.symbolOk, 0, 0, 0, "", false, false, "",
+                   true, "", true, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    if(msg.action == ACTION_CANCEL)
    {
       Print("TelegramSMC_Copier: CANCEL signal - cancelling pending orders.");
       CancelAllPendingMine();
+      LogSignalRow(chatId, "CANCEL", "", msg.symbolOk, 0, 0, 0, "", false, false, "",
+                   true, "", true, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    if(msg.action == ACTION_MODIFY_SL)
    {
       Print("TelegramSMC_Copier: breakeven signal - moving SL to entry where profit allows.");
       BreakevenAllMine();
+      LogSignalRow(chatId, "MODIFY_SL", DirToStr(msg.direction), msg.symbolOk, 0, 0, 0, "",
+                   false, false, "", true, "", true, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    if(msg.action != ACTION_OPEN)
    {
       Print("TelegramSMC_Copier: message did not parse as an actionable signal - ignoring.");
+      LogSignalRow(chatId, "UNKNOWN", "", msg.symbolOk, 0, 0, 0, "", false, false, "",
+                   true, "", false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
+
+   string tpList = "";
+   for(int i = 0; i < msg.tpCount; i++)
+      tpList += (i > 0 ? "|" : "") + DoubleToString(msg.tps[i], 2);
+
    if(!msg.symbolOk)
    {
       Print("TelegramSMC_Copier: OPEN signal does not mention XAUUSD/GOLD - ignoring.");
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), false, msg.entryA, msg.entryB, msg.sl,
+                   tpList, false, false, "", true, "no XAUUSD/GOLD mention", false, "", 0, 0,
+                   InpDryRun, 0, 0, rawText);
       return;
    }
    if(msg.direction != DIR_BUY && msg.direction != DIR_SELL)
    {
       Print("TelegramSMC_Copier: OPEN signal has no clear BUY/SELL direction - ignoring.");
+      LogSignalRow(chatId, "OPEN", "", msg.symbolOk, msg.entryA, msg.entryB, msg.sl, tpList,
+                   false, false, "", true, "no BUY/SELL direction", false, "", 0, 0,
+                   InpDryRun, 0, 0, rawText);
       return;
    }
 
    UpdateDailyTracking();
    if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay)
    {
-      PrintFormat("TelegramSMC_Copier: max trades/day reached (%d) - skipping signal.", InpMaxTradesPerDay);
+      string r = StringFormat("max trades/day reached (%d)", InpMaxTradesPerDay);
+      PrintFormat("TelegramSMC_Copier: %s - skipping signal.", r);
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, msg.entryA, msg.entryB,
+                   msg.sl, tpList, false, false, "", true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    if(CountActiveSlots() >= InpMaxOpenPositions)
    {
-      PrintFormat("TelegramSMC_Copier: max open positions/orders reached (%d) - skipping signal.",
-                  InpMaxOpenPositions);
+      string r = StringFormat("max open positions/orders reached (%d)", InpMaxOpenPositions);
+      PrintFormat("TelegramSMC_Copier: %s - skipping signal.", r);
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, msg.entryA, msg.entryB,
+                   msg.sl, tpList, false, false, "", true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
 
@@ -971,47 +1078,77 @@ void ProcessSignal(const SignalMsg &msg, long chatId)
    if(lowerBound <= 0.0)
    {
       Print("TelegramSMC_Copier: OPEN signal has no usable entry price - ignoring.");
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, msg.entryA, msg.entryB,
+                   msg.sl, tpList, false, false, "", true, "no usable entry price", false, "",
+                   0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
 
    double entryPrice = isBuy ? upperBound : lowerBound;
 
    MqlTick tick;
-   if(!SymbolInfoTick(_Symbol, tick)) { Print("TelegramSMC_Copier: no tick, cannot evaluate signal."); return; }
+   if(!SymbolInfoTick(_Symbol, tick))
+   {
+      Print("TelegramSMC_Copier: no tick, cannot evaluate signal.");
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+                   msg.sl, tpList, false, false, "", true, "no tick available", false, "",
+                   0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
    double mid     = (tick.ask + tick.bid) / 2.0;
    double devPips = MathAbs(mid - entryPrice) / PipSize();
    if(devPips > InpMaxEntryDeviationPips)
    {
-      PrintFormat("TelegramSMC_Copier: current price %.2f is %.1f pips from the signaled zone "
-                  "%.2f-%.2f (max %.1f) - skipping.", mid, devPips, lowerBound, upperBound,
-                  InpMaxEntryDeviationPips);
+      string r = StringFormat("price %.2f is %.1f pips from the zone (max %.1f)",
+                               mid, devPips, InpMaxEntryDeviationPips);
+      PrintFormat("TelegramSMC_Copier: %s - skipping.", r);
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+                   msg.sl, tpList, false, false, "", true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
 
    string sanityReason;
-   if(!ValidateSignalSanity(msg, isBuy, lowerBound, upperBound, sanityReason))
+   bool sanityOk = ValidateSignalSanity(msg, isBuy, lowerBound, upperBound, sanityReason);
+   if(!sanityOk)
    {
       PrintFormat("TelegramSMC_Copier: signal rejected - %s", sanityReason);
+      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+                   msg.sl, tpList, false, false, "", false, sanityReason, false, "", 0, 0,
+                   InpDryRun, 0, 0, rawText);
       return;
    }
 
+   bool   smcUsed   = InpUseSmcFilter;
+   bool   smcOk     = true;
+   string smcReason = "not required";
    if(InpUseSmcFilter)
    {
-      string smcReason;
-      bool smcOk = SmcValidate(isBuy, entryPrice, msg.sl, smcReason);
+      smcOk = SmcValidate(isBuy, entryPrice, msg.sl, smcReason);
       PrintFormat("TelegramSMC_Copier: SMC check %s - %s", smcOk ? "PASSED" : "FAILED", smcReason);
-      if(!smcOk) return;
+      if(!smcOk)
+      {
+         LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+                      msg.sl, tpList, true, false, smcReason, true, sanityReason, false, "", 0, 0,
+                      InpDryRun, 0, 0, rawText);
+         return;
+      }
    }
 
-   string tpList = "";
-   for(int i = 0; i < msg.tpCount; i++)
-      tpList += (i > 0 ? ", " : "") + DoubleToString(msg.tps[i], 2);
    PrintFormat("TelegramSMC_Copier: copying %s XAUUSD %.2f-%.2f sl=%.2f from chat %I64d "
                "(signal TPs logged only, not used: %s)",
                isBuy ? "BUY" : "SELL", lowerBound, upperBound, msg.sl, chatId,
                msg.tpCount > 0 ? tpList : "none given");
 
-   PlaceCopiedOrder(isBuy, lowerBound, upperBound, msg.sl);
+   string outOrderType  = "";
+   double outOrderPrice = 0.0;
+   long   outTicket     = 0;
+   int    outRetcode    = 0;
+   bool   placed = PlaceCopiedOrder(isBuy, lowerBound, upperBound, msg.sl,
+                                     outOrderType, outOrderPrice, outTicket, outRetcode);
+
+   LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+                msg.sl, tpList, smcUsed, smcOk, smcReason, true, sanityReason, placed,
+                outOrderType, outOrderPrice, InpFixedLot, InpDryRun, outTicket, outRetcode, rawText);
 }
 
 //+------------------------------------------------------------------+
@@ -1213,7 +1350,7 @@ void TelegramPoll()
 
       SignalMsg msg;
       ParseSignalText(updates[i].text, msg);
-      ProcessSignal(msg, updates[i].chat_id);
+      ProcessSignal(msg, updates[i].chat_id, updates[i].text);
    }
 
    if(ArraySize(updates) > 0)

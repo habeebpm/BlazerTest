@@ -1,0 +1,11 @@
+; TelegramSMC_TradeLogger - default preset
+; In MT5: Strategy Tester > Expert Advisor: TelegramSMC_TradeLogger > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; InpSymbol and InpMagicNumber must match the EA that is actually placing the
+; trades (TelegramSMC_Copier.mq5 ships InpMagicNumber=20260918 on XAUUSD by
+; default) - this EA only logs, it never places or closes anything itself.
+;
+InpSymbol=XAUUSD
+InpMagicNumber=20260918
+InpUseCommonFolder=false
