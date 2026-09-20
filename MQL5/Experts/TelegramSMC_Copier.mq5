@@ -1041,6 +1041,11 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       return;   // not one of this EA's chats - deliberately not logged as a signal at all
    }
 
+   // Computed once: MQL5 requires an actual variable for a reference-type
+   // argument (LogSignalRow's direction parameter), not a function's return
+   // value directly - DirToStr(msg.direction) inline fails to compile.
+   string dirStr = DirToStr(msg.direction);
+
    if(msg.action == ACTION_CLOSE)
    {
       Print("TelegramSMC_Copier: CLOSE signal - closing positions and cancelling pending orders.");
@@ -1062,7 +1067,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    {
       Print("TelegramSMC_Copier: breakeven signal - moving SL to entry where profit allows.");
       BreakevenAllMine();
-      LogSignalRow(chatId, "MODIFY_SL", DirToStr(msg.direction), msg.symbolOk, 0, 0, 0, "",
+      LogSignalRow(chatId, "MODIFY_SL", dirStr, msg.symbolOk, 0, 0, 0, "",
                    false, false, "", true, "", true, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
@@ -1081,7 +1086,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    if(!msg.symbolOk)
    {
       Print("TelegramSMC_Copier: OPEN signal does not mention XAUUSD/GOLD - ignoring.");
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), false, msg.entryA, msg.entryB, msg.sl,
+      LogSignalRow(chatId, "OPEN", dirStr, false, msg.entryA, msg.entryB, msg.sl,
                    tpList, false, false, "", true, "no XAUUSD/GOLD mention", false, "", 0, 0,
                    InpDryRun, 0, 0, rawText);
       return;
@@ -1100,7 +1105,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    {
       string r = StringFormat("max trades/day reached (%d)", InpMaxTradesPerDay);
       PrintFormat("TelegramSMC_Copier: %s - skipping signal.", r);
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, msg.entryA, msg.entryB,
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB,
                    msg.sl, tpList, false, false, "", true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
@@ -1108,7 +1113,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    {
       string r = StringFormat("max open positions/orders reached (%d)", InpMaxOpenPositions);
       PrintFormat("TelegramSMC_Copier: %s - skipping signal.", r);
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, msg.entryA, msg.entryB,
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB,
                    msg.sl, tpList, false, false, "", true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
@@ -1121,7 +1126,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    if(lowerBound <= 0.0)
    {
       Print("TelegramSMC_Copier: OPEN signal has no usable entry price - ignoring.");
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, msg.entryA, msg.entryB,
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB,
                    msg.sl, tpList, false, false, "", true, "no usable entry price", false, "",
                    0, 0, InpDryRun, 0, 0, rawText);
       return;
@@ -1133,7 +1138,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    if(!SymbolInfoTick(_Symbol, tick))
    {
       Print("TelegramSMC_Copier: no tick, cannot evaluate signal.");
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound,
                    msg.sl, tpList, false, false, "", true, "no tick available", false, "",
                    0, 0, InpDryRun, 0, 0, rawText);
       return;
@@ -1145,7 +1150,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       string r = StringFormat("price %.2f is %.1f pips from the zone (max %.1f)",
                                mid, devPips, InpMaxEntryDeviationPips);
       PrintFormat("TelegramSMC_Copier: %s - skipping.", r);
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound,
                    msg.sl, tpList, false, false, "", true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
@@ -1155,7 +1160,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    if(!sanityOk)
    {
       PrintFormat("TelegramSMC_Copier: signal rejected - %s", sanityReason);
-      LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound,
                    msg.sl, tpList, false, false, "", false, sanityReason, false, "", 0, 0,
                    InpDryRun, 0, 0, rawText);
       return;
@@ -1170,7 +1175,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       PrintFormat("TelegramSMC_Copier: SMC check %s - %s", smcOk ? "PASSED" : "FAILED", smcReason);
       if(!smcOk)
       {
-         LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+         LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound,
                       msg.sl, tpList, true, false, smcReason, true, sanityReason, false, "", 0, 0,
                       InpDryRun, 0, 0, rawText);
          return;
@@ -1189,7 +1194,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    bool   placed = PlaceCopiedOrder(isBuy, lowerBound, upperBound, msg.sl,
                                      outOrderType, outOrderPrice, outTicket, outRetcode);
 
-   LogSignalRow(chatId, "OPEN", DirToStr(msg.direction), msg.symbolOk, lowerBound, upperBound,
+   LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound,
                 msg.sl, tpList, smcUsed, smcOk, smcReason, true, sanityReason, placed,
                 outOrderType, outOrderPrice, InpFixedLot, InpDryRun, outTicket, outRetcode, rawText);
 }
