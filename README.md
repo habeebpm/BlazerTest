@@ -27,6 +27,9 @@ not predict future results.
 - `MQL5/Experts/TelegramSMC_TradeLogger.mq5` — a standalone trade-journal EA
   that logs every open/close for a given magic number to a CSV, decoupled
   from whatever EA is actually trading. See "Logging" under the same section.
+- `ASPX/Dashboard.aspx` — a self-contained ASP.NET Web Forms page that reads
+  those two CSVs and renders a read-only dashboard. See "Dashboard
+  (ASP.NET)" below and `ASPX/README.md`.
 - `python/` — a Python port of the same strategy that trades through the
   MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
@@ -450,3 +453,17 @@ signal text next to its eventual profit and close reason.
   with `InpDryRun = true` until you trust the channel, the parser's log
   output for every message it sees, **and** this EA's behavior, in that
   order.
+
+## Dashboard (ASP.NET)
+
+`ASPX/Dashboard.aspx` is a single, self-contained Web Forms page (classic
+.NET Framework, not Core) that reads the two CSVs above -
+`TelegramSMC_Signals.csv` and `TelegramSMC_Results.csv` - and renders a
+read-only dashboard: KPI tiles (signals received/accepted, trades closed,
+net P/L, win rate, average duration), a cumulative-P/L line chart, a
+close-reason breakdown, an accepted/rejected outcome split, top rejection
+reasons, and the latest 50 signals and trades as tables. It never writes to
+either CSV. Ships with bundled sample data under `ASPX/App_Data/` so it
+renders something meaningful before you've pointed it at real logs - see
+`ASPX/README.md` for IIS deployment, pointing `Web.config` at the live CSV
+paths (same-machine or via a UNC path/sync job), and security notes.
