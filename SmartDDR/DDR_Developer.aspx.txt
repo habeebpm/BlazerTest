@@ -996,9 +996,9 @@ dialog.confirm-dialog::backdrop{
                     <asp:LinkButton ID="CSV_Template" runat="server" CssClass="nav-item"
                         CausesValidation="False"
                         OnClick="CSV_Template_Click"
-                        ToolTip="Exports this CTD's DDR lines (CTD_ID, Ramz_ID, PLIP_ID, Document_No, Document_Title, Man_Hours, HO_Status); downloads just the header if none are saved yet">
+                        ToolTip="Downloads a blank CSV template with just the column headers: CTD_ID, Ramz_ID, PLIP_ID, Document_No, Document_Title, Man_Hours, HO_Status">
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v11" /><path d="M7 10l5 5 5-5" /><path d="M5 21h14" /></svg></span>
-                        <span>Export CSV</span>
+                        <span>CSV Template</span>
                     </asp:LinkButton>
 
                     <div class="nav-upload-row">

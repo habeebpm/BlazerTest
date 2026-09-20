@@ -159,19 +159,19 @@ the existing `SmarTagsASP` Web Forms application, which provides:
 - **"DDR + Activity" (`DDR1`)** button now adds one document row and one
   activity row in a single click, instead of only showing a loading
   overlay.
-- **CSV Export / CSV Upload** are fully implemented, scoped to exactly
+- **CSV Template / CSV Upload** are fully implemented, scoped to exactly
   seven fields on `CTD_DDR_DISC` — `CTD_ID, Ramz_ID, PLIP_ID, Document_No,
   Document_Title, Man_Hours, HO_Status` — by requirement; `Software`,
   `Disc_Remarks`, `Criticality` and `HO_REQ` are never read or written by
-  either direction. "Export CSV" streams the current CTD's saved DDR
-  lines in that column order (just the header row if none are saved yet,
-  which doubles as an import template). "Upload CSV" parses an uploaded
-  file (a small quoted-comma-aware parser), validates each row (CTD_ID —
-  defaulting to the CTD currently open on the page when left blank —
-  Document_No, Document_Title and Ramz_ID are required; Man_Hours must be
-  numeric; HO_Status must be blank, AFC or APP), and inserts them in a
-  single transaction, reporting the imported count or a per-row error
-  list.
+  either direction. "CSV Template" downloads just that header row (no
+  DDR line data — an earlier version streamed the CTD's actual saved
+  rows too, but that was more than wanted, so it's back to a blank
+  template only). "Upload CSV" parses an uploaded file (a small
+  quoted-comma-aware parser), validates each row (CTD_ID — defaulting to
+  the CTD currently open on the page when left blank — Document_No,
+  Document_Title and Ramz_ID are required; Man_Hours must be numeric;
+  HO_Status must be blank, AFC or APP), and inserts them in a single
+  transaction, reporting the imported count or a per-row error list.
 - **Delete** removes the row from the database (or just from the pending
   in-memory table for a not-yet-saved row) instead of doing nothing.
 

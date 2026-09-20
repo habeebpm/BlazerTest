@@ -692,54 +692,19 @@ Public Class DDR_Developer
     }
 
     ''' <summary>
-    ''' Exports the current CTD's DDR lines (limited to the seven CSV columns).
-    ''' With no saved lines yet, this downloads just the header row, which
-    ''' doubles as an import template.
+    ''' Downloads the CSV header row only - a blank import template with just
+    ''' the seven column names, no DDR line data.
     ''' </summary>
     Protected Sub CSV_Template_Click(sender As Object, e As EventArgs)
         Dim ctdId As Integer = Val(lblContext.Text)
 
-        Dim sb As New StringBuilder()
-        sb.AppendLine(String.Join(",", CsvColumns))
-
-        Using con As New SqlConnection(ST_Common.WorleyDataConnString)
-            Using cmd As New SqlCommand(
-                "SELECT CTD_ID, RAMZ_ID, PLIP_ID, DOCUMENT_NO, DOCUMENT_TITLE, MAN_HOURS, HO_STATUS " &
-                "FROM CTD_DDR_DISC WHERE CTD_ID = @CTD_ID ORDER BY DDR_ID", con)
-                cmd.Parameters.AddWithValue("@CTD_ID", ctdId)
-                con.Open()
-                Using rd As SqlDataReader = cmd.ExecuteReader()
-                    While rd.Read()
-                        sb.AppendLine(String.Join(",", {
-                            EscapeCsvField(rd("CTD_ID").ToString()),
-                            EscapeCsvField(rd("RAMZ_ID").ToString()),
-                            EscapeCsvField(rd("PLIP_ID").ToString()),
-                            EscapeCsvField(rd("DOCUMENT_NO").ToString()),
-                            EscapeCsvField(rd("DOCUMENT_TITLE").ToString()),
-                            EscapeCsvField(rd("MAN_HOURS").ToString()),
-                            EscapeCsvField(rd("HO_STATUS").ToString())
-                        }))
-                    End While
-                End Using
-            End Using
-        End Using
-
         Response.Clear()
         Response.ContentType = "text/csv"
-        Response.AddHeader("Content-Disposition", "attachment; filename=DDR_Export_CTD_" & ctdId & ".csv")
-        Response.Write(sb.ToString())
+        Response.AddHeader("Content-Disposition", "attachment; filename=DDR_Import_Template_CTD_" & ctdId & ".csv")
+        Response.Write(String.Join(",", CsvColumns) & vbCrLf)
         Response.Flush()
         HttpContext.Current.ApplicationInstance.CompleteRequest()
     End Sub
-
-    ''' <summary>Wraps a CSV field in quotes and escapes embedded quotes when needed.</summary>
-    Private Function EscapeCsvField(value As String) As String
-        If value Is Nothing Then Return ""
-        If value.IndexOfAny({","c, """"c, ControlChars.Cr, ControlChars.Lf}) >= 0 Then
-            Return """" & value.Replace("""", """""") & """"
-        End If
-        Return value
-    End Function
 
     Protected Sub CSV_Upload_Click(sender As Object, e As EventArgs)
         If Not fuCsv.HasFile Then
