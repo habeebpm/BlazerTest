@@ -4,3 +4,8 @@
 MetaTrader5>=5.0.45; sys_platform == "win32"
 pandas>=2.0
 numpy>=1.24
+
+# Only needed for telegram_copier.py's live listener (imported lazily, same
+# pattern as MetaTrader5 above) - --selftest and --replay need neither this
+# nor MetaTrader5, and it installs on every platform.
+telethon>=1.34

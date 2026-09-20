@@ -293,6 +293,109 @@ advised), `-v`.
 | `selftest.py` | Strategy/indicator/trailing checks |
 | `test_integration.py` | Drives the bot against a stub MetaTrader5 module |
 | `simulate.py` | Counts actual fills (not signals) under the position rules |
+| `signal_parser.py` | Parses free-text Telegram messages into a structured signal |
+| `copier_config.py` | Settings for the Telegram copier (separate from `config.py`) |
+| `verifier.py` | `SignalVerifier` - the checks a parsed signal must clear before it's copied |
+| `copier_engine.py` | Pure glue: message -> parsed signal -> verdict -> MT5 order shape |
+| `telegram_copier.py` | Telethon listener, live execution, post-trade verification, CLI |
+| `copier_selftest.py` | Parser/verifier/engine checks, no MT5 or Telegram needed |
+
+## Telegram signal copier + verifier
+
+`telegram_copier.py` watches one or more Telegram chats for trade calls,
+parses each message, runs it through `SignalVerifier`, and - only if it
+survives - copies it to MT5 using **the signal's own SL/TP**, not a fixed
+distance. This is a separate tool from the confluence bot above; it does not
+generate its own trade ideas, it copies someone else's.
+
+**Why a verifier, not just a copier:** a raw signal is unverified input from
+an outside chat. Before anything reaches the broker, `SignalVerifier` checks,
+in order - a symbol this copier actually trades, the source chat is on an
+allow-list (if configured), the message isn't stale or a repeat of one just
+seen, there's room under the open-position/trades-per-day caps, the current
+price hasn't run away from the signaled entry, the stop-loss is on the
+correct side of price and clears both the spread and the broker's minimum
+stop distance, it isn't absurdly tight or absurdly wide (a likely typo), and
+the nearest take-profit clears a minimum risk:reward if one is configured.
+The first failing check is the one reported - see `verifier.py` for the full
+list and the exact order.
+
+**Verification doesn't stop at the parse.** After a copy is sent, the fill is
+checked against what was verified: a fill that slipped further than
+`post_trade_tolerance_units` from the signaled entry, or a position whose
+broker-side SL doesn't match what was requested, is logged as a warning.
+
+A few management messages are recognised too: **CLOSE/EXIT** closes every
+open position on the configured symbol; **"move SL to breakeven"** does
+exactly that, skipping any position not yet far enough in profit to clear
+the broker's minimum stop distance. **CANCEL** is logged and otherwise
+ignored - this copier manages positions, not resting pending orders.
+
+### Try it without Telegram or MT5
+
+```bash
+python telegram_copier.py --selftest              # parser + verifier + engine checks
+python telegram_copier.py --replay sample_signals.txt   # parse+verify a batch of sample messages
+```
+
+`sample_signals.txt` ships with a mix of formats (single price, an entry
+zone, a pending `BUY LIMIT`, a fat-finger stop, plain chatter, `CLOSE`,
+breakeven) so `--replay` prints each parse, the verifier's verdict, and -
+when accepted - the exact order shape that would be sent. Nothing touches
+MT5 or Telegram in this mode; `--price`, `--equity`, `--spread-points` and
+`--point` control the synthetic market it verifies against.
+
+### Run live
+
+```bash
+pip install -r requirements.txt
+set MT5_LOGIN=12345678
+set MT5_PASSWORD=your-password
+set MT5_SERVER=YourBroker-Demo
+set TELEGRAM_API_ID=1234567
+set TELEGRAM_API_HASH=your-api-hash
+set TELEGRAM_CHANNELS=@some_signal_channel,-1001234567890
+```
+
+Get an API id/hash from <https://my.telegram.org> (API development tools) -
+this is a personal API credential, not a bot token; the first `--live` run
+prompts once in the terminal for your phone number and login code, then
+caches a session file (`TELEGRAM_SESSION`, default `tg_copier.session`) so
+later runs don't ask again. Leave `TELEGRAM_CHANNELS` unset to watch every
+chat the session can see - not recommended outside a private test account.
+
+```bash
+python telegram_copier.py --check      # connect to MT5, print spec + verifier settings, exit
+python telegram_copier.py              # listen live, DRY-RUN (logs what it would copy)
+python telegram_copier.py --live       # listen live and actually copy trades
+```
+
+`--live` is opt-in by design, exactly like `trader.py`: run dry-run first and
+read what it logs before trusting it with real orders.
+
+Useful flags: `--symbol`, `--channels` (overrides `TELEGRAM_CHANNELS`),
+`--lots`, `--risk-percent`, `--min-risk-reward`, `--min-sl-units`,
+`--max-sl-units`, `--max-signal-age`, `--allow-missing-sl` (accept a signal
+with no stop-loss, using a fallback distance - off by default), `-v`.
+
+Every processed signal is appended to `logs/copier_signals.csv`; output also
+goes to `logs/telegram_copier.log`.
+
+### Honest notes
+
+- This tool trusts the verifier's numeric checks, not the quality of the
+  call itself - a signal with a sane stop and a plausible price is not the
+  same thing as a good trade. Nothing here scores or backtests the source
+  channel.
+- Only the first take-profit in a message becomes the position's TP (MT5
+  positions carry one); further targets are recorded in the log line but not
+  acted on. Managing partial exits across multiple TPs is out of scope.
+- Pending `BUY LIMIT`/`SELL STOP` signals are parsed with `order_type` set
+  accordingly, but this copier only ever sends **market** orders - resting
+  pending orders (and the matching `CANCEL` support) are not implemented.
+- The dedupe window is keyed on (chat, direction, symbol, SL, TPs) with an
+  in-memory timestamp, so it only catches repeats within one running
+  process - restarting the copier clears it.
 
 `indicators.py` follows MT5's conventions, not the textbook ones, so the Python
 bot and the MQL5 EA agree: MACD's signal line is an **SMA**, ATR uses an **SMA**

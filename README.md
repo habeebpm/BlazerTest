@@ -24,7 +24,12 @@ not predict future results.
 - `python/` — a Python port of the same strategy that trades through the
   MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
-  See `python/README.md`.
+  See `python/README.md`. It also includes `telegram_copier.py`, a separate
+  tool that copies trade calls posted in Telegram chats into MT5 - each
+  signal is parsed and run through a `SignalVerifier` (stale/duplicate/
+  off-symbol/bad-stop/weak-reward signals are rejected with a logged reason)
+  before anything is sent, and the fill is checked against what was verified
+  afterwards. See "Telegram signal copier + verifier" in `python/README.md`.
 
 ## Strategy logic
 
