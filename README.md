@@ -324,9 +324,12 @@ process, no bridge file, nothing outside MT5. One-time setup:
 3. In MT5: **Tools → Options → Expert Advisors** → tick "Allow WebRequest for
    listed URL" and add `https://api.telegram.org` — WebRequest is refused
    otherwise, and the EA logs exactly this instruction if it happens.
-4. Leave `InpAllowedChatId` at `0` for the first run and attach the EA: every
-   message the bot can see is logged with its chat id. Copy that id into
-   `InpAllowedChatId` and restart, so only that one chat can trigger trades.
+4. Leave `InpChannelId1`/`InpChannelId2` at `0` for the first run and attach
+   the EA: every message the bot can see is logged with its chat id. Copy up
+   to two of those ids into `InpChannelId1` (and `InpChannelId2` for a second
+   channel) and restart, so only those chats can trigger trades. Leaving both
+   at `0` accepts signals from any chat the bot can see — fine for that first
+   discovery run, not recommended afterward.
 
 The EA ships with **`InpDryRun = true`**. Nothing above logs-only behavior
 happens until you set it to `false`, and that should only follow watching the

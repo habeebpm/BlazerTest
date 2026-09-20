@@ -18,10 +18,11 @@
 //|   3. In MT5: Tools > Options > Expert Advisors > tick "Allow       |
 //|      WebRequest for listed URL" and add                            |
 //|      https://api.telegram.org - WebRequest is refused otherwise.   |
-//|   4. Leave InpAllowedChatId at 0 for the first run, attach the EA, |
-//|      and read the Experts log: every message the bot sees is       |
-//|      logged with its chat id. Copy that id into InpAllowedChatId   |
-//|      and restart - only signals from that one chat will be copied. |
+//|   4. Leave InpChannelId1/InpChannelId2 at 0 for the first run,      |
+//|      attach the EA, and read the Experts log: every message the    |
+//|      bot sees is logged with its chat id. Copy up to two of those   |
+//|      ids into InpChannelId1/InpChannelId2 and restart - only        |
+//|      signals from those chats will be copied.                      |
 //| Runs with InpDryRun = true until you turn it off; nothing above    |
 //| this line touches an order.                                        |
 //|                                                                    |
@@ -114,7 +115,8 @@
 
 input group "=== Telegram Bot (see the file header for setup steps) ==="
 input string  InpBotToken          = "";              // Bot token from @BotFather
-input long    InpAllowedChatId     = 0;                // Only copy signals from this chat id (0 = ANY chat - unsafe, first-run only)
+input long    InpChannelId1        = 0;                // Only copy signals from this chat id (0 = slot unused)
+input long    InpChannelId2        = 0;                // ...and this one (0 = slot unused; both 0 = ANY chat - unsafe, first-run only)
 input int     InpPollSeconds       = 5;                // How often to poll Telegram for new messages
 input int     InpHttpTimeoutMs     = 5000;             // WebRequest timeout (ms)
 input int     InpMaxSignalAgeSec   = 180;              // Reject a signal older than this many seconds (0 = no limit)
@@ -185,6 +187,7 @@ int      g_tradesToday   = 0;
 // below (e.g. OnInit() calls DateToDay()), so declare every signature here
 // rather than relying on the order they happen to be defined in.
 double   PipSize();
+bool     IsAllowedChat(long chatId);
 datetime DateToDay(datetime t);
 void     UpdateDailyTracking();
 bool     IsDigitCh(ushort ch);
@@ -238,10 +241,14 @@ int OnInit()
             "an admin of the signal channel, and paste the token into InpBotToken.");
       return(INIT_PARAMETERS_INCORRECT);
    }
-   if(InpAllowedChatId == 0)
-      Print("TelegramSMC_Copier: WARNING - InpAllowedChatId is 0, so signals from ANY chat this "
-            "bot can see will be copied. Watch the log for 'message from chat <id>', set "
-            "InpAllowedChatId to that value, and restart.");
+   if(InpChannelId1 == 0 && InpChannelId2 == 0)
+      Print("TelegramSMC_Copier: WARNING - InpChannelId1 and InpChannelId2 are both 0, so signals "
+            "from ANY chat this bot can see will be copied. Watch the log for 'message from chat "
+            "<id>', set InpChannelId1 (and InpChannelId2 if you follow a second channel) to those "
+            "values, and restart.");
+   else if(InpChannelId1 != 0 && InpChannelId2 != 0 && InpChannelId1 == InpChannelId2)
+      Print("TelegramSMC_Copier: WARNING - InpChannelId1 and InpChannelId2 are the same chat id; "
+            "the second slot is redundant.");
    if(InpDryRun)
       Print("TelegramSMC_Copier: DRY-RUN mode - no real orders will be sent. Set InpDryRun=false "
             "only after checking the log against every message the channel posts.");
@@ -284,6 +291,19 @@ void OnDeinit(const int reason)
 //| Small helpers                                                     |
 //+------------------------------------------------------------------+
 double PipSize() { return(SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10.0); }
+
+//+------------------------------------------------------------------+
+//| True if chatId is one of the (up to two) configured channels, or  |
+//| if neither slot is configured (both 0 - accepts any chat, with    |
+//| the OnInit warning above making that opt-in rather than silent).  |
+//+------------------------------------------------------------------+
+bool IsAllowedChat(long chatId)
+{
+   if(InpChannelId1 == 0 && InpChannelId2 == 0) return(true);
+   if(InpChannelId1 != 0 && chatId == InpChannelId1) return(true);
+   if(InpChannelId2 != 0 && chatId == InpChannelId2) return(true);
+   return(false);
+}
 
 datetime DateToDay(datetime t)
 {
@@ -991,11 +1011,11 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
 //+------------------------------------------------------------------+
 void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 {
-   if(InpAllowedChatId != 0 && chatId != InpAllowedChatId)
+   if(!IsAllowedChat(chatId))
    {
-      PrintFormat("TelegramSMC_Copier: ignoring message from chat %I64d (allowed chat is %I64d)",
-                  chatId, InpAllowedChatId);
-      return;   // not this EA's chat - deliberately not logged as a signal at all
+      PrintFormat("TelegramSMC_Copier: ignoring message from chat %I64d (allowed: %I64d, %I64d)",
+                  chatId, InpChannelId1, InpChannelId2);
+      return;   // not one of this EA's chats - deliberately not logged as a signal at all
    }
 
    if(msg.action == ACTION_CLOSE)
