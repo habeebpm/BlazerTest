@@ -107,6 +107,25 @@ def get_bars(symbol: str, timeframe_name: str, count: int) -> pd.DataFrame:
     return df.rename(columns={"tick_volume": "volume"})
 
 
+def get_bars_range(symbol: str, timeframe_name: str, start, end) -> pd.DataFrame:
+    """Every bar between `start` and `end` (both timezone-aware datetimes,
+    or anything pandas.Timestamp accepts) - for backtest.py, which needs a
+    whole historical window rather than "the most recent N bars". Unlike
+    get_bars(), every returned row is a genuinely CLOSED historical bar -
+    there's no still-forming bar to drop.
+    """
+    m = mt5()
+    rates = m.copy_rates_range(symbol, timeframe_const(timeframe_name),
+                                pd.Timestamp(start).to_pydatetime(), pd.Timestamp(end).to_pydatetime())
+    if rates is None:
+        raise RuntimeError(f"copy_rates_range({symbol}, {timeframe_name}) failed: {m.last_error()}")
+    df = pd.DataFrame(rates)
+    if len(df) == 0:
+        return df.assign(time=pd.Series(dtype="datetime64[ns, UTC]"))
+    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    return df.rename(columns={"tick_volume": "volume"})
+
+
 def get_tick(symbol: str):
     m = mt5()
     tick = m.symbol_info_tick(symbol)

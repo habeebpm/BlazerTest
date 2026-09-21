@@ -16,6 +16,10 @@ Covers:
   * claude_advisor's Claude-API error classification (out of credits,
     bad key, rate limit, overload, network) - built from the real
     anthropic SDK exception classes when the package is installed
+  * backtest.HistoricalGateway's no-lookahead guarantee (a higher timeframe
+    bar isn't visible until its own CLOSE time, not just its open time),
+    its arm-then-trail exit simulation (SL/TP/trail/min-stop-dist), and a
+    tiny end-to-end mechanical-mode backtest run
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import csv
 import numpy as np
 import pandas as pd
 
+import backtest
 import claude_advisor
 import executor
 import market_intel
@@ -537,6 +542,178 @@ def test_full_snapshot_pipeline() -> bool:
     return ok
 
 
+def _flat_spec(**overrides) -> gw.SymbolSpec:
+    base = dict(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+               volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+    base.update(overrides)
+    return gw.SymbolSpec(**base)
+
+
+def test_backtest_no_lookahead_and_reset() -> bool:
+    print("\n=== 9. backtest.HistoricalGateway: no-lookahead + reset() warmup ===")
+    ok = True
+
+    m15 = pd.DataFrame({"time": pd.date_range("2026-01-01", periods=100, freq="15min", tz="UTC"),
+                        "open": range(100), "high": range(100), "low": range(100), "close": range(100)})
+    h4 = pd.DataFrame({"time": pd.date_range("2026-01-01", periods=10, freq="4h", tz="UTC"),
+                       "open": range(10), "high": range(10), "low": range(10), "close": range(10)})
+    gateway = backtest.HistoricalGateway("XAUUSD", {"M15": m15, "H4": h4}, _flat_spec())
+
+    reset_ok = gateway.reset("M15", warmup_bars=3)
+    ok &= check("reset() succeeds with enough history on every timeframe", reset_ok)
+    ok &= check("reset() lands on the earliest bar where H4 (the binding constraint) has "
+                "warmup_bars closed bars, not earlier or later",
+                gateway.current_time == pd.Timestamp("2026-01-01 12:15", tz="UTC"), gateway.current_time)
+
+    # Before the first H4 bar (00:00-04:00) has closed, it must not be
+    # queryable at all - the whole point of the no-lookahead guarantee.
+    gateway.cursor = 10  # bar close 02:45
+    try:
+        gateway.get_bars("XAUUSD", "H4", 5)
+        ok = check("H4 raises rather than exposing a bar that hasn't closed yet", False)
+    except RuntimeError:
+        ok &= check("H4 raises rather than exposing a bar that hasn't closed yet", True)
+
+    # The instant that H4 bar's own CLOSE time (04:00) is reached - not its
+    # open time (00:00), which is much earlier - it becomes visible.
+    gateway.cursor = 15  # bar close 04:00
+    visible = gateway.get_bars("XAUUSD", "H4", 5).iloc[:-1]  # drop the forming-bar placeholder
+    ok &= check("that H4 bar becomes visible exactly at its own close time",
+                len(visible) == 1 and visible["time"].iloc[0] == h4["time"].iloc[0],
+                visible["time"].tolist())
+
+    return ok
+
+
+def test_backtest_exit_simulation() -> bool:
+    print("\n=== 10. backtest.HistoricalGateway: SL / TP / arm-then-trail exit simulation ===")
+    ok = True
+
+    def make_gateway(spec):
+        bar = pd.DataFrame({"time": [pd.Timestamp("2026-01-01", tz="UTC")],
+                            "open": [2350.0], "high": [2350.0], "low": [2350.0], "close": [2350.0]})
+        g = backtest.HistoricalGateway("XAUUSD", {"M15": bar}, spec)
+        g.primary_timeframe = "M15"
+        g.cursor = 0
+        return g
+
+    def set_bar(g, o, h, l, c):
+        g.bars["M15"] = pd.DataFrame({"time": [pd.Timestamp("2026-01-01", tz="UTC")],
+                                      "open": [o], "high": [h], "low": [l], "close": [c]})
+
+    spec = _flat_spec()
+    # Independent of the shipped default (where tp_arm_dollars doubles as the
+    # fixed-TP distance, so the trail can never win the race against the
+    # standing TP order - see the backtest README section), so this
+    # specifically exercises the arm-then-trail code path on its own merits.
+    cfg = AdvisorConfig(tp_arm_dollars=3.0, trail_dollars=1.0)
+
+    g1 = make_gateway(spec)
+    g1.open_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=2360.0)]
+    set_bar(g1, 2350.0, 2353.5, 2349.5, 2353.0)  # profit_at_high 3.5 >= arm_dist 3.0
+    g1.manage_positions(cfg)
+    pos = g1.open_positions[0]
+    ok &= check("reaching the arm threshold arms the trail and drops the fixed TP",
+                pos.armed and pos.tp is None and abs(pos.sl - 2352.5) < 1e-9,
+                (pos.sl, pos.tp, pos.armed))
+    set_bar(g1, 2353.0, 2353.2, 2352.0, 2352.3)  # pulls back onto the new trailing SL (2352.5)
+    g1.manage_positions(cfg)
+    ok &= check("a later pullback onto the armed trailing stop closes the position with reason 'trail'",
+                len(g1.closed_trades) == 1 and g1.closed_trades[0].exit_reason == "trail"
+                and abs(g1.closed_trades[0].exit_price - 2352.5) < 1e-9, g1.closed_trades)
+
+    g2 = make_gateway(spec)
+    g2.open_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2356.0, tp=2340.0)]
+    set_bar(g2, 2350.0, 2357.0, 2349.0, 2355.0)  # high touches 2357 >= sl 2356
+    g2.manage_positions(cfg)
+    ok &= check("a sell position's stop-loss being touched closes it at exactly the SL price for -$6",
+                g2.closed_trades and g2.closed_trades[0].exit_reason == "sl"
+                and g2.closed_trades[0].exit_price == 2356.0 and g2.closed_trades[0].pnl_dollars == -6.0,
+                g2.closed_trades)
+
+    g3 = make_gateway(spec)
+    g3.open_positions = [backtest.SimPosition(ticket=3, direction="buy", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=2352.0)]  # tp closer than arm_dist (3.0)
+    set_bar(g3, 2350.0, 2352.5, 2349.8, 2352.0)  # profit_at_high 2.5 < arm_dist 3.0 - never arms
+    g3.manage_positions(cfg)
+    ok &= check("the fixed TP fires on its own when price reaches it before the arm threshold",
+                g3.closed_trades and g3.closed_trades[0].exit_reason == "tp"
+                and g3.closed_trades[0].pnl_dollars == 2.0, g3.closed_trades)
+
+    # A broker minimum stop distance wider than the trail distance must
+    # block the trail from moving at all - mirrors the bug already fixed
+    # once in ClaudeSMC_TradeManager.mq5's own history (see its file header).
+    wide_stop_spec = _flat_spec(stops_level_points=200)  # 2.0 price units
+    g4 = make_gateway(wide_stop_spec)
+    g4.open_positions = [backtest.SimPosition(ticket=4, direction="buy", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=2360.0)]
+    set_bar(g4, 2350.0, 2353.5, 2349.5, 2353.0)  # would arm, but candidate SL is only 1.0 away - too tight
+    g4.manage_positions(cfg)
+    pos4 = g4.open_positions[0] if g4.open_positions else None
+    ok &= check("a broker minimum stop distance wider than the trail keeps the fixed TP in place",
+                pos4 is not None and not pos4.armed and pos4.tp == 2360.0 and pos4.sl == 2344.0,
+                pos4)
+
+    return ok
+
+
+def test_backtest_end_to_end_mechanical() -> bool:
+    print("\n=== 11. backtest.py end-to-end run (--mechanical, tiny synthetic dataset, no API) ===")
+    ok = True
+    rng = np.random.default_rng(11)
+
+    def make_series(start, periods, freq, drift, noise, start_price):
+        times = pd.date_range(start, periods=periods, freq=freq, tz="UTC")
+        closes = start_price + np.cumsum(np.full(periods, drift) + rng.normal(0, noise, periods))
+        opens = np.roll(closes, 1)
+        opens[0] = start_price
+        highs = np.maximum(opens, closes) + rng.uniform(0.05, 0.3, periods)
+        lows = np.minimum(opens, closes) - rng.uniform(0.05, 0.3, periods)
+        return pd.DataFrame({"time": times, "open": opens, "high": highs, "low": lows,
+                             "close": closes, "volume": rng.integers(50, 200, periods)})
+
+    # Every timeframe needs > cfg.bars_per_timeframe (300) bars for reset()'s
+    # warmup, with the M15 window sitting well inside the others' ranges.
+    w1 = make_series("2018-01-01", 350, "7D", 0.5, 3.0, 2300.0)
+    d1 = make_series("2018-01-01", 2500, "1D", 0.07, 1.0, 2300.0)
+    h4 = make_series("2025-06-01", 900, "4h", 0.02, 0.4, 2340.0)
+    m15 = make_series("2026-01-01", 600, "15min", 0.005, 0.15, 2350.0)
+
+    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_backtest_selftest_logs")
+    gateway = backtest.HistoricalGateway("XAUUSD", {"M15": m15, "H4": h4, "D1": d1, "W1": w1}, _flat_spec())
+    reset_ok = gateway.reset(cfg.primary_timeframe, cfg.bars_per_timeframe)
+    ok &= check("enough synthetic history exists to warm up every timeframe", reset_ok)
+    if not reset_ok:
+        return ok
+
+    backtest.run_backtest(gateway, cfg, client=None, mechanical=True)
+    summary = backtest.summarize(gateway.closed_trades)
+    ok &= check("the backtest completes and produces a summary dict without error",
+                "total_trades" in summary, summary)
+    if gateway.closed_trades:
+        ok &= check("every closed trade's P&L matches its own entry/exit/lots math",
+                    all(abs(t.pnl_dollars - (1 if t.direction == "buy" else -1)
+                            * (t.exit_price - t.entry_price) / gateway.spec.tick_size
+                            * gateway.spec.tick_value * t.lots) < 0.01
+                        for t in gateway.closed_trades),
+                    [(t.direction, t.entry_price, t.exit_price, t.pnl_dollars) for t in gateway.closed_trades])
+
+    out_path = "/tmp/claudesmc_backtest_selftest_trades.csv"
+    backtest.write_trades_csv(gateway.closed_trades, out_path)
+    with open(out_path) as f:
+        rows = list(csv.DictReader(f))
+    ok &= check("the trade log CSV has one row per closed trade",
+                len(rows) == len(gateway.closed_trades), len(rows))
+
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -548,6 +725,9 @@ def main() -> int:
         test_claude_advisor_wiring(),
         test_claude_error_classification(),
         test_full_snapshot_pipeline(),
+        test_backtest_no_lookahead_and_reset(),
+        test_backtest_exit_simulation(),
+        test_backtest_end_to_end_mechanical(),
     ]
     print()
     if all(results):

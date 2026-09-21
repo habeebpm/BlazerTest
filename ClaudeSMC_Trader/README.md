@@ -62,6 +62,11 @@ tick - trade management on already-open positions is the MQL5 EA's job,
 specifically because a tick EA can react to a fast spike past the arm level
 that a 30-second Python poll loop could miss entirely.
 
+`python/backtest.py` walks the same `market_intel`/`claude_advisor`/
+`executor` path against historical bars instead of a live MT5 connection,
+simulating both entries and the exit logic `ClaudeSMC_TradeManager.mq5`
+would apply, and reports trade-by-trade results - see "Backtesting" below.
+
 ## What "all possible trading intelligence" means here
 
 Every evaluation sends Claude a JSON snapshot (see `market_intel.py`)
@@ -131,8 +136,10 @@ than it is:
   EMA200 bias - not a full weekly→daily→4h→15m nested read).
 - **A parsed-cleanly, full-conviction verdict is not a guarantee of a good
   trade.** It means the numbers weren't obviously broken and Claude's own
-  judgment, given everything above, was confident. Nothing here has been
-  backtested against historical tick data.
+  judgment, given everything above, was confident. See "Backtesting" below
+  for how to actually measure this against history rather than take it on
+  faith - and for a real finding it already surfaced (the trail essentially
+  never engages under the shipped default config).
 
 ## Why dollars, not points
 
@@ -252,3 +259,85 @@ and SMC code, a fake MT5 gateway exercises `executor.py`'s gating logic, and
 a fake Anthropic client exercises `claude_advisor.py`'s wiring. No MT5
 terminal, no API key, no network needed. This is also the test to run after
 changing any threshold or formula in this solution.
+
+## Backtesting
+
+`python/backtest.py` replays historical bars through the exact same code
+path live trading uses - `market_intel.build_feature_snapshot`,
+`claude_advisor.get_verdict` (the real Claude API, by default), and
+`executor.gate`/`execute` - then simulates each position's exit (SL / TP /
+the $3 arm-then-trail) against the bars that follow, and reports a trade
+log plus summary stats (win rate, net $, avg win/loss, max drawdown).
+
+> **COST WARNING:** by default this calls the real Claude API once per
+> evaluated bar. A few months of M15 history is thousands of candles -
+> thousands of real API calls. It prints an estimate and asks you to
+> confirm before spending anything (`--yes` skips the prompt once you trust
+> the estimate). Use `--mechanical` first - a free, non-LLM stand-in that
+> applies the exact same pass/confirm rules Claude is told to use - to
+> check the engine itself (data lines up, gating works, exits look right)
+> before paying to test Claude's actual judgment.
+
+```bash
+cd python
+
+# Free: test the engine/exit-simulation plumbing, no API key needed
+python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
+    --daily-csv d1.csv --weekly-csv w1.csv --mechanical
+
+# Real backtest - calls the real Claude API, costs money, asks first
+python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
+    --daily-csv d1.csv --weekly-csv w1.csv
+
+# Or pull history straight from a running MT5 terminal instead of CSVs
+python backtest.py --from-mt5 --start 2026-01-01 --end 2026-04-01
+```
+
+CSV format: columns `time,open,high,low,close,volume`, one row per CLOSED
+historical bar, ascending. Export these from MT5 (or any data source) for
+the primary timeframe (M15), the trend timeframe (H4), D1, and W1.
+
+**The single most important property of any backtest is no lookahead bias.**
+`backtest.HistoricalGateway` only ever exposes a bar once its own CLOSE time
+has passed relative to the moment being simulated - not just its open time,
+which matters a lot for the higher timeframes (an H4 bar that opened 10
+minutes ago hasn't closed yet and must stay invisible). This is covered by
+dedicated tests in `selftest.py`, not just asserted in a comment.
+
+### What the backtest found, immediately
+
+Running it surfaced a real design property worth knowing before you trust
+this system's trailing stop: **`tp_arm_dollars` is used as both the fixed
+take-profit distance and the trail-arm threshold** (same config value, same
+computed price - see `config.py`). That means the exact instant price
+reaches the level that would arm the trail, it has also just reached the
+fixed TP - and in live trading, a standing TP order at the broker fires the
+moment price touches it, effectively always winning that race before the
+EA's own trailing logic gets a chance to act. Practically: **the shipped
+defaults behave close to a flat $6 take-profit; the trail essentially never
+gets to engage.**
+
+The arm-then-trail mechanism itself is implemented correctly - see
+`test_backtest_exit_simulation` in `selftest.py`, which exercises it in
+isolation with the arm threshold and the fixed TP set to genuinely
+*different* distances, and confirms it arms, drops the TP, and later exits
+on the trail exactly as intended. It's specifically today's shipped default
+- one config value (`tp_arm_dollars`) doing double duty as both the TP
+distance and the arm threshold - that neutralizes it in practice. There's no
+CLI flag yet to arm the trail at a distance smaller than the fixed TP
+(`main.py --tp-dollars`/`--trail-dollars` don't currently expose a separate
+arm distance); giving the trail real room to operate would need that split
+added to `config.py`/`executor.py`. This is exactly the kind of thing a
+backtest is for surfacing before it costs real money to discover live -
+ask if you'd like that split implemented.
+
+### Honest limitations of the backtest itself
+
+- **Bar-level, not tick-level.** Exit checks use each bar's high/low, not
+  genuine intrabar sequencing - see `HistoricalGateway.manage_positions`'s
+  docstring for the specific, documented ordering assumption (a trail that
+  arms on a bar is only tested for a stop-out starting the bar after).
+- **Synthetic spread**, not the real historical spread at each moment -
+  `--from-mt5` still uses a configured constant, not point-in-time spread
+  history (MT5 doesn't expose that for arbitrary past dates either).
+- **No slippage modeling** - fills happen at exactly the next bar's open.
