@@ -224,16 +224,45 @@ def test_signal_logging() -> bool:
     ok = True
     ok &= check("SIGNAL_LOG_FIELDS declares a source column", "source" in tc.SIGNAL_LOG_FIELDS,
                 tc.SIGNAL_LOG_FIELDS)
+    ok &= check("source is the LAST column, not inserted mid-row (backward compat - see "
+                "record_signal's docstring)", tc.SIGNAL_LOG_FIELDS[-1] == "source", tc.SIGNAL_LOG_FIELDS)
+
+    if tc.SIGNAL_LOG.exists():
+        tc.SIGNAL_LOG.unlink()
+    tc._warned_stale_signal_log_header = False
 
     tc.record_signal({
-        "time": "2026-09-21T00:00:00+00:00", "source": "Telegram_Sig", "chat_id": "test_chan",
+        "time": "2026-09-21T00:00:00+00:00", "chat_id": "test_chan",
         "direction": "buy", "entry_reference": 2350.0, "sl": 2340.0, "tp": 2360.0, "lots": 0.05,
-        "fill_price": 2350.0, "mode": "dry-run", "retcode": "", "ticket": "",
+        "fill_price": 2350.0, "mode": "dry-run", "retcode": "", "ticket": "", "source": "Telegram_Sig",
     })
     with tc.SIGNAL_LOG.open(newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     ok &= check("record_signal() writes source=Telegram_Sig to copier_signals.csv",
                 rows and rows[-1]["source"] == "Telegram_Sig", rows[-1] if rows else None)
+
+    # Simulate a log file that predates the "source" column (an already
+    # running deployment upgrading to this build) and confirm appending a
+    # new row under the new, longer field list does NOT corrupt the old
+    # row's pre-existing columns - the whole point of appending "source" at
+    # the end instead of inserting it after "time".
+    tc.SIGNAL_LOG.write_text(
+        "time,chat_id,direction,entry_reference,sl,tp,lots,fill_price,mode,retcode,ticket\r\n"
+        "2026-09-20T00:00:00+00:00,old_chan,sell,2350.0,2360.0,2340.0,0.05,2350.0,dry-run,,\r\n",
+        encoding="utf-8",
+    )
+    tc._warned_stale_signal_log_header = False
+    tc.record_signal({
+        "time": "2026-09-21T00:00:00+00:00", "chat_id": "new_chan", "direction": "buy",
+        "entry_reference": 2350.0, "sl": 2340.0, "tp": 2360.0, "lots": 0.05,
+        "fill_price": 2350.0, "mode": "dry-run", "retcode": "", "ticket": "", "source": "Telegram_Sig",
+    })
+    with tc.SIGNAL_LOG.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    old_row = rows[0]
+    ok &= check("appending under a stale (pre-source) header does not corrupt the OLD row's "
+                "pre-existing columns", old_row.get("chat_id") == "old_chan"
+                and old_row.get("direction") == "sell", old_row)
 
     return ok
 

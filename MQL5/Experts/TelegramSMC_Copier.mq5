@@ -1020,7 +1020,6 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
 
    string ts  = TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
    string line = ts + "," +
-                 TsmcCsvField(TSMC_SIGNAL_SOURCE) + "," +
                  IntegerToString(chatId) + "," +
                  TsmcCsvField(action) + "," +
                  TsmcCsvField(direction) + "," +
@@ -1041,7 +1040,8 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
                  (dryRun ? "1" : "0") + "," +
                  IntegerToString(orderTicket) + "," +
                  IntegerToString(retcode) + "," +
-                 TsmcCsvField(rawText);
+                 TsmcCsvField(rawText) + "," +
+                 TsmcCsvField(TSMC_SIGNAL_SOURCE);
 
    FileWriteString(handle, line + "\r\n");
    FileClose(handle);

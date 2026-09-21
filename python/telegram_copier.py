@@ -73,20 +73,46 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 SIGNAL_LOG_FIELDS = [
-    "time", "source", "chat_id", "direction", "entry_reference", "sl", "tp", "lots",
-    "fill_price", "mode", "retcode", "ticket",
+    "time", "chat_id", "direction", "entry_reference", "sl", "tp", "lots",
+    "fill_price", "mode", "retcode", "ticket", "source",
 ]
+
+
+_warned_stale_signal_log_header = False
 
 
 def record_signal(row: dict) -> None:
     """Append a row to logs/copier_signals.csv under a fixed column set.
 
-    Fieldnames are pinned rather than derived from `row` so a future change
-    to the row's shape can't silently misalign columns against whatever
-    header an existing long-running log file was already started with.
+    Fieldnames are pinned rather than derived from `row` so a per-call change
+    to the row dict's own key set can't misalign columns. That still leaves
+    one case this can't fix retroactively: if SIGNAL_LOG_FIELDS itself gains
+    a column across a version upgrade (as "source" just did), an already-
+    existing log file keeps its OLD header forever - this function never
+    rewrites it - while new rows are written under the NEW, longer field
+    list. That's exactly why "source" was appended at the END of
+    SIGNAL_LOG_FIELDS rather than inserted in the middle: every
+    already-existing column stays at its original position for any reader
+    keyed by column name (csv.DictReader and friends), and only the new
+    trailing column is unreadable-by-name until the file is rotated - a
+    missing feature, not silently corrupted data.
     """
+    global _warned_stale_signal_log_header
     new_file = not SIGNAL_LOG.exists()
     with SIGNAL_LOG.open("a", newline="", encoding="utf-8") as fh:
+        if not new_file and not _warned_stale_signal_log_header:
+            with SIGNAL_LOG.open("r", encoding="utf-8") as existing:
+                first_line = existing.readline().rstrip("\r\n")
+            expected = ",".join(SIGNAL_LOG_FIELDS)
+            if first_line and first_line != expected:
+                log.warning(
+                    "%s has an older header than this build writes - new columns (e.g. "
+                    "\"source\") won't be readable by name for this file until you rename/"
+                    "delete it and let a fresh one be created. Existing data is unaffected.",
+                    SIGNAL_LOG,
+                )
+            _warned_stale_signal_log_header = True
+
         writer = csv.DictWriter(fh, fieldnames=SIGNAL_LOG_FIELDS)
         if new_file:
             writer.writeheader()

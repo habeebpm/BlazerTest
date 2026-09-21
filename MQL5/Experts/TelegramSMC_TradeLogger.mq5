@@ -110,7 +110,6 @@ void LogResultRow(const string &event, long positionId, long orderTicket, const 
    double net = profit + swap + commission;
    string ts  = TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
    string line = ts + "," +
-                 TsmcCsvField(InpSourceLabel) + "," +
                  TsmcCsvField(event) + "," +
                  IntegerToString(positionId) + "," +
                  IntegerToString(orderTicket) + "," +
@@ -128,7 +127,8 @@ void LogResultRow(const string &event, long positionId, long orderTicket, const 
                  TsmcCsvField(closeReason) + "," +
                  DoubleToString(durationMin, 1) + "," +
                  DoubleToString(priceMove, 2) + "," +
-                 TsmcCsvField(comment);
+                 TsmcCsvField(comment) + "," +
+                 TsmcCsvField(InpSourceLabel);
 
    FileWriteString(handle, line + "\r\n");
    FileClose(handle);

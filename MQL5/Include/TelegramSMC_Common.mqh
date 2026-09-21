@@ -21,8 +21,18 @@
 // where the source isn't fixed at compile time.
 #define TSMC_SIGNAL_SOURCE  "Telegram_Sig"
 
-#define TSMC_SIGNALS_HEADER "time_utc,source,chat_id,action,direction,symbol_ok,entry_low,entry_high,sl,tps,smc_used,smc_pass,smc_reason,sanity_pass,sanity_reason,accepted,order_type,order_price,lots,dry_run,order_ticket,retcode,raw_text"
-#define TSMC_RESULTS_HEADER "time_utc,source,event,position_id,order_ticket,symbol,magic,direction,volume,price,sl,tp,profit,swap,commission,net_profit,close_reason,duration_min,price_move,comment"
+// "source" is deliberately the LAST column in both headers, not inserted
+// after time_utc: an already-running deployment's log file keeps whatever
+// header it was created with (TsmcOpenCsvForAppend below never rewrites an
+// existing header), so a column inserted in the middle would silently shift
+// every field after it - for every reader that keys off column NAME, not
+// position (the ASPX dashboard, csv.DictReader, ...) - the moment this
+// build starts appending longer rows under that stale header. Appending at
+// the end instead means an old header just doesn't expose "source" for
+// that file (a missing feature) rather than corrupting every other column
+// (silent data loss) - see TsmcOpenCsvForAppend's mismatch warning below.
+#define TSMC_SIGNALS_HEADER "time_utc,chat_id,action,direction,symbol_ok,entry_low,entry_high,sl,tps,smc_used,smc_pass,smc_reason,sanity_pass,sanity_reason,accepted,order_type,order_price,lots,dry_run,order_ticket,retcode,raw_text,source"
+#define TSMC_RESULTS_HEADER "time_utc,event,position_id,order_ticket,symbol,magic,direction,volume,price,sl,tp,profit,swap,commission,net_profit,close_reason,duration_min,price_move,comment,source"
 
 //+------------------------------------------------------------------+
 //| Quote a field per RFC4180 (wrap in double quotes, double any       |
@@ -58,10 +68,23 @@ int TsmcOpenCsvForAppend(const string filename, const string header, bool useCom
    }
 
    if(FileSize(handle) == 0)
+   {
       FileWriteString(handle, header + "\r\n");
-   else
-      FileSeek(handle, 0, SEEK_END);
+      return(handle);
+   }
 
+   // Read-only check, never modifies the file: warn (once, this call) if the
+   // file's actual first line doesn't match what this build would write
+   // today, so a schema change (a column added to header/*) is visible in
+   // the log instead of silently degrading - see the header comments above.
+   string existingHeader = FileReadString(handle);
+   if(existingHeader != header)
+      PrintFormat("TelegramSMC: %s already exists with a different header than this build writes - "
+                  "any new column (e.g. \"source\") won't be readable by name for this file until you "
+                  "rename/delete it and let a fresh one be created. Existing data and columns are not "
+                  "affected - new rows are simply longer than the old header describes.", filename);
+
+   FileSeek(handle, 0, SEEK_END);
    return(handle);
 }
 //+------------------------------------------------------------------+
