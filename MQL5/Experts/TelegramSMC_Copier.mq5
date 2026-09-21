@@ -47,9 +47,13 @@
 //| 4.0) is a real, broker-side take-profit set the moment the trade    |
 //| opens - it survives a disconnect. Once floating profit reaches      |
 //| that many PRICE UNITS (4.0 = $4.00 on XAUUSD, not a broker "point"  |
-//| of $0.01 and not a "pip" of $0.10), the fixed TP is dropped and a   |
-//| InpTrailPoints (default 3.0) trailing stop takes over for the rest  |
-//| of the move - it only ever tightens.                                |
+//| of $0.01 and not a "pip" of $0.10) AND the trailing SL is actually  |
+//| able to move there (see InpTrailPoints below), the fixed TP is      |
+//| dropped in favour of an InpTrailPoints (default 3.0) trailing stop  |
+//| for the rest of the move - it only ever tightens. If the broker's   |
+//| own minimum stop distance is wider than InpTrailPoints, trailing    |
+//| can never engage - OnInit warns about this - and the fixed TP is    |
+//| correctly left in place rather than being dropped for nothing.      |
 //|                                                                    |
 //| SMC VALIDATION (InpUseSmcFilter, on by default)                    |
 //| ------------------------------------------------------------------ |
@@ -256,6 +260,14 @@ int OnInit()
       Print("TelegramSMC_Copier: running in the Strategy Tester - there is no historical Telegram "
             "feed, so polling is disabled. This EA can only be meaningfully evaluated live/demo.");
 
+   double stopsLevelPrice = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(InpTrailPoints < stopsLevelPrice)
+      PrintFormat("TelegramSMC_Copier: WARNING - InpTrailPoints (%.2f) is tighter than this symbol's "
+                  "broker minimum stop distance (%.2f). The trailing stop will never be able to move, "
+                  "so a position's take-profit is kept in place instead of being dropped for a trail "
+                  "that can't engage (see ManageOpenPositions). Widen InpTrailPoints to at least "
+                  "%.2f to actually enable trailing.", InpTrailPoints, stopsLevelPrice, stopsLevelPrice);
+
    double gv;
    g_lastUpdateId = GlobalVariableGet(GV_LAST_UPDATE_ID, gv) ? (long)gv : 0;
 
@@ -376,13 +388,15 @@ int FindTpLabel(const string &text, int fromPos, int &labelEnd)
 }
 
 //+------------------------------------------------------------------+
-//| "STOPLOSS" / "STOP LOSS" / "S/L" / whole-word "SL"                |
+//| "STOPLOSS" / "STOP LOSS" / "STOP-LOSS" / "S/L" / whole-word "SL"  |
 //+------------------------------------------------------------------+
 int FindSlLabel(const string &text, int fromPos, int &labelEnd)
 {
    int idx = StringFind(text, "STOPLOSS", fromPos);
    if(idx >= 0) { labelEnd = idx + 8; return(idx); }
    idx = StringFind(text, "STOP LOSS", fromPos);
+   if(idx >= 0) { labelEnd = idx + 9; return(idx); }
+   idx = StringFind(text, "STOP-LOSS", fromPos);
    if(idx >= 0) { labelEnd = idx + 9; return(idx); }
    idx = StringFind(text, "S/L", fromPos);
    if(idx >= 0) { labelEnd = idx + 3; return(idx); }
@@ -940,7 +954,13 @@ void ManageOpenPositions()
                changeSl = true;
             }
          }
-         bool changeTp = (profit >= InpTp1Points) && (currentTp != 0.0);
+         // Only drop the TP once the trailing SL has actually taken its
+         // place THIS tick - tying it to profit alone (rather than to
+         // changeSl) would zero the TP even on a broker/symbol where
+         // minStopDist is wider than InpTrailPoints, where changeSl can
+         // never become true; the position would then have neither a
+         // working TP nor a trailing SL for the rest of its life.
+         bool changeTp = changeSl && (currentTp != 0.0);
          if(changeSl || changeTp)
          {
             if(InpDryRun)
@@ -963,7 +983,7 @@ void ManageOpenPositions()
                changeSl = true;
             }
          }
-         bool changeTp = (profit >= InpTp1Points) && (currentTp != 0.0);
+         bool changeTp = changeSl && (currentTp != 0.0);
          if(changeSl || changeTp)
          {
             if(InpDryRun)

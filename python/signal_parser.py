@@ -35,20 +35,20 @@ _NUM = r"[-+]?\d{2,6}(?:\.\d{1,3})?"
 _BUY_RE = re.compile(r"\bBUY\b|\bLONG\b", re.IGNORECASE)
 _SELL_RE = re.compile(r"\bSELL\b|\bSHORT\b", re.IGNORECASE)
 _PENDING_LIMIT_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
-_PENDING_STOP_RE = re.compile(r"\bSTOP\b(?!\s*LOSS)", re.IGNORECASE)
+_PENDING_STOP_RE = re.compile(r"\bSTOP\b(?![\s-]*LOSS)", re.IGNORECASE)
 _NOW_RE = re.compile(r"\bNOW\b|\bMARKET\b", re.IGNORECASE)
 
 _CLOSE_RE = re.compile(r"\bCLOSE\b|\bEXIT\b", re.IGNORECASE)
 _CANCEL_RE = re.compile(r"\bCANCEL\b", re.IGNORECASE)
 _BREAKEVEN_RE = re.compile(r"\bBREAK\s*EVEN\b|\bBE\b", re.IGNORECASE)
-_SL_MENTION_RE = re.compile(r"\bSL\b|\bS/L\b|\bSTOP\s*LOSS\b|\bSTOPLOSS\b", re.IGNORECASE)
+_SL_MENTION_RE = re.compile(r"\bSL\b|\bS/L\b|\bSTOP[\s-]*LOSS\b|\bSTOPLOSS\b", re.IGNORECASE)
 
 _ENTRY_RE = re.compile(
     rf"\b(?:ENTRY|EP)\s*(?:PRICE|ZONE)?\s*[:=]?\s*({_NUM})(?:\s*(?:-|/|TO)\s*({_NUM}))?",
     re.IGNORECASE,
 )
 _AT_RE = re.compile(rf"@\s*({_NUM})(?:\s*(?:-|/|TO)\s*({_NUM}))?")
-_SL_RE = re.compile(rf"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\s*[:=]?\s*({_NUM})", re.IGNORECASE)
+_SL_RE = re.compile(rf"\b(?:SL|S/L|STOP[\s-]*LOSS|STOPLOSS)\s*[:=]?\s*({_NUM})", re.IGNORECASE)
 _TP_RE = re.compile(rf"\b(?:TP\d{{0,2}}|TAKE\s*PROFIT|TARGET)\s*[:=]?\s*({_NUM})",
                      re.IGNORECASE)
 

@@ -206,7 +206,7 @@ class Copier:
         ev = ce.evaluate_signal(
             self.cfg, self.verifier, text, chat_id, message_time, self.spec,
             current_price=mid_price, open_positions=len(positions),
-            trades_today=self.trades_today, equity=equity,
+            trades_today=self.trades_today, equity=equity, parsed=quick,
         )
         self._log_and_record(ev, chat_id)
         if not ev.verdict.accepted:

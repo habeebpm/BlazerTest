@@ -15,7 +15,11 @@ rejected, so the message tells you the one thing that actually mattered):
     3. a symbol this copier is configured to trade
     4. the source chat is on the allow-list (if one is configured)
     5. not stale (older than max_signal_age_seconds)
-    6. not a duplicate of a signal seen in the last dedupe_window_seconds
+    6. not a duplicate of a signal *accepted* in the last
+       dedupe_window_seconds (a signal rejected for an unrelated reason -
+       caps, price deviation, whatever - does NOT count as "seen" here, so
+       a legitimate retry of the same text is judged fresh on its own merits
+       once whatever blocked the first attempt clears)
     7. room under max_open_positions / max_trades_per_day
     8. the current price hasn't moved too far from the signaled entry
     9. a stop-loss exists (or the fallback is enabled) and sits on the
@@ -52,7 +56,7 @@ class Verdict:
 class SignalVerifier:
     def __init__(self, cfg: CopierConfig):
         self.cfg = cfg
-        self._seen: dict = {}   # dedupe key -> last-seen timestamp
+        self._seen: dict = {}   # dedupe key -> last-ACCEPTED timestamp
 
     def resolve_symbol(self, sig: ParsedSignal) -> str | None:
         if sig.symbol is None:
@@ -63,10 +67,17 @@ class SignalVerifier:
         return f"{chat_id}:{sig.direction}:{sig.symbol}:{sig.sl}:{tuple(sig.tps)}"
 
     def is_duplicate(self, sig: ParsedSignal, chat_id, now: float) -> bool:
+        """True if this exact signal was last ACCEPTED within the dedupe
+        window. Read-only - does not itself mark anything as seen, so a
+        signal that gets rejected for an unrelated reason doesn't poison a
+        later legitimate retry; see mark_accepted().
+        """
         key = self._dedupe_key(sig, chat_id)
         last = self._seen.get(key)
-        self._seen[key] = now
         return last is not None and (now - last) < self.cfg.dedupe_window_seconds
+
+    def mark_accepted(self, sig: ParsedSignal, chat_id, now: float) -> None:
+        self._seen[self._dedupe_key(sig, chat_id)] = now
 
     def verify(self, sig: ParsedSignal, *, chat_id, current_price: float, point: float,
                spread_price: float, min_stop_price: float, open_positions: int,
@@ -98,7 +109,7 @@ class SignalVerifier:
 
         if self.is_duplicate(sig, chat_id, now):
             return Verdict(False, [
-                f"duplicate of a signal seen in the last {cfg.dedupe_window_seconds:.0f}s"
+                f"duplicate of a signal accepted in the last {cfg.dedupe_window_seconds:.0f}s"
             ])
 
         if open_positions >= cfg.max_open_positions:
@@ -183,5 +194,6 @@ class SignalVerifier:
                 f"{cfg.min_risk_reward:g}"
             ])
 
+        self.mark_accepted(sig, chat_id, now)
         return Verdict(True, notes, direction=sig.direction, entry_reference=entry_ref,
                         sl=sl, tps=tps, risk_reward=rr)

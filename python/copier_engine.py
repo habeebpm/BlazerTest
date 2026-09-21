@@ -45,8 +45,11 @@ def build_request(cfg: CopierConfig, spec: mc.SymbolSpec, verdict: Verdict, lots
 def evaluate_signal(cfg: CopierConfig, verifier: SignalVerifier, text: str, chat_id,
                      message_time: float, spec: mc.SymbolSpec, *, current_price: float,
                      open_positions: int, trades_today: int, equity: float = 0.0,
-                     now: float | None = None) -> Evaluation:
-    sig = parse_signal(text, symbol_aliases=cfg.symbol_aliases)
+                     now: float | None = None, parsed: ParsedSignal | None = None) -> Evaluation:
+    # A caller that already parsed `text` for its own routing (e.g. Copier.on_message
+    # deciding open/close/cancel/modify_sl) can pass that result in as `parsed` to
+    # avoid running the same regex scan over the same text twice.
+    sig = parsed if parsed is not None else parse_signal(text, symbol_aliases=cfg.symbol_aliases)
     now = now if now is not None else time.time()
     age = max(0.0, now - message_time)
 

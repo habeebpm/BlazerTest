@@ -77,6 +77,9 @@ def test_parser() -> bool:
                 sig.action == "open" and sig.direction == "buy" and sig.entry == 2350.0
                 and sig.sl == 2340.0 and sig.tps == [2360.0], sig)
 
+    sig = parse_signal("BUY XAUUSD @ 2350 Stop-Loss 2340 TP 2360")
+    ok &= check("hyphenated Stop-Loss is recognised", sig.sl == 2340.0, sig)
+
     return ok
 
 
@@ -100,6 +103,16 @@ def test_verifier() -> bool:
 
     dup = v.verify(good, chat_id="chan1", **common)
     ok &= check("an identical signal moments later is deduped", not dup.accepted, dup.reasons)
+
+    v1b = SignalVerifier(cfg)
+    capped = dict(common)
+    capped["open_positions"] = cfg.max_open_positions
+    blocked = v1b.verify(good, chat_id="chan1", **capped)
+    ok &= check("a signal rejected for an unrelated reason (position cap) is not accepted",
+                not blocked.accepted, blocked.reasons)
+    retry = v1b.verify(good, chat_id="chan1", **common)
+    ok &= check("the same signal retried once the cap clears is accepted, not falsely deduped",
+                retry.accepted, retry.reasons)
 
     v2 = SignalVerifier(cfg)
     stale = v2.verify(good, chat_id="chan1", message_age_seconds=999, **common)
