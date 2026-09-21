@@ -1,0 +1,14 @@
+; ClaudeSMC_TradeManager - default preset
+; In MT5: Strategy Tester > Expert Advisor: ClaudeSMC_TradeManager > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; InpMagicNumber MUST match python/config.py's AdvisorConfig.magic (default
+; 20260921 on both sides) - this EA only manages positions carrying that
+; magic number, so a mismatch means it will simply never see what Python
+; opens. Ships with InpDryRun=true; only flip it once you trust the log
+; output for how it wants to modify a real position.
+;
+InpMagicNumber=20260921
+InpDryRun=true
+InpTpArmDollars=6.0
+InpTrailDollars=3.0
