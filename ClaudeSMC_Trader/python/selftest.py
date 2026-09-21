@@ -18,8 +18,9 @@ Covers:
     anthropic SDK exception classes when the package is installed
   * backtest.HistoricalGateway's no-lookahead guarantee (a higher timeframe
     bar isn't visible until its own CLOSE time, not just its open time),
-    its arm-then-trail exit simulation (SL/TP/trail/min-stop-dist), and a
-    tiny end-to-end mechanical-mode backtest run
+    both its exit simulations - exit_style="fixed_tp" (arm-then-drop-TP,
+    the old design) and exit_style="sl_to_tp1" (lock-SL-then-trail, the
+    live default) - and a tiny end-to-end mechanical-mode backtest run
 """
 from __future__ import annotations
 
@@ -332,6 +333,14 @@ def test_executor() -> bool:
     ok &= check("a 3/3 full-conviction buy is executed", d.executed, d.reject_reason)
     ok &= check("the fake order was actually sent with the right lot size",
                 fg.orders_sent and fg.orders_sent[0][1] == cfg.fixed_lot, fg.orders_sent)
+    ok &= check("exit_style=sl_to_tp1 (the default) sends tp=0.0 - no broker take-profit at all",
+                fg.orders_sent[0][3] == 0.0, fg.orders_sent)
+
+    cfg_fixed_tp = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", exit_style="fixed_tp")
+    fg_fixed = FakeGateway(same_dir_open=0)
+    executor.execute(fg_fixed, cfg_fixed_tp, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("exit_style=fixed_tp sends a real non-zero broker take-profit",
+                fg_fixed.orders_sent and fg_fixed.orders_sent[0][3] > 0, fg_fixed.orders_sent)
 
     with open(executor._csv_path(cfg, "trades.csv")) as f:
         trade_rows = list(csv.DictReader(f))
@@ -602,11 +611,12 @@ def test_backtest_exit_simulation() -> bool:
                                       "open": [o], "high": [h], "low": [l], "close": [c]})
 
     spec = _flat_spec()
-    # Independent of the shipped default (where tp_arm_dollars doubles as the
-    # fixed-TP distance, so the trail can never win the race against the
-    # standing TP order - see the backtest README section), so this
-    # specifically exercises the arm-then-trail code path on its own merits.
-    cfg = AdvisorConfig(tp_arm_dollars=3.0, trail_dollars=1.0)
+    # exit_style="fixed_tp" explicitly - this is the OLD design (a real
+    # broker TP at entry+tp1_dist, arming drops it in favor of a trail
+    # started from the current high/low), kept only for backtest.py
+    # --compare; see test_backtest_exit_simulation_sl_to_tp1 below for the
+    # live default's own exit logic.
+    cfg = AdvisorConfig(tp1_dollars=3.0, trail_dollars=1.0, exit_style="fixed_tp")
 
     g1 = make_gateway(spec)
     g1.open_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
@@ -663,8 +673,78 @@ def test_backtest_exit_simulation() -> bool:
     return ok
 
 
+def test_backtest_exit_simulation_sl_to_tp1() -> bool:
+    print("\n=== 11. backtest.HistoricalGateway: lock-SL-then-trail (exit_style=sl_to_tp1, live default) ===")
+    ok = True
+
+    def make_gateway(spec):
+        bar = pd.DataFrame({"time": [pd.Timestamp("2026-01-01", tz="UTC")],
+                            "open": [2350.0], "high": [2350.0], "low": [2350.0], "close": [2350.0]})
+        g = backtest.HistoricalGateway("XAUUSD", {"M15": bar}, spec)
+        g.primary_timeframe = "M15"
+        g.cursor = 0
+        return g
+
+    def set_bar(g, o, h, l, c):
+        g.bars["M15"] = pd.DataFrame({"time": [pd.Timestamp("2026-01-01", tz="UTC")],
+                                      "open": [o], "high": [h], "low": [l], "close": [c]})
+
+    spec = _flat_spec()
+    cfg = AdvisorConfig(tp1_dollars=3.0, trail_dollars=1.0, exit_style="sl_to_tp1")
+
+    # tp=0.0 mirrors exactly what executor.execute() sends under this style -
+    # the position's only exit mechanism is its stop-loss.
+    g1 = make_gateway(spec)
+    g1.open_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=0.0)]
+    set_bar(g1, 2350.0, 2353.5, 2349.5, 2353.0)  # profit_at_high 3.5 >= tp1_dist 3.0
+    g1.manage_positions(cfg)
+    pos = g1.open_positions[0]
+    ok &= check("reaching tp1_dist locks the SL to EXACTLY entry+tp1_dist, not a trail-from-high value",
+                pos.armed and abs(pos.sl - 2353.0) < 1e-9, (pos.sl, pos.armed))
+
+    set_bar(g1, 2353.0, 2355.0, 2353.5, 2354.5)  # a new high past the lock - trail should now tighten
+    g1.manage_positions(cfg)
+    ok &= check("once armed, later bars trail trail_dist behind new highs",
+                abs(g1.open_positions[0].sl - 2354.0) < 1e-9, g1.open_positions[0].sl)
+
+    set_bar(g1, 2354.5, 2354.6, 2353.5, 2354.0)  # pulls back onto the trailing SL (2354.0)
+    g1.manage_positions(cfg)
+    ok &= check("a pullback onto the trailing stop closes the position with reason 'trail'",
+                len(g1.closed_trades) == 1 and g1.closed_trades[0].exit_reason == "trail"
+                and abs(g1.closed_trades[0].exit_price - 2354.0) < 1e-9, g1.closed_trades)
+
+    # A stop-out before ever reaching tp1_dist closes at the original SL.
+    g2 = make_gateway(spec)
+    g2.open_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2356.0, tp=0.0)]
+    set_bar(g2, 2350.0, 2357.0, 2349.0, 2355.0)  # high touches 2357 >= sl 2356, well before arming
+    g2.manage_positions(cfg)
+    ok &= check("a sell position stopped out before arming closes at the original SL for -$6",
+                g2.closed_trades and g2.closed_trades[0].exit_reason == "sl"
+                and g2.closed_trades[0].exit_price == 2356.0 and g2.closed_trades[0].pnl_dollars == -6.0,
+                g2.closed_trades)
+
+    # A broker minimum stop distance wider than the lock's headroom from
+    # current price must defer arming rather than lock a too-tight SL.
+    wide_stop_spec = _flat_spec(stops_level_points=200)  # 2.0 price units
+    g3 = make_gateway(wide_stop_spec)
+    g3.open_positions = [backtest.SimPosition(ticket=3, direction="buy", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=0.0)]
+    set_bar(g3, 2350.0, 2353.1, 2349.5, 2353.0)  # lock level 2353.0, high only 0.1 past it - too tight
+    g3.manage_positions(cfg)
+    pos3 = g3.open_positions[0] if g3.open_positions else None
+    ok &= check("arming is deferred when locking would violate the broker's minimum stop distance",
+                pos3 is not None and not pos3.armed and pos3.sl == 2344.0, pos3)
+
+    return ok
+
+
 def test_backtest_end_to_end_mechanical() -> bool:
-    print("\n=== 11. backtest.py end-to-end run (--mechanical, tiny synthetic dataset, no API) ===")
+    print("\n=== 12. backtest.py end-to-end run (--mechanical, tiny synthetic dataset, no API) ===")
     ok = True
     rng = np.random.default_rng(11)
 
@@ -727,6 +807,7 @@ def main() -> int:
         test_full_snapshot_pipeline(),
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),
+        test_backtest_exit_simulation_sl_to_tp1(),
         test_backtest_end_to_end_mechanical(),
     ]
     print()

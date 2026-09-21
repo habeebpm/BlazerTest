@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass
@@ -232,12 +233,11 @@ class HistoricalGateway:
         return _FakeOrderResult(retcode=10009, order=ticket, price=price)
 
     def manage_positions(self, cfg: AdvisorConfig) -> None:
-        """The backtest's stand-in for ClaudeSMC_TradeManager.mq5: checks
+        """The backtest's stand-in for the live trade-management EA: checks
         every open simulated position against the bar that JUST closed
         (self.current_bar) for a stop-out or take-profit, and arms/tightens
-        the trailing stop for FUTURE bars exactly like that EA does - only
-        replacing the fixed TP once the trailing SL actually moves this bar,
-        never on profit alone (mirrors the bug fix in that EA's history).
+        the stop for FUTURE bars per cfg.exit_style - see
+        _manage_fixed_tp/_manage_sl_to_tp1 for each style's own logic.
 
         A position can be tested against the SAME bar it just opened on
         (entry and exit inside one bar is realistic), but a trail that arms
@@ -250,44 +250,93 @@ class HistoricalGateway:
         bar = self.current_bar
         high, low = float(bar["high"]), float(bar["low"])
         min_stop_dist = self.spec.stops_level_points * self.spec.point
+        manage_one = self._manage_fixed_tp if cfg.exit_style == "fixed_tp" else self._manage_sl_to_tp1
         still_open = []
         for pos in self.open_positions:
-            arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp_arm_dollars, pos.lots)
-            trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, pos.lots)
-
-            exit_price, exit_reason = None, None
-            if pos.direction == "buy":
-                if low <= pos.sl:
-                    exit_price, exit_reason = pos.sl, "trail" if pos.armed else "sl"
-                elif pos.tp is not None and high >= pos.tp:
-                    exit_price, exit_reason = pos.tp, "tp"
-                else:
-                    profit_at_high = high - pos.entry_price
-                    if profit_at_high >= arm_dist:
-                        candidate = high - trail_dist
-                        if candidate > pos.sl and (high - candidate) >= min_stop_dist:
-                            pos.sl = candidate
-                            pos.tp = None
-                            pos.armed = True
-            else:
-                if high >= pos.sl:
-                    exit_price, exit_reason = pos.sl, "trail" if pos.armed else "sl"
-                elif pos.tp is not None and low <= pos.tp:
-                    exit_price, exit_reason = pos.tp, "tp"
-                else:
-                    profit_at_low = pos.entry_price - low
-                    if profit_at_low >= arm_dist:
-                        candidate = low + trail_dist
-                        if candidate < pos.sl and (candidate - low) >= min_stop_dist:
-                            pos.sl = candidate
-                            pos.tp = None
-                            pos.armed = True
-
+            exit_price, exit_reason = manage_one(cfg, pos, high, low, min_stop_dist)
             if exit_price is None:
                 still_open.append(pos)
                 continue
             self._close_position(pos, exit_price, exit_reason, self.current_time)
         self.open_positions = still_open
+
+    def _manage_fixed_tp(self, cfg: AdvisorConfig, pos: SimPosition, high: float, low: float,
+                          min_stop_dist: float):
+        """The original design: a real fixed take-profit at entry+tp1_dist,
+        which is the SAME price the trail arms at - so the standing TP
+        almost always wins that race and the trail rarely gets a real
+        chance to engage. Kept only so --compare has the old behavior to
+        measure exit_style=sl_to_tp1 against; not used live.
+        """
+        arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, pos.lots)
+        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, pos.lots)
+        if pos.direction == "buy":
+            if low <= pos.sl:
+                return pos.sl, "trail" if pos.armed else "sl"
+            if pos.tp is not None and high >= pos.tp:
+                return pos.tp, "tp"
+            profit_at_high = high - pos.entry_price
+            if profit_at_high >= arm_dist:
+                candidate = high - trail_dist
+                if candidate > pos.sl and (high - candidate) >= min_stop_dist:
+                    pos.sl, pos.tp, pos.armed = candidate, None, True
+        else:
+            if high >= pos.sl:
+                return pos.sl, "trail" if pos.armed else "sl"
+            if pos.tp is not None and low <= pos.tp:
+                return pos.tp, "tp"
+            profit_at_low = pos.entry_price - low
+            if profit_at_low >= arm_dist:
+                candidate = low + trail_dist
+                if candidate < pos.sl and (candidate - low) >= min_stop_dist:
+                    pos.sl, pos.tp, pos.armed = candidate, None, True
+        return None, None
+
+    def _manage_sl_to_tp1(self, cfg: AdvisorConfig, pos: SimPosition, high: float, low: float,
+                           min_stop_dist: float):
+        """The recommended design (matches ClaudeSMC_TradeManager.mq5's
+        live logic): no broker take-profit exists on this position at all
+        (see executor.py - place_market_order was called with tp=0 under
+        this style), so the ONLY exit mechanism is the stop-loss. Once
+        floating profit reaches tp1_dist, the SL is moved to EXACTLY that
+        price - locking in tp1_dollars of profit, no more, no less, in one
+        deterministic step - rather than jumping straight to a trailing
+        level that depends on how far price had already run past the arm
+        point by the time this check fires. Only on LATER bars does the SL
+        continue trailing trail_dist behind new highs/lows.
+        """
+        tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, pos.lots)
+        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, pos.lots)
+        if pos.direction == "buy":
+            if low <= pos.sl:
+                return pos.sl, "trail" if pos.armed else "sl"
+            if not pos.armed:
+                # The lock level is fixed (entry+tp1_dist), but placing it
+                # still needs enough room from the CURRENT price to satisfy
+                # the broker's own minimum stop distance - same check the
+                # trailing step below already applies, just against a fixed
+                # target instead of a moving one. If price has only just
+                # touched tp1_dist, arming waits for it to move a little
+                # further before the lock can actually be placed.
+                candidate = pos.entry_price + tp1_dist
+                if high >= candidate and (high - candidate) >= min_stop_dist:
+                    pos.sl, pos.armed = candidate, True
+            else:
+                candidate = high - trail_dist
+                if candidate > pos.sl and (high - candidate) >= min_stop_dist:
+                    pos.sl = candidate
+        else:
+            if high >= pos.sl:
+                return pos.sl, "trail" if pos.armed else "sl"
+            if not pos.armed:
+                candidate = pos.entry_price - tp1_dist
+                if low <= candidate and (candidate - low) >= min_stop_dist:
+                    pos.sl, pos.armed = candidate, True
+            else:
+                candidate = low + trail_dist
+                if candidate < pos.sl and (candidate - low) >= min_stop_dist:
+                    pos.sl = candidate
+        return None, None
 
     def close_all_at_market(self, reason: str = "backtest_end") -> None:
         """Marks every still-open position closed at the last known close
@@ -434,6 +483,62 @@ def run_backtest(gateway: HistoricalGateway, cfg: AdvisorConfig, client, mechani
     gateway.close_all_at_market()
 
 
+def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -> None:
+    """Runs both exit styles side by side against IDENTICAL market data and
+    an IDENTICAL sequence of Claude verdicts - one call to build_feature_
+    snapshot/get_verdict per bar, not one per style, since which confluence
+    verdict Claude returns for a given bar depends only on market data, not
+    on how positions get exited. Only executor.gate()/execute() run once per
+    style, because the two styles' own position books (and therefore their
+    same-direction caps) can genuinely diverge once positions start closing
+    at different times - so which signals each style actually accepts is not
+    guaranteed to stay identical, only the underlying verdict stream is.
+
+    `gateways` must all wrap the SAME underlying bars (each its own
+    HistoricalGateway instance, reset() with the same warmup) so their
+    cursors stay in lockstep - advance() is called on every one of them
+    every iteration via a list comprehension, not `all(g.advance() for ...)`,
+    specifically because `all()` over a generator short-circuits on the
+    first False and would silently skip advancing the remaining gateways.
+    """
+    styles = list(gateways.keys())
+    primary_gw = gateways[styles[0]]
+    shared_cfg = cfgs[styles[0]]
+    day_trades = {s: {} for s in styles}
+    evaluated = 0
+    while True:
+        for s in styles:
+            gateways[s].manage_positions(cfgs[s])
+        try:
+            features = market_intel.build_feature_snapshot(primary_gw, shared_cfg)
+        except RuntimeError:
+            if not all([gateways[s].advance() for s in styles]):
+                break
+            continue
+
+        verdict = mechanical_verdict(features) if mechanical else claude_advisor.get_verdict(
+            client, shared_cfg, features)
+        evaluated += 1
+
+        for s in styles:
+            g, cfg = gateways[s], cfgs[s]
+            day = g.current_time.date()
+            trades_today = day_trades[s].get(day, 0)
+            decision = executor.execute(g, cfg, verdict, g.spec, trades_today)
+            if decision.executed:
+                day_trades[s][day] = trades_today + 1
+
+        if evaluated % 200 == 0:
+            log.info("Evaluated %d bars (%s) - closed trades: %s", evaluated, primary_gw.current_time,
+                     {s: len(gateways[s].closed_trades) for s in styles})
+
+        if not all([gateways[s].advance() for s in styles]):
+            break
+
+    for s in styles:
+        gateways[s].close_all_at_market()
+
+
 def summarize(trades: list) -> dict:
     if not trades:
         return {"total_trades": 0}
@@ -484,6 +589,13 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--mechanical", action="store_true",
                         help="use a free non-LLM stand-in instead of the real Claude API - tests the "
                              "engine only, NOT a backtest of Claude's actual judgment")
+    parser.add_argument("--exit-style", choices=["sl_to_tp1", "fixed_tp"], default="sl_to_tp1",
+                        dest="exit_style", help="which exit logic to run (default sl_to_tp1, the live "
+                                                "default - see config.py); ignored with --compare")
+    parser.add_argument("--compare", action="store_true",
+                        help="run BOTH exit styles side by side against the identical bar sequence AND "
+                             "the identical Claude verdicts (one API call stream, not two) - the direct "
+                             "way to measure exit_style=sl_to_tp1 against the original fixed_tp design")
     parser.add_argument("--model", help="override Claude model id for this run")
     parser.add_argument("--yes", action="store_true", help="skip the cost confirmation prompt")
     parser.add_argument("--out", default="logs/backtest_trades.csv")
@@ -491,9 +603,9 @@ def main(argv: list | None = None) -> int:
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
 
-    cfg = AdvisorConfig(dry_run=True, log_dir="logs/backtest")
+    base_cfg = AdvisorConfig(dry_run=True)
     if args.model:
-        cfg.claude_model = args.model
+        base_cfg.claude_model = args.model
 
     if args.from_mt5:
         if not args.start or not args.end:
@@ -501,8 +613,10 @@ def main(argv: list | None = None) -> int:
             return 1
         gw.connect()
         bars = {
-            cfg.primary_timeframe: gw.get_bars_range(args.symbol, cfg.primary_timeframe, args.start, args.end),
-            cfg.trend_timeframe: gw.get_bars_range(args.symbol, cfg.trend_timeframe, args.start, args.end),
+            base_cfg.primary_timeframe: gw.get_bars_range(args.symbol, base_cfg.primary_timeframe,
+                                                           args.start, args.end),
+            base_cfg.trend_timeframe: gw.get_bars_range(args.symbol, base_cfg.trend_timeframe,
+                                                        args.start, args.end),
             "D1": gw.get_bars_range(args.symbol, "D1", args.start, args.end),
             "W1": gw.get_bars_range(args.symbol, "W1", args.start, args.end),
         }
@@ -513,8 +627,8 @@ def main(argv: list | None = None) -> int:
             log.error("Provide --bars-csv/--trend-csv/--daily-csv/--weekly-csv, or use --from-mt5.")
             return 1
         bars = {
-            cfg.primary_timeframe: load_bars_csv(args.bars_csv),
-            cfg.trend_timeframe: load_bars_csv(args.trend_csv),
+            base_cfg.primary_timeframe: load_bars_csv(args.bars_csv),
+            base_cfg.trend_timeframe: load_bars_csv(args.trend_csv),
             "D1": load_bars_csv(args.daily_csv),
             "W1": load_bars_csv(args.weekly_csv),
         }
@@ -522,19 +636,24 @@ def main(argv: list | None = None) -> int:
                              spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                              tick_value=1.0, tick_size=0.01)
 
-    gateway = HistoricalGateway(args.symbol, bars, spec)
-    if not gateway.reset(cfg.primary_timeframe, cfg.bars_per_timeframe):
-        log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
-                  cfg.bars_per_timeframe)
-        return 1
+    styles = ["sl_to_tp1", "fixed_tp"] if args.compare else [args.exit_style]
+    gateways, cfgs = {}, {}
+    for style in styles:
+        gateways[style] = HistoricalGateway(args.symbol, bars, spec)
+        if not gateways[style].reset(base_cfg.primary_timeframe, base_cfg.bars_per_timeframe):
+            log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
+                      base_cfg.bars_per_timeframe)
+            return 1
+        cfgs[style] = dataclasses.replace(base_cfg, exit_style=style, log_dir=f"logs/backtest/{style}")
 
-    n_calls = estimate_call_count(gateway)
+    n_calls = estimate_call_count(gateways[styles[0]])
     if args.mechanical:
         log.info("Running %d bar evaluations in --mechanical mode (free, no API calls).", n_calls)
         client = None
     else:
-        log.warning("This will make approximately %d real Claude API calls (one per evaluated bar). "
-                   "Check https://console.anthropic.com/ for current pricing before proceeding.", n_calls)
+        log.warning("This will make approximately %d real Claude API calls (one per evaluated bar, "
+                   "regardless of how many exit styles are being compared). Check "
+                   "https://console.anthropic.com/ for current pricing before proceeding.", n_calls)
         if not args.yes:
             reply = input(f"Proceed with ~{n_calls} Claude API calls? [y/N] ").strip().lower()
             if reply != "y":
@@ -542,12 +661,21 @@ def main(argv: list | None = None) -> int:
                 return 0
         client = claude_advisor.build_client()
 
-    run_backtest(gateway, cfg, client, args.mechanical)
-
-    summary = summarize(gateway.closed_trades)
-    write_trades_csv(gateway.closed_trades, args.out)
-    log.info("Backtest complete - %s", summary)
-    log.info("Trade log written to %s", args.out)
+    if args.compare:
+        run_backtest_compare(gateways, cfgs, client, args.mechanical)
+        for style in styles:
+            summary = summarize(gateways[style].closed_trades)
+            out_path = args.out.replace(".csv", f"_{style}.csv")
+            write_trades_csv(gateways[style].closed_trades, out_path)
+            log.info("[%s] %s", style, summary)
+            log.info("[%s] Trade log written to %s", style, out_path)
+    else:
+        style = styles[0]
+        run_backtest(gateways[style], cfgs[style], client, args.mechanical)
+        summary = summarize(gateways[style].closed_trades)
+        write_trades_csv(gateways[style].closed_trades, args.out)
+        log.info("Backtest complete (%s) - %s", style, summary)
+        log.info("Trade log written to %s", args.out)
     return 0
 
 

@@ -120,11 +120,24 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     tick = gateway.get_tick(cfg.symbol)
     entry_price = tick.ask if verdict.direction == "buy" else tick.bid
     sl_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.fixed_lot)
-    tp_dist = gateway.price_distance_for_dollars(spec, cfg.tp_arm_dollars, cfg.fixed_lot)
     if verdict.direction == "buy":
-        sl_price, tp_price = entry_price - sl_dist, entry_price + tp_dist
+        sl_price = entry_price - sl_dist
     else:
-        sl_price, tp_price = entry_price + sl_dist, entry_price - tp_dist
+        sl_price = entry_price + sl_dist
+
+    if cfg.exit_style == "fixed_tp":
+        # The original design: a real broker take-profit at entry+tp1_dist -
+        # the SAME price ClaudeSMC_TradeManager.mq5's old logic would arm the
+        # trail at, which is exactly the race condition exit_style=sl_to_tp1
+        # exists to avoid. Kept only for backtest.py --compare.
+        tp_dist = gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.fixed_lot)
+        tp_price = entry_price + tp_dist if verdict.direction == "buy" else entry_price - tp_dist
+    else:
+        # sl_to_tp1: no broker take-profit at all - the position's only exit
+        # mechanism is the stop-loss, which ClaudeSMC_TradeManager.mq5 (or
+        # backtest.py's simulation of it) moves to lock in cfg.tp1_dollars
+        # once reached, then trails cfg.trail_dollars behind new highs/lows.
+        tp_price = 0.0
 
     result = gateway.place_market_order(
         spec, verdict.direction, cfg.fixed_lot, sl_price, tp_price,
@@ -133,8 +146,9 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     retcode = getattr(result, "retcode", "")
     ticket = getattr(result, "order", "")
     fill_price = getattr(result, "price", entry_price)
-    log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f tp=%.2f (conviction=%s, %d/3)",
-              verdict.direction.upper(), cfg.fixed_lot, fill_price, sl_price, tp_price,
+    tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at ${cfg.tp1_dollars:g} via SL)"
+    log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
+              verdict.direction.upper(), cfg.fixed_lot, fill_price, sl_price, tp_desc,
               verdict.conviction, verdict.confluence_count)
     log_decision(cfg, verdict, executed=True)
     log_trade(cfg, verdict.direction, cfg.fixed_lot, fill_price, sl_price, tp_price,

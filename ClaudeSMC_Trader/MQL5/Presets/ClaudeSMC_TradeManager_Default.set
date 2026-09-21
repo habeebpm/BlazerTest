@@ -10,5 +10,5 @@
 ;
 InpMagicNumber=20260921
 InpDryRun=true
-InpTpArmDollars=6.0
+InpTp1Dollars=6.0
 InpTrailDollars=3.0

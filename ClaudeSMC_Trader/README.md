@@ -138,13 +138,13 @@ than it is:
   trade.** It means the numbers weren't obviously broken and Claude's own
   judgment, given everything above, was confident. See "Backtesting" below
   for how to actually measure this against history rather than take it on
-  faith - and for a real finding it already surfaced (the trail essentially
-  never engages under the shipped default config).
+  faith - and for a real finding a backtest surfaced about the exit design,
+  and why `exit_style="sl_to_tp1"` is the shipped default because of it.
 
 ## Why dollars, not points
 
-`InpTpArmDollars`/`InpTrailDollars` on the MQL5 side and `sl_dollars`/
-`tp_arm_dollars`/`trail_dollars` on the Python side are USD account-risk
+`InpTp1Dollars`/`InpTrailDollars` on the MQL5 side and `sl_dollars`/
+`tp1_dollars`/`trail_dollars` on the Python side are USD account-risk
 amounts, not raw price units. Both sides convert dollars to a price distance
 with the same broker-agnostic formula, using the symbol's own tick value and
 tick size rather than assuming a fixed contract size:
@@ -157,6 +157,36 @@ This is exactly the same formula (inverted) the Telegram copier's
 `position_size_for()` already uses in `../python/mt5_client.py` - so a "$6
 stop" really does mean $6 of account risk at 0.01 lots on any broker,
 regardless of XAUUSD's contract size there.
+
+## Exit design: `exit_style` in `config.py`
+
+Every position opens with a `$6` stop-loss. What happens from there is
+controlled by `AdvisorConfig.exit_style`, with two values:
+
+- **`"sl_to_tp1"` (default, and the only style `ClaudeSMC_TradeManager.mq5`
+  implements live).** Python places **no broker take-profit at all**
+  (`tp_price=0.0`) - the stop-loss is the only thing that can ever close the
+  position. Once floating profit reaches `tp1_dollars` ($6), the EA moves
+  the SL to *exactly* that price in one deterministic step, locking in that
+  much profit. From then on it trails `trail_dollars` ($3) behind new highs/
+  lows, tightening only, for the rest of the move. "Armed" (locked vs.
+  trailing) is never stored anywhere - the EA derives it every tick from
+  whether the position's own current SL has already reached the lock level,
+  so it needs no memory across ticks or restarts.
+- **`"fixed_tp"` (the original design, kept only as a comparison baseline -
+  not implemented in the live MQL5 EA).** A real broker take-profit is
+  placed at `entry + tp1_dollars` - the exact same price the trail would
+  arm at. See "What the backtest found" below for why that's a problem and
+  why `sl_to_tp1` replaced it as the default.
+
+Override with `main.py --exit-style sl_to_tp1|fixed_tp` (or
+`backtest.py --exit-style` / `--compare`, see "Backtesting" below).
+
+**If `ClaudeSMC_TradeManager.mq5` isn't running**, a position opened under
+the default `sl_to_tp1` style has *only* its initial $6 stop-loss protecting
+it - no broker take-profit exists to fall back on, and nothing will ever
+move the SL to lock in profit or trail. Both halves need to be running for
+the full exit design to work; see "2. MQL5 side" below.
 
 ## Setup
 
@@ -210,10 +240,10 @@ actually placed).
 
 Both halves need to be running for the full system to work as designed:
 Python decides *whether and when* to enter; the MQL5 EA decides how each
-open position's exit evolves. Python alone still protects every trade with
-its initial $6 SL and $6 TP even if the MQL5 EA isn't running - you'd just
-lose the trail-to-$3 behavior and each trade would simply hit its fixed $6
-TP or $6 SL instead.
+open position's exit evolves. Under the default `exit_style="sl_to_tp1"`,
+Python places no broker take-profit at all - if the MQL5 EA isn't running,
+a trade is protected by nothing but its initial $6 SL, with no lock-in and
+no trail (see "Exit design" above).
 
 ## Running with only one side available
 
@@ -265,9 +295,10 @@ changing any threshold or formula in this solution.
 `python/backtest.py` replays historical bars through the exact same code
 path live trading uses - `market_intel.build_feature_snapshot`,
 `claude_advisor.get_verdict` (the real Claude API, by default), and
-`executor.gate`/`execute` - then simulates each position's exit (SL / TP /
-the $3 arm-then-trail) against the bars that follow, and reports a trade
-log plus summary stats (win rate, net $, avg win/loss, max drawdown).
+`executor.gate`/`execute` - then simulates each position's exit per
+`exit_style` (see "Exit design" above) against the bars that follow, and
+reports a trade log plus summary stats (win rate, net $, avg win/loss, max
+drawdown).
 
 > **COST WARNING:** by default this calls the real Claude API once per
 > evaluated bar. A few months of M15 history is thousands of candles -
@@ -282,8 +313,15 @@ log plus summary stats (win rate, net $, avg win/loss, max drawdown).
 cd python
 
 # Free: test the engine/exit-simulation plumbing, no API key needed
+# (defaults to exit_style=sl_to_tp1, the live default)
 python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
     --daily-csv d1.csv --weekly-csv w1.csv --mechanical
+
+# Free: run BOTH exit styles side by side against identical bars and an
+# identical Claude/mechanical verdict stream - the direct way to measure
+# sl_to_tp1 against the original fixed_tp design (see the findings below)
+python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
+    --daily-csv d1.csv --weekly-csv w1.csv --mechanical --compare
 
 # Real backtest - calls the real Claude API, costs money, asks first
 python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
@@ -306,30 +344,53 @@ dedicated tests in `selftest.py`, not just asserted in a comment.
 
 ### What the backtest found, immediately
 
-Running it surfaced a real design property worth knowing before you trust
-this system's trailing stop: **`tp_arm_dollars` is used as both the fixed
-take-profit distance and the trail-arm threshold** (same config value, same
-computed price - see `config.py`). That means the exact instant price
-reaches the level that would arm the trail, it has also just reached the
-fixed TP - and in live trading, a standing TP order at the broker fires the
-moment price touches it, effectively always winning that race before the
-EA's own trailing logic gets a chance to act. Practically: **the shipped
-defaults behave close to a flat $6 take-profit; the trail essentially never
-gets to engage.**
+An earlier version of this system had a real design flaw the backtest
+surfaced: `tp_arm_dollars` was used as **both** the fixed take-profit
+distance and the trail-arm threshold - same config value, same computed
+price. The instant price reached the level that would arm the trail, it had
+also just reached the fixed TP, and in live trading a standing broker TP
+order fires the moment price touches it, essentially always winning that
+race before the EA's own trailing logic gets a chance to act. Practically:
+that design behaved close to a flat $6 take-profit; the trail almost never
+got to engage.
 
-The arm-then-trail mechanism itself is implemented correctly - see
-`test_backtest_exit_simulation` in `selftest.py`, which exercises it in
-isolation with the arm threshold and the fixed TP set to genuinely
-*different* distances, and confirms it arms, drops the TP, and later exits
-on the trail exactly as intended. It's specifically today's shipped default
-- one config value (`tp_arm_dollars`) doing double duty as both the TP
-distance and the arm threshold - that neutralizes it in practice. There's no
-CLI flag yet to arm the trail at a distance smaller than the fixed TP
-(`main.py --tp-dollars`/`--trail-dollars` don't currently expose a separate
-arm distance); giving the trail real room to operate would need that split
-added to `config.py`/`executor.py`. This is exactly the kind of thing a
-backtest is for surfacing before it costs real money to discover live -
-ask if you'd like that split implemented.
+**That's why `exit_style="sl_to_tp1"` is now the default** (see "Exit
+design" above): no broker take-profit is placed at all, so there's nothing
+for the broker to fill ahead of the EA moving the stop-loss - the race is
+gone by construction, not by tuning. The original design is kept as
+`exit_style="fixed_tp"`, purely so `backtest.py --compare` has something
+concrete to measure the change against.
+
+**Running `--compare --mechanical` against three synthetic M15 datasets**
+(random-walk-with-drift, alternating trend/consolidation regimes, and a
+deliberately strong/low-noise trending series - `--mechanical` votes on the
+same three legs Claude is told to use, so treat this as an engine
+comparison, not a performance claim about Claude's own judgment) gives both
+styles the *identical* signal stream (one shared verdict per bar - see
+`run_backtest_compare`'s docstring) so the only thing that can differ is
+how each style manages an already-open position:
+
+| Dataset | Trades | Win rate | Net P&L | Max drawdown (`sl_to_tp1` vs `fixed_tp`) |
+|---|---|---|---|---|
+| Random-walk-with-drift | 18 / 18 | 22.2% / 22.2% | -$40.46 / -$40.46 | $40.46 / $40.46 (identical) |
+| Trend/consolidation regimes | 20 / 20 | 55.0% / 55.0% | -$1.06 / -$1.06 | $30.00 / $30.00 (identical) |
+| Strong trend, low noise | 51 / 51 | 76.5% / 76.5% | $131.75 / $131.75 | **$25.66 / $30.00** |
+
+On the first two datasets the trade sequence, win/loss counts and net P&L
+came out **byte-for-byte identical** between the two styles - this noise/
+drift ratio rarely lets price run meaningfully past `tp1_dollars` before
+reversing, so the trail never gets a chance to capture anything a flat TP
+wouldn't have. Only the third, deliberately strong-trending dataset showed
+any divergence at all, and even there the trade sequence and net P&L were
+identical - the only difference was a smoother equity curve (`sl_to_tp1`'s
+max drawdown was about 15% lower). **Read this as "no worse, and measurably
+better on a strongly-trending sample, never actually worse in three
+synthetic tries" - not as a proven edge.** These are synthetic price series,
+not real market history; the honest conclusion is that `sl_to_tp1` removes
+a real, structural race condition (see above) with no observed downside,
+which alone justifies it as the default even before it shows a P&L
+difference on real data. Run `--compare` against real exported history (or
+`--from-mt5`) before drawing any stronger conclusion.
 
 ### Honest limitations of the backtest itself
 

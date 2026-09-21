@@ -2,5 +2,5 @@ __pycache__/
 *.pyc
 python/logs/*.log
 python/logs/*.csv
-ClaudeSMC_Trader/python/logs/*.log
-ClaudeSMC_Trader/python/logs/*.csv
+ClaudeSMC_Trader/python/logs/**/*.log
+ClaudeSMC_Trader/python/logs/**/*.csv

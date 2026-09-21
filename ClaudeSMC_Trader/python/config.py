@@ -3,9 +3,25 @@ All tunables for the Claude-advised XAUUSD trader in one place.
 
 Deliberately a plain dataclass with CLI overrides in main.py (see --help) -
 no env-var magic, no config file format to learn. The defaults below are
-exactly the trading rules requested: fixed 0.01 lot, max 5 concurrent
-same-direction positions, $6 stop-loss, $6 take-profit that becomes a $3
-trail once armed.
+the trading rules requested: fixed 0.01 lot, max 5 concurrent same-direction
+positions, $6 stop-loss, SL moved to lock in $6 profit once TP1 is reached,
+trailing $3 behind price from there (exit_style="sl_to_tp1" - see below).
+
+exit_style has two values, both implemented in executor.py/backtest.py so
+they can be measured against each other (see backtest.py --compare):
+  - "sl_to_tp1" (default, and what ClaudeSMC_TradeManager.mq5 implements
+    live): no broker-side take-profit is ever placed. Once floating profit
+    reaches tp1_dollars, the stop-loss is moved to lock in exactly that
+    much profit, then trails trail_dollars behind new highs/lows from
+    there. Chosen over the older design below because it has no broker
+    order sitting at the same price as the arm threshold - nothing for
+    the broker to auto-fill ahead of the stop being moved.
+  - "fixed_tp" (the original design, kept only so backtest.py --compare
+    has something concrete to measure the change against): a real broker
+    take-profit is placed at entry + tp1_dollars - which is the SAME
+    price the trail would arm at, so in practice the standing TP order
+    almost always wins that race and the trail rarely gets a chance to
+    engage. Not implemented in the live MQL5 EA.
 """
 from __future__ import annotations
 
@@ -21,8 +37,9 @@ class AdvisorConfig:
     fixed_lot: float = 0.01
     max_open_positions_per_direction: int = 5
     sl_dollars: float = 6.0
-    tp_arm_dollars: float = 6.0      # initial broker TP; also the profit level that arms trailing
-    trail_dollars: float = 3.0       # trailing distance once armed
+    tp1_dollars: float = 6.0         # profit level that locks in (sl_to_tp1) or the fixed TP (fixed_tp)
+    trail_dollars: float = 3.0       # trailing distance once armed, either exit_style
+    exit_style: str = "sl_to_tp1"    # "sl_to_tp1" (recommended, live default) or "fixed_tp" (comparison only)
     max_trades_per_day: int = 0      # 0 = unlimited
 
     # --- Order plumbing ---

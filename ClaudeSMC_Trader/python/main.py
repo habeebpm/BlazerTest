@@ -51,9 +51,11 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
     if args.sl_dollars is not None:
         cfg.sl_dollars = args.sl_dollars
     if args.tp_dollars is not None:
-        cfg.tp_arm_dollars = args.tp_dollars
+        cfg.tp1_dollars = args.tp_dollars
     if args.trail_dollars is not None:
         cfg.trail_dollars = args.trail_dollars
+    if args.exit_style:
+        cfg.exit_style = args.exit_style
     if args.model:
         cfg.claude_model = args.model
     if args.poll_seconds is not None:
@@ -101,10 +103,16 @@ def main(argv: list | None = None) -> int:
                         help="max concurrent same-direction positions (default 5)")
     parser.add_argument("--sl-dollars", type=float, dest="sl_dollars", help="stop-loss in USD (default 6)")
     parser.add_argument("--tp-dollars", type=float, dest="tp_dollars",
-                        help="initial take-profit / trail-arm level in USD (default 6)")
+                        help="TP1 level in USD (default 6) - the profit level that locks in the "
+                             "stop-loss (exit_style=sl_to_tp1) or the fixed broker take-profit "
+                             "(exit_style=fixed_tp)")
     parser.add_argument("--trail-dollars", type=float, dest="trail_dollars",
                         help="trailing distance once armed, in USD (default 3) - enforced by the "
                              "MQL5 ClaudeSMC_TradeManager EA, not this script; see README.md")
+    parser.add_argument("--exit-style", choices=["sl_to_tp1", "fixed_tp"], dest="exit_style",
+                        help="default sl_to_tp1 (see config.py's module docstring for why); "
+                             "fixed_tp is only implemented here and in backtest.py --compare, "
+                             "not in the live MQL5 EA")
     parser.add_argument("--model", help="Claude model id (default claude-opus-5)")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
@@ -132,10 +140,10 @@ def main(argv: list | None = None) -> int:
 
     if args.check:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
-        log.info("Config: lot=%.2f max_same_dir=%d sl=$%.2f tp_arm=$%.2f trail=$%.2f "
+        log.info("Config: lot=%.2f max_same_dir=%d sl=$%.2f tp1=$%.2f trail=$%.2f exit_style=%s "
                   "min_confluence=%d/3 require_full=%s model=%s dry_run=%s",
                   cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.sl_dollars,
-                  cfg.tp_arm_dollars, cfg.trail_dollars, cfg.min_confluence_count,
+                  cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style, cfg.min_confluence_count,
                   cfg.require_full_conviction, cfg.claude_model, cfg.dry_run)
         return 0
 

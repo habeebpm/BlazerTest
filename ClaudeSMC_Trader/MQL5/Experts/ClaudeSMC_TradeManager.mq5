@@ -8,14 +8,38 @@
 //| is tick-by-tick trade management, which Python's poll loop is too  |
 //| coarse-grained to do reliably.                                     |
 //|                                                                    |
-//| WHY THE SPLIT: Python opens a position with a hard $6 broker       |
-//| take-profit (see executor.py) so the trade is protected even if    |
-//| Python itself goes offline. This EA then watches that position on  |
-//| every tick and, once floating profit reaches InpTpArmDollars AND   |
-//| the trailing stop can actually move there, drops the fixed TP in   |
-//| favour of an InpTrailDollars trailing stop for the rest of the     |
-//| move. A Python polling loop checking every N seconds could miss a  |
-//| fast spike past the arm level and never trail it; a tick EA can't. |
+//| EXIT DESIGN (exit_style="sl_to_tp1" in python/config.py):          |
+//| Python opens every position with a stop-loss and, deliberately, NO |
+//| broker-side take-profit at all (see executor.py). This EA is the   |
+//| ONLY thing that ever closes a position early, via the stop-loss:   |
+//|   1. Before InpTp1Dollars of floating profit is reached, the SL    |
+//|      just sits at whatever Python originally set it to.            |
+//|   2. The instant profit reaches InpTp1Dollars, the SL is moved to  |
+//|      EXACTLY that price - locking in that much profit, no more no  |
+//|      less, in one deterministic step.                              |
+//|   3. From then on the SL trails InpTrailDollars behind new highs/  |
+//|      lows, tightening only, for the rest of the move.              |
+//| "Armed" (state 2/3 vs state 1) is never stored in the EA - it's    |
+//| derived every tick from whether the position's OWN current SL has  |
+//| already reached the lock level, so this EA needs no memory across  |
+//| ticks or restarts and stays correct even if reattached mid-trade.  |
+//|                                                                    |
+//| WHY NO BROKER TAKE-PROFIT AT ALL: an earlier design placed a real  |
+//| TP at entry+InpTp1Dollars - the exact same price this EA's arm     |
+//| threshold sits at. In live trading a standing TP order fires the    |
+//| instant price touches it, which (almost always, since it needs no  |
+//| EA round-trip at all) wins the race against this EA noticing and   |
+//| moving the SL - so the trail-and-run-further behavior never really |
+//| got a chance to engage; backtest.py --compare (exit_style=         |
+//| "fixed_tp" is the old design, still implemented there for exactly   |
+//| this comparison) demonstrates it concretely. Removing the broker   |
+//| TP removes that race: the stop-loss is the only thing that can      |
+//| close the position, so this EA's own logic is what actually runs.  |
+//|                                                                    |
+//| A Python polling loop checking every N seconds could still miss a  |
+//| fast spike past the arm level and never lock/trail it in time; a   |
+//| tick EA can't - that's the other reason this half lives here and   |
+//| not in main.py.                                                    |
 //|                                                                    |
 //| SCOPE: only touches positions on this chart's symbol whose magic   |
 //| number equals InpMagicNumber - never anything opened by hand or by |
@@ -24,15 +48,15 @@
 //| 20260921) or this EA will simply never see the positions Python    |
 //| opens.                                                              |
 //|                                                                    |
-//| DOLLAR -> PRICE CONVERSION: InpTpArmDollars/InpTrailDollars are    |
+//| DOLLAR -> PRICE CONVERSION: InpTp1Dollars/InpTrailDollars are      |
 //| USD amounts, not raw price units - this EA converts them to a      |
 //| price distance itself, per position, using that position's own     |
 //| volume and the symbol's live tick value/size:                      |
 //|   price_distance = dollars * tick_size / (tick_value * volume)     |
 //| the exact inverse of the formula python/mt5_gateway.py's            |
-//| price_distance_for_dollars() uses to size Python's own initial SL/ |
-//| TP - so a $6 stop means $6 of account risk regardless of contract   |
-//| size, broker, or (if ever changed) lot size, not an assumed 100oz   |
+//| price_distance_for_dollars() uses to size Python's own initial SL  |
+//| - so "$6" means $6 of account risk regardless of contract size,     |
+//| broker, or (if ever changed) lot size, not an assumed 100oz         |
 //| contract.                                                           |
 //|                                                                    |
 //| SETUP: attach to an XAUUSD chart alongside (or instead of) running |
@@ -49,17 +73,17 @@ input long   InpMagicNumber   = 20260921;   // Must match the Python advisor's A
 input bool   InpDryRun        = true;        // Log what would happen; do not modify real positions
 
 input group "=== Exit rule - USD amounts, converted to price per position's own volume ==="
-input double InpTpArmDollars  = 6.0;         // Floating profit (USD) that arms the trail
-input double InpTrailDollars  = 3.0;         // Trailing distance (USD) once armed
+input double InpTp1Dollars    = 6.0;         // Floating profit (USD) that locks the stop-loss in here
+input double InpTrailDollars  = 3.0;         // Trailing distance (USD) once locked/armed
 
 CTrade trade;
 
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   if(InpTpArmDollars <= 0.0 || InpTrailDollars <= 0.0)
+   if(InpTp1Dollars <= 0.0 || InpTrailDollars <= 0.0)
    {
-      Print("ClaudeSMC_TradeManager: InpTpArmDollars and InpTrailDollars must both be positive.");
+      Print("ClaudeSMC_TradeManager: InpTp1Dollars and InpTrailDollars must both be positive.");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(MQLInfoInteger(MQL_TESTER))
@@ -80,10 +104,11 @@ int OnInit()
       if(sampleTrailDist < stopsLevelPrice)
          PrintFormat("ClaudeSMC_TradeManager: WARNING - at 0.01 lots, InpTrailDollars=%.2f converts to "
                      "a %.5f price distance, tighter than this symbol's broker minimum stop distance "
-                     "(%.5f). The trailing stop may never be able to move for that position size - its "
-                     "take-profit is correctly kept in place instead of being dropped for a trail that "
-                     "can't engage (see ManagePosition). Widen InpTrailDollars if you want trailing to "
-                     "actually activate.", InpTrailDollars, sampleTrailDist, stopsLevelPrice);
+                     "(%.5f). Once locked, the trailing stop may never be able to move for that "
+                     "position size - it will just sit at the InpTp1Dollars lock level instead, which "
+                     "is still a valid, protected exit, just not a trailing one. Widen InpTrailDollars "
+                     "if you want trailing to actually activate.", InpTrailDollars, sampleTrailDist,
+                     stopsLevelPrice);
    }
    return(INIT_SUCCEEDED);
 }
@@ -103,14 +128,10 @@ double DollarsToPrice(double dollars, double volume)
 }
 
 //+------------------------------------------------------------------+
-//| Arm-then-trail for one position. Mirrors TelegramSMC_Copier.mq5's |
-//| ManageOpenPositions exactly - including the fix for the bug where  |
-//| the take-profit was dropped even when the trail could never move   |
-//| (see that file's history): the TP is only ever replaced in the     |
-//| SAME tick the trailing SL actually moves, never on profit alone.   |
-//| A broker whose minimum stop distance is wider than InpTrailDollars |
-//| (in price terms) correctly keeps the fixed TP in place forever     |
-//| rather than leaving the position with no protection at all.        |
+//| Lock-then-trail for one position - see the file header for the    |
+//| full design rationale. "Armed" (locked in, now trailing) is        |
+//| derived from whether the position's OWN current SL has already     |
+//| reached the lock level, not stored anywhere - see the header.      |
 //+------------------------------------------------------------------+
 void ManagePosition(ulong ticket)
 {
@@ -122,9 +143,9 @@ void ManagePosition(ulong ticket)
       return;
 
    double volume = PositionGetDouble(POSITION_VOLUME);
-   double armDist = DollarsToPrice(InpTpArmDollars, volume);
+   double tp1Dist = DollarsToPrice(InpTp1Dollars, volume);
    double trailDist = DollarsToPrice(InpTrailDollars, volume);
-   if(armDist <= 0.0 || trailDist <= 0.0)
+   if(tp1Dist <= 0.0 || trailDist <= 0.0)
       return;
 
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
@@ -138,53 +159,70 @@ void ManagePosition(ulong ticket)
    long type = PositionGetInteger(POSITION_TYPE);
    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double currentSl = PositionGetDouble(POSITION_SL);
-   double currentTp = PositionGetDouble(POSITION_TP);
 
    bool changeSl = false;
    double newSl = currentSl;
 
    if(type == POSITION_TYPE_BUY)
    {
-      double profit = tick.bid - openPrice;
-      if(profit >= armDist)
+      double lockLevel = NormalizeDouble(openPrice + tp1Dist, digits);
+      bool armed = (currentSl > 0.0 && currentSl >= lockLevel - point);
+      if(!armed)
+      {
+         double profit = tick.bid - openPrice;
+         if(profit >= tp1Dist && (tick.bid - lockLevel) >= minStopDist)
+         {
+            newSl = lockLevel;
+            changeSl = true;
+         }
+      }
+      else
       {
          double candidate = NormalizeDouble(tick.bid - trailDist, digits);
-         if((currentSl <= 0.0 || candidate > currentSl) && (tick.bid - candidate) >= minStopDist)
+         if(candidate > currentSl && (tick.bid - candidate) >= minStopDist)
          {
             newSl = candidate;
             changeSl = true;
          }
       }
-      bool changeTp = changeSl && (currentTp != 0.0);
-      if(changeSl || changeTp)
+      if(changeSl)
       {
          if(InpDryRun)
-            PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify BUY ticket %I64u sl %.2f -> %.2f, "
-                        "tp -> none", ticket, currentSl, changeSl ? newSl : currentSl);
+            PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify BUY ticket %I64u sl %.2f -> %.2f",
+                        ticket, currentSl, newSl);
          else
-            trade.PositionModify(ticket, changeSl ? newSl : currentSl, 0.0);
+            trade.PositionModify(ticket, newSl, 0.0);
       }
    }
    else if(type == POSITION_TYPE_SELL)
    {
-      double profit = openPrice - tick.ask;
-      if(profit >= armDist)
+      double lockLevel = NormalizeDouble(openPrice - tp1Dist, digits);
+      bool armed = (currentSl > 0.0 && currentSl <= lockLevel + point);
+      if(!armed)
+      {
+         double profit = openPrice - tick.ask;
+         if(profit >= tp1Dist && (lockLevel - tick.ask) >= minStopDist)
+         {
+            newSl = lockLevel;
+            changeSl = true;
+         }
+      }
+      else
       {
          double candidate = NormalizeDouble(tick.ask + trailDist, digits);
-         if((currentSl <= 0.0 || candidate < currentSl) && (candidate - tick.ask) >= minStopDist)
+         if(candidate < currentSl && (candidate - tick.ask) >= minStopDist)
          {
             newSl = candidate;
             changeSl = true;
          }
       }
-      bool changeTp = changeSl && (currentTp != 0.0);
-      if(changeSl || changeTp)
+      if(changeSl)
       {
          if(InpDryRun)
-            PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify SELL ticket %I64u sl %.2f -> %.2f, "
-                        "tp -> none", ticket, currentSl, changeSl ? newSl : currentSl);
+            PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify SELL ticket %I64u sl %.2f -> %.2f",
+                        ticket, currentSl, newSl);
          else
-            trade.PositionModify(ticket, changeSl ? newSl : currentSl, 0.0);
+            trade.PositionModify(ticket, newSl, 0.0);
       }
    }
 }
