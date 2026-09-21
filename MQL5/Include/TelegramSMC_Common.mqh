@@ -57,6 +57,14 @@ string TsmcCsvField(const string value)
 //+------------------------------------------------------------------+
 int TsmcOpenCsvForAppend(const string filename, const string header, bool useCommon)
 {
+   // This function runs on EVERY logged row (every Telegram message
+   // evaluated, every position open/close), so the stale-header warning
+   // below must only ever print once per filename per EA run - a "|"-
+   // delimited list of filenames already warned about, remembered across
+   // calls via `static`, is what makes that "once" instead of "every row"
+   // (mirrors telegram_copier.py's _warned_stale_signal_log_header flag).
+   static string warnedFiles = "|";
+
    int flags = FILE_READ | FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_READ;
    if(useCommon) flags |= FILE_COMMON;
 
@@ -73,16 +81,19 @@ int TsmcOpenCsvForAppend(const string filename, const string header, bool useCom
       return(handle);
    }
 
-   // Read-only check, never modifies the file: warn (once, this call) if the
-   // file's actual first line doesn't match what this build would write
+   // Read-only check, never modifies the file: warn (once per filename) if
+   // the file's actual first line doesn't match what this build would write
    // today, so a schema change (a column added to header/*) is visible in
    // the log instead of silently degrading - see the header comments above.
    string existingHeader = FileReadString(handle);
-   if(existingHeader != header)
+   if(existingHeader != header && StringFind(warnedFiles, "|" + filename + "|") < 0)
+   {
+      warnedFiles += filename + "|";
       PrintFormat("TelegramSMC: %s already exists with a different header than this build writes - "
                   "any new column (e.g. \"source\") won't be readable by name for this file until you "
                   "rename/delete it and let a fresh one be created. Existing data and columns are not "
                   "affected - new rows are simply longer than the old header describes.", filename);
+   }
 
    FileSeek(handle, 0, SEEK_END);
    return(handle);
