@@ -58,7 +58,7 @@ class CopierConfig:
     # ---------------- execution ----------------
     magic: int = 20260920
     deviation_points: int = 30
-    comment: str = "TG-Copier"
+    comment: str = "Telegram_Sig"
 
     # ---------------- connection (never hardcode credentials) ----------------
     login: int | None = None

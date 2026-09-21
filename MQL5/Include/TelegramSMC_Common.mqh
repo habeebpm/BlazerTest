@@ -15,8 +15,14 @@
 #define TSMC_SIGNALS_FILE   "TelegramSMC_Signals.csv"
 #define TSMC_RESULTS_FILE   "TelegramSMC_Results.csv"
 
-#define TSMC_SIGNALS_HEADER "time_utc,chat_id,action,direction,symbol_ok,entry_low,entry_high,sl,tps,smc_used,smc_pass,smc_reason,sanity_pass,sanity_reason,accepted,order_type,order_price,lots,dry_run,order_ticket,retcode,raw_text"
-#define TSMC_RESULTS_HEADER "time_utc,event,position_id,order_ticket,symbol,magic,direction,volume,price,sl,tp,profit,swap,commission,net_profit,close_reason,duration_min,price_move,comment"
+// This EA (TelegramSMC_Copier.mq5) only ever copies Telegram signals, so its
+// own order comment and Signals-log rows always carry this literal tag - see
+// TelegramSMC_TradeLogger.mq5's InpSourceLabel for the reusable-EA case,
+// where the source isn't fixed at compile time.
+#define TSMC_SIGNAL_SOURCE  "Telegram_Sig"
+
+#define TSMC_SIGNALS_HEADER "time_utc,source,chat_id,action,direction,symbol_ok,entry_low,entry_high,sl,tps,smc_used,smc_pass,smc_reason,sanity_pass,sanity_reason,accepted,order_type,order_price,lots,dry_run,order_ticket,retcode,raw_text"
+#define TSMC_RESULTS_HEADER "time_utc,source,event,position_id,order_ticket,symbol,magic,direction,volume,price,sl,tp,profit,swap,commission,net_profit,close_reason,duration_min,price_move,comment"
 
 //+------------------------------------------------------------------+
 //| Quote a field per RFC4180 (wrap in double quotes, double any       |

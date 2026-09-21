@@ -26,7 +26,7 @@
     class SignalRow
     {
         public DateTime Time;
-        public string ChatId, Action, Direction, SmcReason, SanityReason, OrderType, OrderTicket, Retcode, RawText, Tps;
+        public string Source, ChatId, Action, Direction, SmcReason, SanityReason, OrderType, OrderTicket, Retcode, RawText, Tps;
         public bool SymbolOk, SmcUsed, SmcPass, SanityPass, Accepted, DryRun;
         public double EntryLow, EntryHigh, Sl, OrderPrice, Lots;
     }
@@ -34,7 +34,7 @@
     class ResultRow
     {
         public DateTime Time;
-        public string EventName, PositionId, OrderTicket, Symbol, Magic, Direction, CloseReason, Comment;
+        public string Source, EventName, PositionId, OrderTicket, Symbol, Magic, Direction, CloseReason, Comment;
         public double Volume, Price, Sl, Tp, Profit, Swap, Commission, NetProfit, DurationMin, PriceMove;
     }
 
@@ -248,6 +248,10 @@
             _signals.Add(new SignalRow
             {
                 Time = T(row, "time_utc"),
+                // Older logs written before the source column existed default
+                // to Telegram_Sig - this dashboard only ever reads CSVs this
+                // system's own EA writes, so that default is always correct.
+                Source = string.IsNullOrEmpty(S(row, "source")) ? "Telegram_Sig" : S(row, "source"),
                 ChatId = S(row, "chat_id"),
                 Action = S(row, "action"),
                 Direction = S(row, "direction"),
@@ -280,6 +284,7 @@
             _results.Add(new ResultRow
             {
                 Time = T(row, "time_utc"),
+                Source = string.IsNullOrEmpty(S(row, "source")) ? "Telegram_Sig" : S(row, "source"),
                 EventName = S(row, "event"),
                 PositionId = S(row, "position_id"),
                 OrderTicket = S(row, "order_ticket"),
@@ -385,6 +390,7 @@
             string dirClass = s.Direction == "BUY" ? "dir-buy" : (s.Direction == "SELL" ? "dir-sell" : "");
             sb.Append("<tr>");
             sb.Append("<td class=\"nowrap muted\">").Append(Html(s.Time.ToString("MMM d HH:mm", CultureInfo.InvariantCulture))).Append("</td>");
+            sb.Append("<td><span class=\"pill pill-source\">").Append(Html(s.Source)).Append("</span></td>");
             sb.Append("<td>").Append(Html(s.Action)).Append("</td>");
             sb.Append("<td class=\"").Append(dirClass).Append("\">").Append(Html(string.IsNullOrEmpty(s.Direction) ? "-" : s.Direction)).Append("</td>");
             sb.Append("<td><span class=\"pill ").Append(statusClass).Append("\">").Append(statusLabel).Append("</span></td>");
@@ -392,7 +398,7 @@
             sb.Append("<td class=\"muted\" title=\"").Append(HtmlAttr(s.RawText)).Append("\">").Append(Html(Truncate(s.RawText, 46))).Append("</td>");
             sb.Append("</tr>");
         }
-        SignalsHtml = sb.Length > 0 ? sb.ToString() : "<tr><td colspan=\"6\" class=\"empty-state\">No signals recorded yet.</td></tr>";
+        SignalsHtml = sb.Length > 0 ? sb.ToString() : "<tr><td colspan=\"7\" class=\"empty-state\">No signals recorded yet.</td></tr>";
 
         var recentTrades = _results.Where(r => r.EventName == "CLOSE").OrderByDescending(r => r.Time).Take(50).ToList();
         var sb3 = new StringBuilder();
@@ -403,6 +409,7 @@
             string dirClass = r.Direction == "BUY" ? "dir-buy" : (r.Direction == "SELL" ? "dir-sell" : "");
             sb3.Append("<tr>");
             sb3.Append("<td class=\"nowrap muted\">").Append(Html(r.Time.ToString("MMM d HH:mm", CultureInfo.InvariantCulture))).Append("</td>");
+            sb3.Append("<td><span class=\"pill pill-source\">").Append(Html(r.Source)).Append("</span></td>");
             sb3.Append("<td class=\"").Append(dirClass).Append("\">").Append(Html(r.Direction)).Append("</td>");
             sb3.Append("<td class=\"num\">").Append(r.Volume.ToString("0.00", CultureInfo.InvariantCulture)).Append("</td>");
             sb3.Append("<td class=\"num\">").Append(r.Price.ToString("0.00", CultureInfo.InvariantCulture)).Append("</td>");
@@ -411,7 +418,7 @@
             sb3.Append("<td class=\"num muted\">").Append(FormatDuration(r.DurationMin)).Append("</td>");
             sb3.Append("</tr>");
         }
-        TradesHtml = sb3.Length > 0 ? sb3.ToString() : "<tr><td colspan=\"7\" class=\"empty-state\">No closed trades yet.</td></tr>";
+        TradesHtml = sb3.Length > 0 ? sb3.ToString() : "<tr><td colspan=\"8\" class=\"empty-state\">No closed trades yet.</td></tr>";
 
         var reasons = _signals.Where(s => !s.Accepted)
             .Select(s => !string.IsNullOrEmpty(s.SanityReason) ? s.SanityReason
@@ -617,6 +624,11 @@
   }
   .pill-good { background: rgba(12,163,12,0.13); color: var(--success-text); }
   .pill-critical { background: rgba(208,59,59,0.13); color: var(--status-critical); }
+  /* Source is an identity tag (which system generated the row), not a
+     good/bad judgment, so it uses the categorical series color rather than
+     the status palette above - keeps it visually distinct from Accepted/
+     Rejected at a glance. */
+  .pill-source { background: rgba(42,120,214,0.13); color: var(--series-1); font-weight: 600; }
 
   .table-scroll { overflow-x: auto; }
   footer.foot { text-align: center; color: var(--text-muted); font-size: 11.5px; margin-top: 26px; }
@@ -697,7 +709,7 @@
     <div class="panel-sub">Latest 50 messages evaluated, accepted or not</div>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>Time</th><th>Action</th><th>Dir</th><th>Status</th><th>Reason</th><th>Message</th></tr></thead>
+        <thead><tr><th>Time</th><th>Source</th><th>Action</th><th>Dir</th><th>Status</th><th>Reason</th><th>Message</th></tr></thead>
         <tbody><%= SignalsHtml %></tbody>
       </table>
     </div>
@@ -708,7 +720,7 @@
     <div class="panel-sub">Latest 50 closed trades</div>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>Time</th><th>Dir</th><th class="num">Lots</th><th class="num">Price</th><th class="num">Net P/L</th><th>Close Reason</th><th class="num">Duration</th></tr></thead>
+        <thead><tr><th>Time</th><th>Source</th><th>Dir</th><th class="num">Lots</th><th class="num">Price</th><th class="num">Net P/L</th><th>Close Reason</th><th class="num">Duration</th></tr></thead>
         <tbody><%= TradesHtml %></tbody>
       </table>
     </div>

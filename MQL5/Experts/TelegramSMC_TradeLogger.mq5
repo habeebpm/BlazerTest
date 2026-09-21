@@ -17,7 +17,12 @@
 //|                                                                    |
 //| To pair it with TelegramSMC_Copier.mq5, set InpMagicNumber and     |
 //| InpSymbol to match that EA's inputs (20260918 / XAUUSD by          |
-//| default). The close reason comes straight from MT5's own deal      |
+//| default) and leave InpSourceLabel at its default "Telegram_Sig" -   |
+//| or point this same EA at a different system's magic/symbol (e.g.   |
+//| the Claude-SMC Trader's 20260921) and set InpSourceLabel to         |
+//| "Claude_Sig", so every row's source column still says which system |
+//| actually opened the trade, whichever one you're watching. The close |
+//| reason comes straight from MT5's own deal                          |
 //| history (SL / TP / client / expert / stop-out, via DEAL_REASON) -   |
 //| this EA never has to guess it from price. Duration and price move  |
 //| are computed by looking up the position's own opening deal in      |
@@ -50,6 +55,7 @@
 input group "=== What to log ==="
 input string InpSymbol          = "XAUUSD";     // Symbol to log (match the trading EA's symbol)
 input ulong  InpMagicNumber     = 20260918;     // Magic number to log (match the trading EA's)
+input string InpSourceLabel     = "Telegram_Sig"; // Free-text tag written to every row's source column - this EA is generic (see header), so re-point it at a different system's magic number (e.g. the Claude-SMC Trader's 20260921) and set this to "Claude_Sig" to keep that log distinguishable too
 input bool   InpUseCommonFolder = false;        // Write to the shared Common\Files folder instead of this terminal's Files
 
 //+------------------------------------------------------------------+
@@ -57,9 +63,9 @@ input bool   InpUseCommonFolder = false;        // Write to the shared Common\Fi
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   PrintFormat("TelegramSMC_TradeLogger: watching symbol=%s magic=%I64u -> %s\\%s",
-               InpSymbol, InpMagicNumber, InpUseCommonFolder ? "Common\\Files" : "MQL5\\Files",
-               TSMC_RESULTS_FILE);
+   PrintFormat("TelegramSMC_TradeLogger: watching symbol=%s magic=%I64u source=%s -> %s\\%s",
+               InpSymbol, InpMagicNumber, InpSourceLabel,
+               InpUseCommonFolder ? "Common\\Files" : "MQL5\\Files", TSMC_RESULTS_FILE);
    PrintFormat("TelegramSMC_TradeLogger: note - positions already open before this EA was attached "
                "get no OPEN row, but their CLOSE row will still be complete.");
    return(INIT_SUCCEEDED);
@@ -104,6 +110,7 @@ void LogResultRow(const string &event, long positionId, long orderTicket, const 
    double net = profit + swap + commission;
    string ts  = TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
    string line = ts + "," +
+                 TsmcCsvField(InpSourceLabel) + "," +
                  TsmcCsvField(event) + "," +
                  IntegerToString(positionId) + "," +
                  IntegerToString(orderTicket) + "," +

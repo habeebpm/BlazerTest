@@ -27,7 +27,7 @@ class AdvisorConfig:
 
     # --- Order plumbing ---
     magic: int = 20260921
-    comment: str = "Claude-SMC"
+    comment: str = "Claude_Sig"
     deviation_points: int = 30
 
     # --- Confluence gate (mirrors the existing 3-confluence framework:

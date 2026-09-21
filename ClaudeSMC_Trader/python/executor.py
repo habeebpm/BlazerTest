@@ -25,10 +25,18 @@ from config import AdvisorConfig
 
 log = logging.getLogger(__name__)
 
-DECISION_FIELDS = ["time", "direction", "confluence_count", "conviction",
+# Written to every logged row's "source" column - this solution only ever
+# produces Claude-validated signals, so it's a constant here, unlike the
+# Telegram copier's MQL5 TradeLogger EA (which is reused across systems and
+# takes its label as an input instead). Kept as one literal so a decisions.csv
+# and trades.csv from this solution are unambiguous even if copied elsewhere
+# alongside the Telegram copier's own logs.
+SOURCE_TAG = "Claude_Sig"
+
+DECISION_FIELDS = ["time", "source", "direction", "confluence_count", "conviction",
                     "trend", "momentum", "strength", "smc_alignment",
                     "executed", "reject_reason", "reasoning"]
-TRADE_FIELDS = ["time", "direction", "lots", "entry_price", "sl", "tp",
+TRADE_FIELDS = ["time", "source", "direction", "lots", "entry_price", "sl", "tp",
                  "mode", "retcode", "ticket"]
 
 
@@ -59,6 +67,7 @@ def log_decision(cfg: AdvisorConfig, verdict: ConfluenceVerdict, executed: bool,
 
     row = {
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": SOURCE_TAG,
         "direction": verdict.direction,
         "confluence_count": verdict.confluence_count,
         "conviction": verdict.conviction,
@@ -75,6 +84,7 @@ def log_trade(cfg: AdvisorConfig, direction: str, lots: float, entry_price: floa
               sl: float, tp: float, mode: str, retcode, ticket) -> None:
     row = {
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": SOURCE_TAG,
         "direction": direction, "lots": lots, "entry_price": entry_price,
         "sl": sl, "tp": tp, "mode": mode, "retcode": retcode, "ticket": ticket,
     }

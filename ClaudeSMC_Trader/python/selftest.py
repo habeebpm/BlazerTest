@@ -14,6 +14,8 @@ Covers:
 """
 from __future__ import annotations
 
+import csv
+
 import numpy as np
 import pandas as pd
 
@@ -222,6 +224,15 @@ def test_executor() -> bool:
     ok &= check("a 3/3 full-conviction buy is executed", d.executed, d.reject_reason)
     ok &= check("the fake order was actually sent with the right lot size",
                 fg.orders_sent and fg.orders_sent[0][1] == cfg.fixed_lot, fg.orders_sent)
+
+    with open(executor._csv_path(cfg, "trades.csv")) as f:
+        trade_rows = list(csv.DictReader(f))
+    ok &= check("trades.csv tags every row with source=Claude_Sig",
+                trade_rows and all(r["source"] == "Claude_Sig" for r in trade_rows), trade_rows)
+    with open(executor._csv_path(cfg, "decisions.csv")) as f:
+        decision_rows = list(csv.DictReader(f))
+    ok &= check("decisions.csv tags every row with source=Claude_Sig",
+                decision_rows and all(r["source"] == "Claude_Sig" for r in decision_rows), decision_rows)
 
     fg2 = FakeGateway(same_dir_open=0)
     d2 = executor.execute(fg2, cfg, make_verdict("buy", 2, "partial"), spec, trades_today=0)

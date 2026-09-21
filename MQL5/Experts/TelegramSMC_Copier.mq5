@@ -842,7 +842,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound, double s
    int    digits    = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double buffer    = 3.0 * point;
    double zoneEntry = isBuy ? upperBound : lowerBound;
-   string comment   = "TG-SMC";
+   string comment   = TSMC_SIGNAL_SOURCE;
 
    double orderPrice;
    bool   isPending;
@@ -1020,6 +1020,7 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
 
    string ts  = TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
    string line = ts + "," +
+                 TsmcCsvField(TSMC_SIGNAL_SOURCE) + "," +
                  IntegerToString(chatId) + "," +
                  TsmcCsvField(action) + "," +
                  TsmcCsvField(direction) + "," +

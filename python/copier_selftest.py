@@ -11,12 +11,18 @@ Exercises:
     risk:reward, position/trade caps, chat allow-list, price too far from
     the signal);
   * copier_engine.evaluate_signal end-to-end, including risk-percent lot
-    sizing.
+    sizing;
+  * telegram_copier.record_signal() tagging every logged row with
+    source=Telegram_Sig, so it's distinguishable from the Claude-SMC
+    Trader's own logs (see ../ClaudeSMC_Trader/python/executor.py).
 """
 from __future__ import annotations
 
+import csv
+
 import mt5_client as mc
 import copier_engine as ce
+import telegram_copier as tc
 from copier_config import CopierConfig
 from signal_parser import parse_signal
 from verifier import SignalVerifier
@@ -213,9 +219,28 @@ def test_engine() -> bool:
     return ok
 
 
+def test_signal_logging() -> bool:
+    print("\n=== 4. signal logging ===")
+    ok = True
+    ok &= check("SIGNAL_LOG_FIELDS declares a source column", "source" in tc.SIGNAL_LOG_FIELDS,
+                tc.SIGNAL_LOG_FIELDS)
+
+    tc.record_signal({
+        "time": "2026-09-21T00:00:00+00:00", "source": "Telegram_Sig", "chat_id": "test_chan",
+        "direction": "buy", "entry_reference": 2350.0, "sl": 2340.0, "tp": 2360.0, "lots": 0.05,
+        "fill_price": 2350.0, "mode": "dry-run", "retcode": "", "ticket": "",
+    })
+    with tc.SIGNAL_LOG.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    ok &= check("record_signal() writes source=Telegram_Sig to copier_signals.csv",
+                rows and rows[-1]["source"] == "Telegram_Sig", rows[-1] if rows else None)
+
+    return ok
+
+
 def run() -> int:
     print("Telegram copier + verifier self-test")
-    results = [test_parser(), test_verifier(), test_engine()]
+    results = [test_parser(), test_verifier(), test_engine(), test_signal_logging()]
     passed = all(results)
     print(f"\n{'ALL PASS' if passed else 'SOME FAILED'} ({sum(results)}/{len(results)} suites)")
     return 0 if passed else 1

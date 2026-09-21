@@ -73,7 +73,7 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 SIGNAL_LOG_FIELDS = [
-    "time", "chat_id", "direction", "entry_reference", "sl", "tp", "lots",
+    "time", "source", "chat_id", "direction", "entry_reference", "sl", "tp", "lots",
     "fill_price", "mode", "retcode", "ticket",
 ]
 
@@ -225,6 +225,7 @@ class Copier:
         self.verify_execution(ev, result)
         record_signal({
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "source": "Telegram_Sig",
             "chat_id": chat_id,
             "direction": ev.verdict.direction,
             "entry_reference": ev.verdict.entry_reference,
