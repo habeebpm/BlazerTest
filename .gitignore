@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
-python/logs/*.log
-python/logs/*.csv
+MT_Py_Claude_Telegram_Solution/python/logs/*.log
+MT_Py_Claude_Telegram_Solution/python/logs/*.csv
+MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.log
+MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.csv

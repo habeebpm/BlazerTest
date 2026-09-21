@@ -1,0 +1,19 @@
+; TelegramSMC_TradeLogger - default preset
+; In MT5: Strategy Tester > Expert Advisor: TelegramSMC_TradeLogger > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; InpSymbol and InpMagicNumber must match the EA that is actually placing the
+; trades (TelegramSMC_Copier.mq5 ships InpMagicNumber=20260918 on XAUUSD by
+; default) - this EA only logs, it never places or closes anything itself.
+;
+; InpSourceLabel is just a free-text tag written to every logged row's
+; "source" column - it does not affect what gets watched. This EA is generic
+; (see the file header), so to instead journal the Claude-SMC Trader's
+; trades, point InpSymbol/InpMagicNumber at that solution's own values
+; (XAUUSD / 20260921 - see ../../ClaudeSMC_Trader/python/config.py) and set
+; InpSourceLabel=Claude_Sig.
+;
+InpSymbol=XAUUSD
+InpMagicNumber=20260918
+InpSourceLabel=Telegram_Sig
+InpUseCommonFolder=false

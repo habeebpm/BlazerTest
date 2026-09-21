@@ -341,24 +341,36 @@ def _pick_filling_mode(spec: SymbolSpec):
     return m.ORDER_FILLING_RETURN
 
 
-def position_size(cfg: TradeConfig, spec: SymbolSpec, sl_distance: float) -> float:
-    """Fixed lots, or a size derived from equity when use_risk_percent is set.
+def position_size_for(spec: SymbolSpec, sl_distance: float, *, lots: float,
+                       use_risk_percent: bool = False, risk_percent: float = 0.2,
+                       max_lot_size: float = 5.0, equity: float = 0.0) -> float:
+    """Pure lot-sizing math: fixed `lots`, or a size derived from `equity`.
 
-    Risk-percent sizing grows the lot with the account and shrinks it after a
-    drawdown, which is what keeps risk per trade a constant fraction of the
-    daily loss cap as the balance changes.
+    Takes equity as a parameter (rather than calling account_equity() itself)
+    so it can be unit-tested, and reused by callers such as the Telegram
+    copier, without an MT5 connection. Risk-percent sizing grows the lot with
+    the account and shrinks it after a drawdown, which is what keeps risk per
+    trade a constant fraction of the daily loss cap as the balance changes.
     """
-    if not cfg.use_risk_percent:
-        return float(cfg.lots)
-    equity = account_equity()
+    if not use_risk_percent:
+        return float(lots)
     if equity <= 0 or spec.tick_size <= 0 or spec.tick_value <= 0 or sl_distance <= 0:
-        return float(cfg.lots)
+        return float(lots)
     loss_per_lot = (sl_distance / spec.tick_size) * spec.tick_value
-    lots = (equity * cfg.risk_percent / 100.0) / loss_per_lot
+    calc = (equity * risk_percent / 100.0) / loss_per_lot
     step = spec.volume_step or 0.01
-    lots = (lots // step) * step
-    lots = max(spec.volume_min, min(lots, spec.volume_max, cfg.max_lot_size))
-    return round(lots, 2)
+    calc = (calc // step) * step
+    calc = max(spec.volume_min, min(calc, spec.volume_max, max_lot_size))
+    return round(calc, 2)
+
+
+def position_size(cfg: TradeConfig, spec: SymbolSpec, sl_distance: float) -> float:
+    """Fixed lots, or a size derived from equity when use_risk_percent is set."""
+    equity = account_equity() if cfg.use_risk_percent else 0.0
+    return position_size_for(
+        spec, sl_distance, lots=cfg.lots, use_risk_percent=cfg.use_risk_percent,
+        risk_percent=cfg.risk_percent, max_lot_size=cfg.max_lot_size, equity=equity,
+    )
 
 
 def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: bool):
@@ -418,6 +430,69 @@ def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: b
         "OPENED %s %.2f %s @ %.*f sl=%.*f ticket=%s",
         direction.upper(), result.volume, cfg.symbol, spec.digits, result.price,
         spec.digits, sl, result.order,
+    )
+    return result
+
+
+def open_signal_position(cfg, spec: SymbolSpec, direction: str, volume: float,
+                          sl: float, tp: float, dry_run: bool):
+    """Like open_position, but volume/SL/TP come from an already-verified copied
+    signal instead of being derived from a TradeConfig's distance settings.
+
+    `cfg` only needs `.symbol`, `.magic`, `.deviation_points` and `.comment` -
+    CopierConfig carries the same names so it can be passed here directly.
+    Always re-fetches the current tick rather than trusting a stale signal
+    price, exactly like open_position.
+    """
+    m = mt5()
+    tick = get_tick(cfg.symbol)
+    point = spec.point
+    is_buy = direction == "buy"
+    price = tick.ask if is_buy else tick.bid
+
+    request = {
+        "action": m.TRADE_ACTION_DEAL,
+        "symbol": cfg.symbol,
+        "volume": float(volume),
+        "type": m.ORDER_TYPE_BUY if is_buy else m.ORDER_TYPE_SELL,
+        "price": price,
+        "sl": round(sl, spec.digits) if sl else 0.0,
+        "tp": round(tp, spec.digits) if tp else 0.0,
+        "deviation": cfg.deviation_points,
+        "magic": cfg.magic,
+        "comment": cfg.comment,
+        "type_time": m.ORDER_TIME_GTC,
+        "type_filling": _pick_filling_mode(spec),
+    }
+
+    if dry_run:
+        log.info(
+            "[DRY-RUN] would copy %s %.2f %s @ %.*f sl=%s tp=%s",
+            direction.upper(), volume, cfg.symbol, spec.digits, price,
+            f"{request['sl']:.{spec.digits}f}" if request["sl"] else "none",
+            f"{request['tp']:.{spec.digits}f}" if request["tp"] else "none",
+        )
+        return None
+
+    result = m.order_send(request)
+    if result is None:
+        log.error("order_send returned None: %s", m.last_error())
+        return None
+    if result.retcode != m.TRADE_RETCODE_DONE:
+        market_closed = getattr(m, "TRADE_RETCODE_MARKET_CLOSED", 10018)
+        if result.retcode == market_closed:
+            log.warning("Copied order not placed: the market is closed.")
+        else:
+            log.error("Copied order rejected: retcode=%s comment=%s",
+                       result.retcode, result.comment)
+        return result
+
+    log.info(
+        "COPIED %s %.2f %s @ %.*f sl=%s tp=%s ticket=%s",
+        direction.upper(), result.volume, cfg.symbol, spec.digits, result.price,
+        f"{request['sl']:.{spec.digits}f}" if request["sl"] else "none",
+        f"{request['tp']:.{spec.digits}f}" if request["tp"] else "none",
+        result.order,
     )
     return result
 

@@ -21,10 +21,24 @@ not predict future results.
   button) instead of retyping every parameter.
 - `XAUUSD_Confluence_EA_QuickStart.pdf` — a printable one-page install/run
   cheat sheet.
+- `MQL5/Experts/TelegramSMC_Copier.mq5` — a separate EA that copies XAUUSD
+  BUY/SELL zone calls posted in a Telegram channel into MT5, independent of
+  the confluence strategy above. See "Telegram SMC Copier (MQL5)" below.
+- `MQL5/Experts/TelegramSMC_TradeLogger.mq5` — a standalone trade-journal EA
+  that logs every open/close for a given magic number to a CSV, decoupled
+  from whatever EA is actually trading. See "Logging" under the same section.
+- `ASPX/Dashboard.aspx` — a self-contained ASP.NET Web Forms page that reads
+  those two CSVs and renders a read-only dashboard. See "Dashboard
+  (ASP.NET)" below and `ASPX/README.md`.
 - `python/` — a Python port of the same strategy that trades through the
   MetaTrader5 Python API (0.01 lots, 60-pip stop, 30-pip trailing stop, the
   same 2-of-3 entry rule, and it pauses itself while the market is closed).
-  See `python/README.md`.
+  See `python/README.md`. It also includes `telegram_copier.py`, a separate
+  tool that copies trade calls posted in Telegram chats into MT5 - each
+  signal is parsed and run through a `SignalVerifier` (stale/duplicate/
+  off-symbol/bad-stop/weak-reward signals are rejected with a logged reason)
+  before anything is sent, and the fill is checked against what was verified
+  afterwards. See "Telegram signal copier + verifier" in `python/README.md`.
 
 ## Strategy logic
 
@@ -281,3 +295,180 @@ only says what each one would imply. Measure it in the Strategy Tester first.
 5. Confirm your broker's XAUUSD contract specification (tick value, tick
    size, stops level, filling mode) matches the assumptions used for lot
    sizing and order placement.
+
+## Telegram SMC Copier (MQL5)
+
+`MQL5/Experts/TelegramSMC_Copier.mq5` is a separate, self-contained EA for a
+different job: instead of generating its own signals, it copies XAUUSD
+BUY/SELL zone calls posted in a Telegram channel — the kind that read like
+
+```
+XAUUSD BUY 4342-4339
+TP1: 4349
+TP2: 4356
+TP3: 4364
+StopLoss: 4335
+```
+
+into MT5, with an independent price-action check before anything is sent.
+It does not share any code or state with the confluence EA above and can run
+on the same or a different chart.
+
+### How it reaches Telegram
+
+MQL5 cannot read a Telegram channel directly, so the EA polls the [Telegram
+Bot API](https://core.telegram.org/bots/api) with `WebRequest` — no Python
+process and nothing outside MT5 in the normal case. One-time setup:
+
+1. Talk to **@BotFather** in Telegram, `/newbot`, and copy the token it gives
+   you into `InpBotToken`.
+2. Add that bot to the signal channel/group **as an admin** — a bot only
+   receives channel posts if it is one. **If you don't own/moderate the
+   channel and can't get a bot added there**, see "Telegram relay bridge"
+   in `python/README.md` — it reads the channel as your own account (just a
+   member, no admin needed) and forwards each message into a private group
+   you *do* own, which the bot can be admin of; everything from step 4
+   onward is unchanged, just pointed at that relay group's id instead.
+3. In MT5: **Tools → Options → Expert Advisors** → tick "Allow WebRequest for
+   listed URL" and add `https://api.telegram.org` — WebRequest is refused
+   otherwise, and the EA logs exactly this instruction if it happens.
+4. Leave `InpChannelId1`/`InpChannelId2` at `0` for the first run and attach
+   the EA: every message the bot can see is logged with its chat id. Copy up
+   to two of those ids into `InpChannelId1` (and `InpChannelId2` for a second
+   channel) and restart, so only those chats can trigger trades. Leaving both
+   at `0` accepts signals from any chat the bot can see — fine for that first
+   discovery run, not recommended afterward.
+
+The EA ships with **`InpDryRun = true`**. Nothing above logs-only behavior
+happens until you set it to `false`, and that should only follow watching the
+log agree with the channel for a while.
+
+### Entry, exit and what the signal's own numbers are used for
+
+- **Entry** is `InpFixedLot` (default 0.05) lots at the **upper bound** of the
+  zone for a BUY, the **lower bound** for a SELL — the edge price reaches
+  first. Whether that becomes a pending order or a market order is decided
+  from the live price, not the message's wording: price still on the far
+  side of the zone gets a BUY/SELL LIMIT at that bound; price already inside
+  the zone gets a market order now; price already through the *whole* zone
+  is skipped as stale. `InpPendingExpiryMin` cancels an unfilled limit order
+  after a while, since a Smart-Money zone goes stale faster than a
+  fixed-distance order would.
+- **Stop-loss** is used exactly as given in the signal (after the sanity
+  checks below).
+- **Take-profit ignores the signal's TP1/TP2/TP3.** `InpTp1Points` (default
+  `4.0`) is a real, broker-side take-profit set the moment the trade opens —
+  it survives a disconnect. Once floating profit reaches that many **price
+  units** (4.0 = $4.00 on XAUUSD — not a broker "point" of $0.01 and not a
+  "pip" of $0.10), the fixed TP is dropped and an `InpTrailPoints` (default
+  `3.0`) trailing stop takes over for the rest of the move, tightening only.
+  The signal's own TP1/TP2/TP3 are logged for reference and otherwise
+  ignored; only one take-profit level exists per MT5 position, so this EA
+  does not split volume across partial targets.
+- Sanity checks reject a signal before it reaches the market: no stop-loss
+  (`InpMinSlDistancePips`/`InpMaxSlDistancePips` also catch a stop that's
+  implausibly tight or wide — a likely fat-finger), and a current price that
+  has drifted more than `InpMaxEntryDeviationPips` from the signaled zone.
+
+### SMC validation (`InpUseSmcFilter`, on by default)
+
+Independent of whatever the message *says* about market structure, the EA
+checks the actual price history on `InpSmcTF` (default M15):
+
+1. **Liquidity sweep** — within the last `InpSweepRecentBars` closed bars,
+   price must have pierced beyond the extreme of the prior
+   `InpSweepRefBars` bars (below a prior low for a BUY, above a prior high
+   for a SELL) and closed back on the right side of it — a stop-hunt-then-
+   reclaim, not a clean breakout.
+2. **Premium/discount** — the entry must sit in the cheaper half of the
+   combined swing range for a BUY, the richer half for a SELL.
+3. The signal's own stop-loss should sit beyond the swept extreme (the level
+   that failed), not inside it.
+
+This is a deliberately simplified, fully computable proxy for SMC entry
+logic — two rolling min/max windows, not a full fractal/order-block engine.
+Tune `InpSweepRecentBars`/`InpSweepRefBars`/`InpSweepMinPiercePips`, or turn
+`InpUseSmcFilter` off, if it is too strict or too loose for the channel you
+follow. Every check, pass or fail, is printed to the Experts log with the
+actual price levels it compared.
+
+### Logging: every signal, and a separate EA for results
+
+`TelegramSMC_Copier.mq5` appends one row to **`TelegramSMC_Signals.csv`** for
+*every* Telegram message it evaluates — accepted or not, and why — to this
+terminal's `MQL5\Files`. Columns: `time_utc, chat_id, action, direction,
+symbol_ok, entry_low, entry_high, sl, tps, smc_used, smc_pass, smc_reason,
+sanity_pass, sanity_reason, accepted, order_type, order_price, lots,
+dry_run, order_ticket, retcode, raw_text`. A rejected signal still gets a
+row — `accepted=0` with the reason in `sanity_reason` or `smc_reason` — so
+the file is a complete record of what the channel posted, not just what
+traded.
+
+**Trade results are logged by a separate EA on purpose:**
+`MQL5/Experts/TelegramSMC_TradeLogger.mq5`. It does not place, modify or
+close a single order, and it never talks to Telegram — it only *watches*
+this account's trade history for a given `InpMagicNumber`/`InpSymbol` (via
+`OnTradeTransaction`) and appends one row per position **open** and one row
+per **close** to `TelegramSMC_Results.csv`: `time_utc, event, position_id,
+order_ticket, symbol, magic, direction, volume, price, sl, tp, profit,
+swap, commission, net_profit, close_reason, duration_min, price_move,
+comment`. `close_reason` comes straight from MT5's own deal history
+(`DEAL_REASON_SL`, `DEAL_REASON_TP`, `DEAL_REASON_CLIENT`, …) rather than
+being guessed from price, and `duration_min`/`price_move` are computed by
+looking up the position's own opening deal in history — which works
+correctly even for a position that was already open before this EA was
+attached, since nothing here depends on anything remembered in memory.
+
+Being a separate EA is deliberate, not incidental: it keeps recording
+results for whatever has that magic number/symbol regardless of whether the
+Copier is running, being restarted, or replaced, and it can be attached to
+any chart (it reads account-wide history, not chart ticks). Load
+`MQL5/Presets/TelegramSMC_TradeLogger_Default.set` and set
+`InpMagicNumber`/`InpSymbol` to match whatever EA is actually trading
+(20260918 / XAUUSD match the Copier's own defaults).
+
+The two files are **not automatically merged** — join them yourself on
+`order_ticket` (the Copier logs the order it placed; the Logger logs
+`DEAL_ORDER`, the order that generated each deal) if you want the original
+signal text next to its eventual profit and close reason.
+
+### Honest limitations
+
+- **No backtest.** There is no historical Telegram feed to replay, so the
+  Copier EA disables its own polling inside the Strategy Tester. It can only
+  be meaningfully evaluated live or on a demo account.
+- **One symbol, one magic number, no per-setup tracking.** CLOSE, CANCEL and
+  "move SL to breakeven" messages act on *every* position/pending order this
+  EA currently has open on the chart's symbol, because the messages carry no
+  ticket or setup id to act on selectively.
+- **The Logger EA writes no OPEN row for a position opened before it was
+  attached** (there is no on-init backfill), though that position's eventual
+  CLOSE row is still complete, since it is computed from history at the
+  moment of the close rather than from anything remembered in memory. A
+  partial close is logged as its own CLOSE row with that deal's own volume
+  and profit, not merged into one final row per position.
+- **The parser is best-effort, not a general NLP engine.** It looks for
+  BUY/SELL/LONG/SHORT, a price or price range, SL/STOPLOSS/S-L, and
+  TP/TP1/TP2/…, and leaves anything it can't make sense of alone rather than
+  guessing. Unusual phrasing may simply be logged as "did not parse as an
+  actionable signal."
+- This executes real orders from text messages it did not originate and
+  cannot fully verify the reasoning behind. The SMC filter and sanity checks
+  catch stale or obviously broken signals, not bad trading calls. Demo-test
+  with `InpDryRun = true` until you trust the channel, the parser's log
+  output for every message it sees, **and** this EA's behavior, in that
+  order.
+
+## Dashboard (ASP.NET)
+
+`ASPX/Dashboard.aspx` is a single, self-contained Web Forms page (classic
+.NET Framework, not Core) that reads the two CSVs above -
+`TelegramSMC_Signals.csv` and `TelegramSMC_Results.csv` - and renders a
+read-only dashboard: KPI tiles (signals received/accepted, trades closed,
+net P/L, win rate, average duration), a cumulative-P/L line chart, a
+close-reason breakdown, an accepted/rejected outcome split, top rejection
+reasons, and the latest 50 signals and trades as tables. It never writes to
+either CSV. Ships with bundled sample data under `ASPX/App_Data/` so it
+renders something meaningful before you've pointed it at real logs - see
+`ASPX/README.md` for IIS deployment, pointing `Web.config` at the live CSV
+paths (same-machine or via a UNC path/sync job), and security notes.

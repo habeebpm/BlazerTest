@@ -1,0 +1,16 @@
+# The MetaTrader5 package is Windows-only (it drives a local MT5 terminal).
+# The marker lets `pip install -r requirements.txt` succeed on Linux/macOS so
+# the indicator/SMC/executor logic and selftest.py stay runnable everywhere -
+# only main.py's live loop needs it.
+MetaTrader5>=5.0.45; sys_platform == "win32"
+pandas>=2.0
+numpy>=1.24
+
+# Claude API client. get_verdict() takes the client as a parameter, so
+# selftest.py never makes a real API call - but it does import `anthropic`
+# to build realistic SDK exceptions for testing claude_advisor's error
+# classification (skips that one suite gracefully if the package is absent).
+anthropic>=0.75
+
+# Structured-output schema for claude_advisor.ConfluenceVerdict.
+pydantic>=2.0

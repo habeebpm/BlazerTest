@@ -1,0 +1,25 @@
+BUY XAUUSD @ 2350.00
+SL: 2340.00
+TP1: 2360.00
+TP2: 2370.00
+---
+BUY XAUUSD @ 2350
+SL 1800
+TP 2500
+---
+🔴 GOLD SELL NOW
+Entry 2355-2358
+Stop Loss 2365
+Take Profit 2345
+---
+Buy Limit Gold 2340 sl 2330 tp 2360
+---
+BUY GOLD @ 2350
+SL 2340
+TP 2352
+---
+good morning traders, have a great day
+---
+CLOSE ALL XAUUSD NOW
+---
+Move SL to breakeven on GOLD buy
