@@ -318,12 +318,17 @@ on the same or a different chart.
 
 MQL5 cannot read a Telegram channel directly, so the EA polls the [Telegram
 Bot API](https://core.telegram.org/bots/api) with `WebRequest` — no Python
-process, no bridge file, nothing outside MT5. One-time setup:
+process and nothing outside MT5 in the normal case. One-time setup:
 
 1. Talk to **@BotFather** in Telegram, `/newbot`, and copy the token it gives
    you into `InpBotToken`.
 2. Add that bot to the signal channel/group **as an admin** — a bot only
-   receives channel posts if it is one.
+   receives channel posts if it is one. **If you don't own/moderate the
+   channel and can't get a bot added there**, see "Telegram relay bridge"
+   in `python/README.md` — it reads the channel as your own account (just a
+   member, no admin needed) and forwards each message into a private group
+   you *do* own, which the bot can be admin of; everything from step 4
+   onward is unchanged, just pointed at that relay group's id instead.
 3. In MT5: **Tools → Options → Expert Advisors** → tick "Allow WebRequest for
    listed URL" and add `https://api.telegram.org` — WebRequest is refused
    otherwise, and the EA logs exactly this instruction if it happens.

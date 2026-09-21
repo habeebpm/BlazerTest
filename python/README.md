@@ -450,3 +450,55 @@ Output goes to `logs/trader.log` and every entry is appended to
   the report. Validate on a period you did not optimise over. That report is
   the only trustworthy answer to "how confident should I be in this EA".
 - This is not a profitable-by-construction system. Demo-test it first.
+
+## Telegram relay bridge (for a channel you don't own/admin)
+
+`telegram_relay_bridge.py` solves a specific problem: `TelegramSMC_Copier.mq5`
+(the MQL5 EA, see the top-level README) polls Telegram's **Bot API**, and the
+Bot API only delivers a channel's posts to a bot that's an **admin of that
+channel** - something you can't grant yourself on a channel someone else
+owns or moderates. This bridge works around that without touching the MQL5
+EA at all: it logs in as **your own Telegram account** (the same MTProto
+mechanism `telegram_copier.py` above uses - a regular member sees every post,
+no admin needed) and **forwards** each message from the real channel into a
+private group **you create and own**, where you can freely make a disposable
+bot admin. Point `InpChannelId1`/`InpChannelId2` at that relay group's chat
+id instead of the original channel's, and the MQL5 EA's own parsing,
+verification and SMC gate all run exactly as if it were reading the source
+directly - this script only relays, it never parses or decides anything.
+
+```bash
+python telegram_relay_bridge.py --check     # log in, resolve/list chats, exit - no relaying
+python telegram_relay_bridge.py             # relay live (Ctrl+C to stop)
+```
+
+Setup:
+
+1. Create a new **private group** in Telegram (any name) - just for this.
+2. Add your bot to that group **as admin**, zero permissions needed - the
+   same requirement as before, except now it's your own group so you can do
+   it yourself in the app.
+3. Get `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` from <https://my.telegram.org>
+   (API development tools) if you haven't already - the same personal API
+   credential `telegram_copier.py` uses, not a bot token.
+4. `set TELEGRAM_SOURCE_CHANNELS=@the_real_channel` (or its numeric id) and
+   `set TELEGRAM_RELAY_GROUP=` (leave blank for now), then run
+   `python telegram_relay_bridge.py --check` - the first run prompts once
+   for your phone number and login code, then lists every chat the account
+   can see so you can find the relay group's id too.
+5. Set `TELEGRAM_RELAY_GROUP` to that id, re-run `--check` to confirm both
+   resolve correctly, then run the bridge for real (no flags) and leave it
+   running continuously - `TelegramSMC_Copier.mq5` sees nothing new the
+   moment this stops.
+6. Paste the relay group's id (printed by `--check`, already in the
+   `-100...`/Bot-API form `InpChannelId1` expects) into
+   `InpChannelId1` and restart the EA.
+
+By default it relays **everything** unfiltered and lets the EA's own log
+show why a given message was accepted or rejected; pass `--filter-signals`
+to only forward messages that parse as an actionable signal if you'd rather
+cut down on relay-group noise.
+
+**This process has to stay running** - same machine as MT5, or anywhere
+with network access - for signals to keep flowing; there's no persistence
+or catch-up if it's offline when a channel post happens.
