@@ -187,6 +187,38 @@ its initial $6 SL and $6 TP even if the MQL5 EA isn't running - you'd just
 lose the trail-to-$3 behavior and each trade would simply hit its fixed $6
 TP or $6 SL instead.
 
+## Running with only one side available
+
+This solution and the Telegram copier stack (`../python/`, `../MQL5/`) share
+nothing - no config, no magic number, no code. That's deliberate: either can
+run completely on its own, and each one failing has no effect on the other.
+
+**If Claude is out of credits (or the API key is bad, or you're rate-limited,
+or the network's down):** `main.py`'s poll loop catches this specifically
+(`claude_advisor.ClaudeUnavailableError`) and does not crash. It logs exactly
+why, and:
+- For something that clears on its own (rate limit, a 5xx, a network blip),
+  it just retries at the normal poll interval.
+- For something that needs you to act (out of credits, a bad API key,
+  access denied), it backs off to checking every 30 minutes instead of
+  hammering the same failure, and says so in the log.
+
+Either way, no new signals get evaluated until Claude is reachable again -
+but `ClaudeSMC_TradeManager.mq5` keeps managing any already-open positions'
+exits on its own (it has no Claude dependency at all), and the Telegram
+copier stack is entirely unaffected since it never calls Claude in the
+first place. Practically: if you want trading to continue on Telegram
+signals while sorting out a Claude billing issue, just leave the Telegram
+copier's MQL5 EA (and/or `telegram_copier.py`) running and either stop
+`main.py` or let it idle in its 30-minute backoff - nothing you do to one
+system reaches the other.
+
+**If Telegram is unavailable** (relay bridge down, bot token revoked, rate
+limited by Telegram): the reverse holds - `TelegramSMC_Copier.mq5` and/or
+`telegram_copier.py` will simply stop seeing new messages and log that, and
+this solution's `main.py` keeps evaluating and trading on Claude's
+confluence calls exactly as before, since it never touches Telegram.
+
 ### Testing without a live account
 
 ```bash

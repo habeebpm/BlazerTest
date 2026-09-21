@@ -11,6 +11,9 @@ Covers:
   * the dollar -> price-distance conversion executor.execute() relies on
   * executor.gate()/execute() gating logic against a fake MT5 gateway
   * claude_advisor.get_verdict() wiring against a fake Anthropic client
+  * claude_advisor's Claude-API error classification (out of credits,
+    bad key, rate limit, overload, network) - built from the real
+    anthropic SDK exception classes when the package is installed
 """
 from __future__ import annotations
 
@@ -310,6 +313,76 @@ def test_claude_advisor_wiring() -> bool:
     return ok
 
 
+class FakeMessagesRaising:
+    """A `.messages` stand-in whose parse() raises a given exception, so
+    get_verdict()'s error-wrapping can be tested without a live API call."""
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def parse(self, **kwargs):
+        raise self.exc
+
+
+class FakeClientRaising:
+    def __init__(self, exc: Exception):
+        self.messages = FakeMessagesRaising(exc)
+
+
+def test_claude_error_classification() -> bool:
+    print("\n=== 6. Claude API error classification (out-of-credits / rate-limit / ...) ===")
+    ok = True
+    try:
+        import anthropic
+        import httpx2
+    except ImportError as exc:
+        print(f"  [SKIP] `anthropic` package not installed - can't build real SDK exceptions ({exc})")
+        return True
+
+    cfg = AdvisorConfig()
+    req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    def status_error(status: int, error_type: str, message: str):
+        body = {"type": "error", "error": {"type": error_type, "message": message}}
+        resp = httpx2.Response(status, request=req, json=body)
+        return anthropic.APIStatusError(message, response=resp, body=body)
+
+    cases = [
+        # (exception, expect_retryable, must_contain)
+        (status_error(402, "billing_error", "Your credit balance is too low."),
+         False, "out of credits"),
+        (status_error(401, "authentication_error", "invalid x-api-key"), False, "API key"),
+        (status_error(403, "permission_error", "not allowed"), False, "denied"),
+        (status_error(429, "rate_limit_error", "too many requests"), True, "rate-limited"),
+        (status_error(529, "overloaded_error", "overloaded"), True, "service issue"),
+        (anthropic.APIConnectionError(message="network down", request=req), True, "reach"),
+        (ValueError("something unrelated broke"), False, "unexpectedly"),
+    ]
+    for exc, expect_retryable, must_contain in cases:
+        wrapped = claude_advisor._wrap_api_error(exc)
+        label = type(exc).__name__
+        ok &= check(f"{label} -> ClaudeUnavailableError(retryable={expect_retryable})",
+                    isinstance(wrapped, claude_advisor.ClaudeUnavailableError)
+                    and wrapped.retryable == expect_retryable
+                    and must_contain in str(wrapped),
+                    str(wrapped))
+
+    # get_verdict() itself must surface the wrapped error, not the raw SDK one -
+    # this is what main.py's `except claude_advisor.ClaudeUnavailableError` relies on.
+    billing_exc = status_error(402, "billing_error", "Your credit balance is too low.")
+    raised = None
+    try:
+        claude_advisor.get_verdict(FakeClientRaising(billing_exc), cfg, {"symbol": "XAUUSD"})
+    except Exception as exc:
+        raised = exc
+    ok &= check("get_verdict() raises ClaudeUnavailableError (not the raw SDK exception) on a "
+                "billing failure", isinstance(raised, claude_advisor.ClaudeUnavailableError)
+                and not raised.retryable, raised)
+    ok &= check("the original SDK exception is preserved as __cause__ for debugging",
+                raised.__cause__ is billing_exc, raised.__cause__)
+
+    return ok
+
+
 # --------------------------------------------------------------------------- #
 # full snapshot pipeline (fake MT5 bars, real indicator/SMC code)
 # --------------------------------------------------------------------------- #
@@ -336,7 +409,7 @@ class FakeIntelGateway:
 
 
 def test_full_snapshot_pipeline() -> bool:
-    print("\n=== 6. full feature-snapshot pipeline (fake bars, real indicator code) ===")
+    print("\n=== 7. full feature-snapshot pipeline (fake bars, real indicator code) ===")
     ok = True
     cfg = AdvisorConfig(bars_per_timeframe=320)
     snapshot = market_intel.build_feature_snapshot(FakeIntelGateway(), cfg)
@@ -372,6 +445,7 @@ def main() -> int:
         test_price_distance(),
         test_executor(),
         test_claude_advisor_wiring(),
+        test_claude_error_classification(),
         test_full_snapshot_pipeline(),
     ]
     print()

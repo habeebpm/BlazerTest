@@ -27,6 +27,11 @@ from config import AdvisorConfig
 
 log = logging.getLogger("main")
 
+# How long to back off after a non-retryable Claude failure (out of credits,
+# bad API key, permission denied) - these need manual action, so retrying
+# every cfg.poll_seconds (default 30s) would just spam the same failure.
+CLAUDE_UNAVAILABLE_BACKOFF_SECONDS = 1800
+
 
 def setup_logging(verbose: bool = False) -> None:
     logging.basicConfig(
@@ -147,18 +152,40 @@ def main(argv: list | None = None) -> int:
     log.info("Watching %s for a new closed %s candle every %ds - Ctrl+C to stop.",
               cfg.symbol, cfg.primary_timeframe, cfg.poll_seconds)
     last_bar_time = None
+    sleep_seconds = cfg.poll_seconds
     while True:
         try:
             bar_time = market_intel.last_closed_time(gw, cfg.symbol, cfg.primary_timeframe)
             if bar_time != last_bar_time:
-                last_bar_time = bar_time
+                # last_bar_time only advances AFTER a successful cycle - if
+                # run_once() raises (Claude down, MT5 hiccup, ...), this same
+                # bar is retried on the next poll instead of being silently
+                # skipped forever.
                 run_once(client, cfg, spec, day)
+                last_bar_time = bar_time
+            sleep_seconds = cfg.poll_seconds
         except KeyboardInterrupt:
             log.info("Stopped.")
             return 0
+        except claude_advisor.ClaudeUnavailableError as exc:
+            if exc.retryable:
+                log.warning("Claude temporarily unavailable this cycle - %s", exc)
+                sleep_seconds = cfg.poll_seconds
+            else:
+                log.warning(
+                    "Claude unavailable and this looks like it needs manual action (credits/API "
+                    "key/permissions) rather than a retry - backing off to every %d minutes "
+                    "instead of polling every %ds until it's fixed. No new signals will be "
+                    "evaluated in the meantime, but ClaudeSMC_TradeManager.mq5 keeps managing any "
+                    "already-open positions on its own, and the wholly independent Telegram "
+                    "copier stack (../../python/, ../../MQL5/) is completely unaffected - run it "
+                    "standalone if you want trading to continue while this is down. Reason: %s",
+                    CLAUDE_UNAVAILABLE_BACKOFF_SECONDS // 60, cfg.poll_seconds, exc)
+                sleep_seconds = CLAUDE_UNAVAILABLE_BACKOFF_SECONDS
         except Exception:
             log.exception("Error during evaluation cycle - will retry next poll")
-        time.sleep(cfg.poll_seconds)
+            sleep_seconds = cfg.poll_seconds
+        time.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":

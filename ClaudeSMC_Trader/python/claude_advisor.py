@@ -17,6 +17,13 @@ get_verdict() takes the Anthropic client as a parameter (dependency
 injection, same philosophy as verifier.py in the Telegram copier stack) so
 it's testable with a fake client - see selftest.py - without hitting the
 network or requiring the `anthropic` package to be installed at all.
+
+Any failure of the Claude API call itself (no credits, bad key, rate limit,
+network down, ...) is re-raised as ClaudeUnavailableError with a specific,
+classified reason - see _wrap_api_error() - so main.py's poll loop can tell
+"Claude isn't available right now" apart from a genuine bug and just skip
+the cycle instead of crashing. See ClaudeUnavailableError's own docstring
+for how this relates to running the Telegram copier stack independently.
 """
 from __future__ import annotations
 
@@ -116,12 +123,85 @@ def build_client():
     return anthropic.Anthropic()
 
 
+class ClaudeUnavailableError(RuntimeError):
+    """The Claude API call itself failed - bad key, no credits, rate limited,
+    network down, an overloaded model, ... - as opposed to a bug in how this
+    solution built the request. main.py's poll loop catches this separately
+    from other errors: it logs why and skips the evaluation cycle rather than
+    crashing the process, and retries on the next poll.
+
+    This is the "run only Telegram if Claude is out of credits" behavior:
+    this solution's own trading only pauses (no new signals get evaluated
+    until Claude is reachable again), while the wholly independent Telegram
+    copier stack (../../python/, ../../MQL5/) never calls Claude at all and
+    keeps running unaffected, and ClaudeSMC_TradeManager.mq5 keeps managing
+    whatever positions are already open with no Claude dependency of its
+    own. See the top-level README's "Running with only one side available"
+    section for the reverse case (Telegram/Claude API down, MT5 side up).
+    """
+    def __init__(self, message: str, *, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _wrap_api_error(exc: Exception) -> ClaudeUnavailableError:
+    """Classifies whatever the Anthropic SDK (or the network layer under it)
+    raised into a ClaudeUnavailableError with a specific, actionable reason -
+    using the typed exception hierarchy and the `.type` field documented at
+    https://docs.anthropic.com/en/api/errors (402 -> billing_error is the
+    "out of credits" case; it has no dedicated exception subclass, so `.type`
+    is checked before falling back to the raw status code). If `anthropic`
+    itself isn't importable, `exc` can only have come from a test double (a
+    real client always requires the package - see build_client()), so this
+    falls back to a generic message rather than guessing at a classification.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return ClaudeUnavailableError(f"Claude API call failed: {exc}", retryable=False)
+
+    if isinstance(exc, anthropic.APIStatusError):
+        error_type = getattr(exc, "type", None)
+        status = exc.status_code
+        if error_type == "billing_error" or status == 402:
+            return ClaudeUnavailableError(
+                f"Claude API billing error (HTTP 402) - the account is almost certainly out "
+                f"of credits. Add credits at https://console.anthropic.com/ or stop this "
+                f"process (Ctrl+C, or stop the service) and keep running the Telegram copier "
+                f"stack on its own until it's resolved: {exc}", retryable=False)
+        if error_type == "authentication_error" or status == 401:
+            return ClaudeUnavailableError(
+                f"Claude API rejected the API key (HTTP 401) - check ANTHROPIC_API_KEY: {exc}",
+                retryable=False)
+        if error_type == "permission_error" or status == 403:
+            return ClaudeUnavailableError(
+                f"Claude API denied this request (HTTP 403): {exc}", retryable=False)
+        if error_type == "rate_limit_error" or status == 429:
+            return ClaudeUnavailableError(
+                f"Claude API rate-limited this request (HTTP 429) - will retry next poll: {exc}",
+                retryable=True)
+        if status is not None and status >= 500:
+            return ClaudeUnavailableError(
+                f"Claude API service issue (HTTP {status}) - will retry next poll: {exc}",
+                retryable=True)
+        return ClaudeUnavailableError(f"Claude API request failed (HTTP {status}): {exc}",
+                                      retryable=False)
+    if isinstance(exc, anthropic.APIConnectionError):
+        return ClaudeUnavailableError(
+            f"Could not reach the Claude API (network issue) - will retry next poll: {exc}",
+            retryable=True)
+    return ClaudeUnavailableError(f"Claude API call failed unexpectedly: {exc}", retryable=False)
+
+
 def get_verdict(client, cfg: AdvisorConfig, features: dict) -> ConfluenceVerdict:
-    response = client.messages.parse(
-        model=cfg.claude_model,
-        max_tokens=cfg.claude_max_tokens,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": json.dumps(features, indent=2, default=str)}],
-        output_format=ConfluenceVerdict,
-    )
+    try:
+        response = client.messages.parse(
+            model=cfg.claude_model,
+            max_tokens=cfg.claude_max_tokens,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": json.dumps(features, indent=2, default=str)}],
+            output_format=ConfluenceVerdict,
+        )
+    except Exception as exc:
+        raise _wrap_api_error(exc) from exc
     return response.parsed_output
