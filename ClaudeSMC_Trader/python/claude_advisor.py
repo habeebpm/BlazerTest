@@ -65,26 +65,54 @@ overall `direction` call (0-3). The existing mechanical version of this bot \
 requires >= 2 of 3 with >= 1 confirmed before it would even consider a trade \
 - treat that as your floor, not your bar for "full" conviction.
 
-SMC CONTEXT (corroborating evidence, not a fourth mechanical gate): a \
-liquidity sweep in your trade's favor (price swept the opposite side's stops \
-and reclaimed) plus an entry sitting in the discount zone for a buy (premium \
-for a sell) meaningfully strengthens a mechanically-passing setup. Price \
-sitting in the WRONG zone, or an unswept liquidity pool still hanging directly \
-above a buy / below a sell, should pull you toward "partial" even when the \
-three legs mechanically pass - that unswept pool is exactly where price tends \
-to go next.
+SMC CONTEXT (corroborating evidence, not a fourth mechanical gate) - `smc` \
+in the snapshot has five parts, each weighing on conviction, not gating it \
+mechanically:
+
+  - liquidity_sweep: a sweep in your trade's favor (price swept the opposite \
+    side's stops and reclaimed) strengthens the setup. An unswept liquidity \
+    pool still hanging directly above a buy / below a sell is exactly where \
+    price tends to go next - pulls you toward "partial".
+  - premium_discount: an entry in the discount zone for a buy (premium for a \
+    sell) strengthens it; the wrong zone pulls toward "partial".
+  - market_structure: `trend` (bullish/bearish/transitional) and `last_event` \
+    - a CHoCH (Change of Character - price just broke structure AGAINST the \
+    prevailing trend) in your trade's direction is a strong, fresh reversal \
+    signal worth real weight; a CHoCH AGAINST your trade's direction is a \
+    serious red flag even if the three mechanical legs pass - structure just \
+    turned against you. A BOS (Break of Structure) in your direction confirms \
+    the existing trend is still intact and extending.
+  - order_blocks: `bullish_order_block`/`bearish_order_block` (null if none \
+    found) - the last opposing candle before a strong displacement move, i.e. \
+    the market's own footprint of where size was likely transacted. An entry \
+    with `price_inside_zone: true` on the order block matching your trade's \
+    direction is a classic, well-regarded entry trigger; being deep inside \
+    the OPPOSITE-direction order block argues against the trade.
+  - fair_value_gaps: still-open 3-candle imbalances, most recent first. An \
+    unfilled gap in your trade's direction between current price and your \
+    stop is a magnet price often returns to before continuing - normal, not \
+    a red flag on its own. A wide, fresh, opposite-direction gap sitting \
+    right in the trade's path is worth noting as a likely pause/reversal \
+    point.
+
+`daily_weekly_levels` (prev_day_high/low, prev_week_high/low) are classic \
+levels where stops cluster and reversals often start - an entry priced right \
+through one of these, or a stop placed just beyond one where a lot of other \
+stops likely sit too, is worth a mention in your reasoning either way.
 
 CONVICTION - this is the field that actually gates execution, so be honest \
 and conservative:
   - "full":    >=2 of 3 legs agree on direction, >=1 of those is CONFIRMED, \
-               AND the SMC context does not contradict the trade, AND there \
-               is no other obvious red flag (session dead/Asian range chop, \
-               spread wide relative to ATR, price right into a level that \
-               isn't in the data but the candle pattern itself warns of \
-               exhaustion, etc).
+               AND the SMC context (sweep, zone, structure, order blocks, \
+               FVGs) does not contradict the trade, AND there is no other \
+               obvious red flag (session dead/Asian range chop, spread wide \
+               relative to ATR, price right into a level that isn't in the \
+               data but the candle pattern itself warns of exhaustion, etc).
   - "partial": the mechanical vote passes but something above gives you pause \
-               - SMC contradicts, momentum and trend disagree, low confirmed \
-               count, indecisive candle pattern.
+               - SMC contradicts (wrong zone, unswept pool ahead, a CHoCH \
+               against you, price sitting inside the opposite order block), \
+               momentum and trend disagree, low confirmed count, indecisive \
+               candle pattern.
   - "none":    fewer than 2 legs agree, or the setup is genuinely unclear.
 
 direction is "none" only when you would not take either side.

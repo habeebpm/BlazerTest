@@ -20,7 +20,11 @@ What's fed to Claude, all computed here:
   - Strength:   ADX(14), +DI/-DI
   - Volatility: ATR(14), Bollinger Bands(20,2) %B and bandwidth
   - SMC:        liquidity sweep (stop-hunt-then-reclaim) detection,
-                premium/discount zone within the recent swing range
+                premium/discount zone within the recent swing range,
+                market structure (HH/HL/LH/LL, trend, latest BOS/CHoCH),
+                the most recent unmitigated bullish/bearish order block,
+                still-open fair value gaps (imbalances)
+  - Levels:     previous day/week high/low (PDH/PDL, PWH/PWL)
   - Price action: last closed candle's body/wick ratios, engulfing/pin-bar
   - Session:    active session(s), day of week, hour (UTC)
   - Raw data:   last 20 closed candles' OHLC, current bid/ask/spread
@@ -154,6 +158,172 @@ def premium_discount_zone(closed: pd.DataFrame, lookback: int) -> dict:
     return {"zone": zone, "range_low": range_low, "range_high": range_high, "position_pct": round(pct, 3)}
 
 
+def find_swing_points(closed: pd.DataFrame, order: int = 3) -> tuple:
+    """Fractal swing highs/lows: bar i is a swing high if its high is the
+    strict max of the `order` bars on each side of it (a swing low mirrors
+    this for lows). Needs `order` bars confirmed on both sides, so the most
+    recent `order` closed bars can never yet produce a new confirmed swing -
+    that's inherent to the definition, not a bug: a swing point isn't real
+    until price has moved away from it.
+
+    Returns (swing_highs, swing_lows), each a list of (bar_index, price)
+    tuples in chronological order.
+    """
+    highs = closed["high"].to_numpy()
+    lows = closed["low"].to_numpy()
+    n = len(closed)
+    swing_highs, swing_lows = [], []
+    for i in range(order, n - order):
+        window_h = highs[i - order:i + order + 1]
+        if highs[i] == window_h.max() and (window_h == highs[i]).sum() == 1:
+            swing_highs.append((i, float(highs[i])))
+        window_l = lows[i - order:i + order + 1]
+        if lows[i] == window_l.min() and (window_l == lows[i]).sum() == 1:
+            swing_lows.append((i, float(lows[i])))
+    return swing_highs, swing_lows
+
+
+def market_structure(closed: pd.DataFrame, order: int = 3) -> dict:
+    """The ICT-style market-structure read: classifies each confirmed swing
+    high/low as higher/lower than the one before it (HH/LH, HL/LL), derives
+    the prevailing trend from the two most recent, and reports the most
+    recent structural break - BOS (Break of Structure: the latest closed
+    bar's close breaks past the most recent confirmed swing level in the
+    direction the trend was ALREADY going - continuation) or CHoCH (Change
+    of Character: the same kind of break, but AGAINST the prevailing trend -
+    the first sign of a possible reversal). This is the single most-watched
+    SMC/ICT signal after the sweep already computed above: a CHoCH against
+    an otherwise-bullish setup is a real reason for caution; a fresh BOS in
+    the trade's own direction is real corroborating evidence.
+    """
+    swing_highs, swing_lows = find_swing_points(closed, order)
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return {"trend": "undefined", "last_event": None, "last_swing_high": None,
+                "last_swing_low": None}
+
+    high_label = "HH" if swing_highs[-1][1] > swing_highs[-2][1] else "LH"
+    low_label = "HL" if swing_lows[-1][1] > swing_lows[-2][1] else "LL"
+    if high_label == "HH" and low_label == "HL":
+        trend = "bullish"
+    elif high_label == "LH" and low_label == "LL":
+        trend = "bearish"
+    else:
+        trend = "transitional"
+
+    last_swing_high_price = swing_highs[-1][1]
+    last_swing_low_price = swing_lows[-1][1]
+    last_close = float(closed["close"].iloc[-1])
+
+    last_event = None
+    if last_close > last_swing_high_price:
+        last_event = {"type": "BOS" if trend == "bullish" else "CHoCH", "direction": "bullish",
+                      "broke_level": last_swing_high_price}
+    elif last_close < last_swing_low_price:
+        last_event = {"type": "BOS" if trend == "bearish" else "CHoCH", "direction": "bearish",
+                      "broke_level": last_swing_low_price}
+
+    return {
+        "trend": trend,
+        "last_swing_high": {"price": last_swing_high_price, "label": high_label},
+        "last_swing_low": {"price": last_swing_low_price, "label": low_label},
+        "last_event": last_event,
+    }
+
+
+def detect_order_blocks(closed: pd.DataFrame, lookback: int, displacement_atr_mult: float = 1.5) -> dict:
+    """The most recent bullish and bearish order block within the last
+    `lookback` closed bars: the standard ICT definition is the last
+    opposite-colored candle immediately before a "displacement" candle (a
+    strong, wide-range expansion move) - the last footprint of positioning
+    before price was driven away from it. A displacement candle here is one
+    whose range is at least `displacement_atr_mult` x ATR14 AND whose body
+    is at least 60% of its own range (a decisive close, not just a long-
+    wicked bar). Reports whether current price is trading back inside each
+    zone (a classic "mitigation" entry trigger).
+    """
+    padded = closed.tail(lookback + 15).reset_index(drop=True)  # extra history so ATR has a real warm-up
+    atr14 = atr(padded)
+    n = len(padded)
+    start = max(1, n - lookback)
+    bullish_ob, bearish_ob = None, None
+
+    for i in range(start, n):
+        bar = padded.iloc[i]
+        rng = bar["high"] - bar["low"]
+        body = abs(bar["close"] - bar["open"])
+        cur_atr = atr14.iloc[i]
+        if cur_atr <= 0 or rng < displacement_atr_mult * cur_atr or body < 0.6 * rng:
+            continue
+        prev = padded.iloc[i - 1]
+        displacement_is_bullish = bar["close"] > bar["open"]
+        if displacement_is_bullish and prev["close"] < prev["open"]:
+            bullish_ob = {"high": float(prev["high"]), "low": float(prev["low"]), "bars_ago": n - 1 - i}
+        elif not displacement_is_bullish and prev["close"] > prev["open"]:
+            bearish_ob = {"high": float(prev["high"]), "low": float(prev["low"]), "bars_ago": n - 1 - i}
+
+    last_close = float(closed["close"].iloc[-1])
+    for ob in (bullish_ob, bearish_ob):
+        if ob is not None:
+            ob["price_inside_zone"] = bool(ob["low"] <= last_close <= ob["high"])
+    return {"bullish_order_block": bullish_ob, "bearish_order_block": bearish_ob}
+
+
+def detect_fair_value_gaps(closed: pd.DataFrame, lookback: int, max_reported: int = 5) -> list:
+    """Still-open 3-candle imbalances (ICT "fair value gaps") within the last
+    `lookback` bars: candle[i-2].high < candle[i].low leaves an unfilled
+    bullish gap between them (price moved so fast candle[i-1] never traded
+    that range); candle[i-2].low > candle[i].high leaves an unfilled bearish
+    gap. A gap counts as "open" only if no later closed bar has traded back
+    through it - a filled gap is no longer meaningful and is dropped.
+    Returned most-recent-first, capped at `max_reported` to keep the
+    snapshot compact.
+    """
+    window = closed.tail(lookback + 2).reset_index(drop=True)
+    n = len(window)
+    gaps = []
+    for i in range(2, n):
+        c0, c2 = window.iloc[i - 2], window.iloc[i]
+        if c0["high"] < c2["low"]:
+            gap = {"direction": "bullish", "top": float(c2["low"]), "bottom": float(c0["high"]),
+                   "bars_ago": n - 1 - i}
+        elif c0["low"] > c2["high"]:
+            gap = {"direction": "bearish", "top": float(c0["low"]), "bottom": float(c2["high"]),
+                   "bars_ago": n - 1 - i}
+        else:
+            continue
+
+        later = window.iloc[i + 1:]
+        if gap["direction"] == "bullish":
+            filled = bool((later["low"] <= gap["bottom"]).any())
+        else:
+            filled = bool((later["high"] >= gap["top"]).any())
+        if not filled:
+            gaps.append(gap)
+
+    gaps.sort(key=lambda g: g["bars_ago"])
+    return gaps[:max_reported]
+
+
+def daily_weekly_levels(gateway, symbol: str) -> dict:
+    """Previous completed day's and week's high/low - cheap, extremely
+    commonly watched reference levels (PDH/PDL, PWH/PWL) for both entries
+    and where a stop is likely to get run. Fetched as native D1/W1 bars
+    rather than resampled from an intraday timeframe, since a manual
+    resample doesn't reliably line up with the broker's own daily/weekly
+    boundaries (weekend gaps, DST, differing session-close conventions).
+    """
+    daily_closed = gateway.get_bars(symbol, "D1", 3).iloc[:-1]
+    weekly_closed = gateway.get_bars(symbol, "W1", 3).iloc[:-1]
+    prev_day = daily_closed.iloc[-1]
+    prev_week = weekly_closed.iloc[-1]
+    return {
+        "prev_day_high": round(float(prev_day["high"]), 2),
+        "prev_day_low": round(float(prev_day["low"]), 2),
+        "prev_week_high": round(float(prev_week["high"]), 2),
+        "prev_week_low": round(float(prev_week["low"]), 2),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # price action
 # --------------------------------------------------------------------------- #
@@ -249,6 +419,11 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
     sweep = detect_liquidity_sweep(primary_closed, cfg.sweep_recent_bars, cfg.sweep_ref_bars,
                                     cfg.sweep_min_pierce_pips * spec.point * 10)
     zone = premium_discount_zone(primary_closed, cfg.sweep_recent_bars + cfg.sweep_ref_bars)
+    structure = market_structure(primary_closed, cfg.structure_swing_order)
+    order_blocks = detect_order_blocks(primary_closed, cfg.order_block_lookback_bars,
+                                        cfg.order_block_displacement_atr_mult)
+    fvgs = detect_fair_value_gaps(primary_closed, cfg.fvg_lookback_bars)
+    levels = daily_weekly_levels(gateway, cfg.symbol)
 
     recent_candles = primary_closed.tail(20)[["time", "open", "high", "low", "close", "volume"]].copy()
     recent_candles["time"] = recent_candles["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -270,7 +445,14 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
             "close": round(float(trend_closed["close"].iloc[-1]), 4),
             "ema200": round(float(ema(trend_closed["close"], 200).iloc[-1]), 4),
         },
-        "smc": {"liquidity_sweep": sweep, "premium_discount": zone},
+        "smc": {
+            "liquidity_sweep": sweep,
+            "premium_discount": zone,
+            "market_structure": structure,
+            "order_blocks": order_blocks,
+            "fair_value_gaps": fvgs,
+        },
+        "daily_weekly_levels": levels,
         "last_closed_candle": candle_features(primary_closed),
         "recent_candles": recent_candles.to_dict(orient="records"),
     }

@@ -73,9 +73,23 @@ containing:
   previous, so Claude can see whether it's expanding), Stochastic(14,3,3)
 - **Strength**: ADX14, +DI/-DI
 - **Volatility**: ATR14, Bollinger Bands(20,2) %B and bandwidth
-- **SMC structure**: liquidity-sweep detection (a stop-hunt-then-reclaim
-  beyond a prior swing extreme - the same definition the Telegram-copier
-  EA's SMC filter uses) and premium/discount zoning within the recent range
+- **SMC structure**:
+  - liquidity-sweep detection (a stop-hunt-then-reclaim beyond a prior swing
+    extreme - the same definition the Telegram-copier EA's SMC filter uses)
+  - premium/discount zoning within the recent range
+  - **market structure**: fractal swing highs/lows, each labeled HH/LH or
+    HL/LL against the one before it, the trend that implies, and the most
+    recent structural break - **BOS** (Break of Structure: a fresh close past
+    the last confirmed swing level, continuing the existing trend) or
+    **CHoCH** (Change of Character: the same kind of break, but against the
+    prevailing trend - the first sign of a possible reversal)
+  - **order blocks**: the last opposite-colored candle immediately before a
+    displacement move (range ≥1.5x ATR14, ≥60% body) - the standard ICT
+    definition - plus whether price is currently trading back inside that
+    zone (a classic entry trigger)
+  - **fair value gaps**: still-open 3-candle imbalances (a gap counts as open
+    only until a later bar trades back through it)
+- **Reference levels**: previous day's and week's high/low (PDH/PDL, PWH/PWL)
 - **Price action**: the last closed candle's body/wick ratios, bullish/
   bearish engulfing, bullish/bearish pin bar
 - **Session**: active session(s) (Asian/London/New York), day of week, hour
@@ -105,9 +119,16 @@ than it is:
 - **No cross-asset correlation.** DXY, real yields, and other gold drivers
   aren't fed in. This would be a natural extension (pull a DXY series
   alongside XAUUSD's and hand Claude both).
-- **SMC detection is a simplified proxy** - rolling-window swing extremes and
-  a pierce-then-reclaim rule, not full fractal/order-block/fair-value-gap
-  analysis.
+- **SMC detection is a simplified proxy, not a full ICT toolkit.** Structure,
+  order blocks and FVGs are real, mechanically-defined detections now (see
+  above) - but still missing: **kill zones** (precise ICT session-timing
+  windows and the "Judas swing" concept - session tagging is coarse by
+  comparison), **Optimal Trade Entry** (Fibonacci 62-79% retracement zones),
+  **equal-highs/lows liquidity clustering** (the sweep detector uses raw
+  rolling extremes, not clustered equal levels), **Power of Three**
+  (Accumulation/Manipulation/Distribution), and true **multi-timeframe
+  top-down bias** (only two timeframes feed in - primary + one higher-TF
+  EMA200 bias - not a full weekly→daily→4h→15m nested read).
 - **A parsed-cleanly, full-conviction verdict is not a guarantee of a good
   trade.** It means the numbers weren't obviously broken and Claude's own
   judgment, given everything above, was confident. Nothing here has been

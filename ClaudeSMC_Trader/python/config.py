@@ -45,6 +45,12 @@ class AdvisorConfig:
     sweep_ref_bars: int = 30
     sweep_min_pierce_pips: float = 3.0
 
+    # --- SMC structure (market structure / order blocks / fair value gaps) ---
+    structure_swing_order: int = 3               # bars confirmed each side of a swing point (fractal)
+    order_block_lookback_bars: int = 50
+    order_block_displacement_atr_mult: float = 1.5
+    fvg_lookback_bars: int = 50
+
     # --- Claude ---
     claude_model: str = "claude-opus-5"
     claude_max_tokens: int = 2000

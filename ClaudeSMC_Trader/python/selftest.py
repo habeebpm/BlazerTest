@@ -8,6 +8,8 @@ Covers:
   * indicator math (EMA/RSI/MACD/ATR/Bollinger/ADX-DI/Stochastic) sanity
   * SMC liquidity-sweep detection and premium/discount zoning
   * candle pattern detection
+  * market structure (swing points, HH/HL/LH/LL, BOS/CHoCH), order blocks,
+    fair value gaps (open and filled), and previous day/week high-low
   * the dollar -> price-distance conversion executor.execute() relies on
   * executor.gate()/execute() gating logic against a fake MT5 gateway
   * claude_advisor.get_verdict() wiring against a fake Anthropic client
@@ -148,11 +150,109 @@ def test_smc_and_price_action() -> bool:
     return ok
 
 
+def triangle_wave(pivots: list, bars_per_leg: int) -> pd.DataFrame:
+    """Builds a clean zigzag DataFrame from pivot prices alternating
+    low/high/low/high/... by linearly interpolating `bars_per_leg` bars
+    between each pair - used to construct deterministic swing points for
+    testing market_structure()/find_swing_points() without hand-typing every
+    OHLC value."""
+    path = []
+    for i in range(len(pivots) - 1):
+        seg = np.linspace(pivots[i], pivots[i + 1], bars_per_leg + 1)
+        path.extend(seg[:-1].tolist())
+    path.append(pivots[-1])
+    path = np.array(path)
+    return pd.DataFrame({"open": path, "close": path, "high": path + 1.0, "low": path - 1.0})
+
+
+def test_market_structure_ob_fvg_levels() -> bool:
+    print("\n=== 3. market structure (BOS/CHoCH), order blocks, FVGs, daily/weekly levels ===")
+    ok = True
+
+    # Ascending staircase of swing points (padding low/high at each end so
+    # the interior pivots get confirmed by find_swing_points' order=2).
+    pivots = [95, 140, 110, 150, 120, 160, 130]
+    df = triangle_wave(pivots, bars_per_leg=5)
+    structure = market_intel.market_structure(df, order=2)
+    ok &= check("an ascending HH/HL staircase reads as a bullish trend",
+                structure["trend"] == "bullish", structure)
+    ok &= check("the last swing high/low are labeled HH/HL",
+                structure["last_swing_high"]["label"] == "HH"
+                and structure["last_swing_low"]["label"] == "HL", structure)
+    ok &= check("no structural break yet - last_event is None",
+                structure["last_event"] is None, structure)
+
+    # Extend with a leg that breaks back below the last confirmed swing low
+    # while the trend was bullish -> a bearish Change of Character.
+    break_leg = pd.DataFrame({
+        "open": [125.0, 118.0, 105.0], "close": [125.0, 118.0, 105.0],
+        "high": [126.0, 119.0, 106.0], "low": [124.0, 117.0, 104.0],
+    })
+    df_choch = pd.concat([df, break_leg], ignore_index=True)
+    choch = market_intel.market_structure(df_choch, order=2)
+    ok &= check("closing below the last confirmed swing low (bullish trend) reads as a bearish CHoCH",
+                choch["last_event"] == {"type": "CHoCH", "direction": "bearish",
+                                        "broke_level": structure["last_swing_low"]["price"]}, choch)
+
+    # Order block: a quiet range, one modest bearish candle, then an
+    # unmistakably oversized bullish displacement candle.
+    quiet = pd.DataFrame({"open": [2340.0] * 20, "close": [2340.5] * 20,
+                          "high": [2341.0] * 20, "low": [2339.5] * 20})
+    bearish_candle = pd.DataFrame({"open": [2340.5], "close": [2339.6], "high": [2341.0], "low": [2339.4]})
+    displacement = pd.DataFrame({"open": [2339.6], "close": [2355.0], "high": [2355.5], "low": [2339.5]})
+    after = pd.DataFrame({"open": [2355.0] * 3, "close": [2354.0, 2356.0, 2358.0],
+                          "high": [2356.0, 2357.0, 2359.0], "low": [2353.0, 2355.0, 2357.0]})
+    ob_df = pd.concat([quiet, bearish_candle, displacement, after], ignore_index=True)
+    obs = market_intel.detect_order_blocks(ob_df, lookback=10, displacement_atr_mult=1.5)
+    ok &= check("the last opposite candle before a real displacement move is the bullish order block",
+                obs["bullish_order_block"] is not None
+                and obs["bullish_order_block"]["high"] == 2341.0
+                and obs["bullish_order_block"]["low"] == 2339.4, obs)
+    ok &= check("no bearish displacement occurred, so no bearish order block is reported",
+                obs["bearish_order_block"] is None, obs)
+
+    # Fair value gap: candle[i-2].high < candle[i].low leaves an unfilled gap.
+    fvg_df = pd.DataFrame({
+        "open":  [2340.0, 2341.0, 2352.0, 2353.0, 2354.0],
+        "close": [2341.0, 2340.5, 2353.0, 2354.0, 2355.0],
+        "high":  [2342.0, 2341.5, 2354.0, 2355.0, 2356.0],
+        "low":   [2339.0, 2340.0, 2352.5, 2353.0, 2354.0],
+    })
+    gaps = market_intel.detect_fair_value_gaps(fvg_df, lookback=10)
+    ok &= check("an unfilled 3-candle imbalance is detected as a bullish FVG",
+                any(g["direction"] == "bullish" and g["top"] == 2352.5 and g["bottom"] == 2342.0
+                    for g in gaps), gaps)
+
+    filled_df = pd.concat([fvg_df, pd.DataFrame({
+        "open": [2354.0], "close": [2340.0], "high": [2354.0], "low": [2339.0],
+    })], ignore_index=True)
+    gaps_after_fill = market_intel.detect_fair_value_gaps(filled_df, lookback=10)
+    ok &= check("a gap that price later trades back through is no longer reported as open",
+                gaps_after_fill == [], gaps_after_fill)
+
+    # Daily/weekly levels: the LAST bar of each is the still-forming one and
+    # must be dropped, leaving the previous complete day/week.
+    class FakeDWGateway:
+        def get_bars(self, symbol, timeframe_name, count):
+            if timeframe_name == "D1":
+                return pd.DataFrame({"high": [2400.0, 2410.0, 2420.0], "low": [2390.0, 2395.0, 2405.0]})
+            if timeframe_name == "W1":
+                return pd.DataFrame({"high": [2450.0, 2460.0], "low": [2380.0, 2400.0]})
+            raise ValueError(timeframe_name)
+
+    levels = market_intel.daily_weekly_levels(FakeDWGateway(), "XAUUSD")
+    ok &= check("daily/weekly levels use the last COMPLETE day/week, not the still-forming one",
+                levels == {"prev_day_high": 2410.0, "prev_day_low": 2395.0,
+                          "prev_week_high": 2450.0, "prev_week_low": 2380.0}, levels)
+
+    return ok
+
+
 # --------------------------------------------------------------------------- #
 # dollar -> price distance
 # --------------------------------------------------------------------------- #
 def test_price_distance() -> bool:
-    print("\n=== 3. dollar -> price distance conversion ===")
+    print("\n=== 4. dollar -> price distance conversion ===")
     ok = True
     # Same SymbolSpec shape used in the Telegram copier's tests
     # (tick_value=1.0, tick_size=0.01 -> $1 of P&L per 0.01 price move per 1.0 lot).
@@ -215,7 +315,7 @@ def make_verdict(direction="buy", confluence_count=3, conviction="full") -> Conf
 
 
 def test_executor() -> bool:
-    print("\n=== 4. executor gating ===")
+    print("\n=== 5. executor gating ===")
     ok = True
     cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
     spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0,
@@ -290,7 +390,7 @@ class FakeAnthropicClient:
 
 
 def test_claude_advisor_wiring() -> bool:
-    print("\n=== 5. claude_advisor wiring (fake client, no network) ===")
+    print("\n=== 6. claude_advisor wiring (fake client, no network) ===")
     ok = True
     canned = make_verdict("sell", 3, "full")
     fake_client = FakeAnthropicClient(canned)
@@ -329,7 +429,7 @@ class FakeClientRaising:
 
 
 def test_claude_error_classification() -> bool:
-    print("\n=== 6. Claude API error classification (out-of-credits / rate-limit / ...) ===")
+    print("\n=== 7. Claude API error classification (out-of-credits / rate-limit / ...) ===")
     ok = True
     try:
         import anthropic
@@ -409,7 +509,7 @@ class FakeIntelGateway:
 
 
 def test_full_snapshot_pipeline() -> bool:
-    print("\n=== 7. full feature-snapshot pipeline (fake bars, real indicator code) ===")
+    print("\n=== 8. full feature-snapshot pipeline (fake bars, real indicator code) ===")
     ok = True
     cfg = AdvisorConfig(bars_per_timeframe=320)
     snapshot = market_intel.build_feature_snapshot(FakeIntelGateway(), cfg)
@@ -442,6 +542,7 @@ def main() -> int:
     results = [
         test_indicators(),
         test_smc_and_price_action(),
+        test_market_structure_ob_fvg_levels(),
         test_price_distance(),
         test_executor(),
         test_claude_advisor_wiring(),
