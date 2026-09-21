@@ -665,7 +665,12 @@ def main(argv: list | None = None) -> int:
         run_backtest_compare(gateways, cfgs, client, args.mechanical)
         for style in styles:
             summary = summarize(gateways[style].closed_trades)
-            out_path = args.out.replace(".csv", f"_{style}.csv")
+            # os.path.splitext rather than str.replace(".csv", ...) - the
+            # latter is a no-op (and silently collides both styles onto the
+            # same file) whenever --out doesn't contain the literal
+            # substring ".csv", e.g. an extensionless path.
+            base, ext = os.path.splitext(args.out)
+            out_path = f"{base}_{style}{ext or '.csv'}"
             write_trades_csv(gateways[style].closed_trades, out_path)
             log.info("[%s] %s", style, summary)
             log.info("[%s] Trade log written to %s", style, out_path)

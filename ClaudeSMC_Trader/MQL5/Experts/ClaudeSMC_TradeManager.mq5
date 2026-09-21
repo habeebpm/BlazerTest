@@ -35,6 +35,11 @@
 //| this comparison) demonstrates it concretely. Removing the broker   |
 //| TP removes that race: the stop-loss is the only thing that can      |
 //| close the position, so this EA's own logic is what actually runs.  |
+//| Because of that, ManagePosition() also unconditionally clears any   |
+//| broker TP it finds on a managed position, on every tick, even one   |
+//| where the SL itself isn't changing yet - not just a leftover from   |
+//| an older build of this EA, but any TP a position could carry, since |
+//| under this design none should ever have one.                        |
 //|                                                                    |
 //| A Python polling loop checking every N seconds could still miss a  |
 //| fast spike past the arm level and never lock/trail it in time; a   |
@@ -159,6 +164,7 @@ void ManagePosition(ulong ticket)
    long type = PositionGetInteger(POSITION_TYPE);
    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double currentSl = PositionGetDouble(POSITION_SL);
+   double currentTp = PositionGetDouble(POSITION_TP);
 
    bool changeSl = false;
    double newSl = currentSl;
@@ -185,14 +191,6 @@ void ManagePosition(ulong ticket)
             changeSl = true;
          }
       }
-      if(changeSl)
-      {
-         if(InpDryRun)
-            PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify BUY ticket %I64u sl %.2f -> %.2f",
-                        ticket, currentSl, newSl);
-         else
-            trade.PositionModify(ticket, newSl, 0.0);
-      }
    }
    else if(type == POSITION_TYPE_SELL)
    {
@@ -216,14 +214,27 @@ void ManagePosition(ulong ticket)
             changeSl = true;
          }
       }
-      if(changeSl)
-      {
-         if(InpDryRun)
-            PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify SELL ticket %I64u sl %.2f -> %.2f",
-                        ticket, currentSl, newSl);
-         else
-            trade.PositionModify(ticket, newSl, 0.0);
-      }
+   }
+   else
+   {
+      return;
+   }
+
+   // Under this EA's design no managed position should ever carry a broker
+   // take-profit (see the file header) - but a position opened before this
+   // design shipped, or modified by hand/another tool, could still have one.
+   // Clear it unconditionally, even on a tick where the SL itself isn't
+   // changing yet, so a leftover TP can never sit there racing the lock-then-
+   // trail logic above the way the old fixed_tp design used to.
+   if(changeSl || currentTp != 0.0)
+   {
+      double slToSend = changeSl ? newSl : currentSl;
+      if(InpDryRun)
+         PrintFormat("ClaudeSMC_TradeManager: [DRY-RUN] would modify %s ticket %I64u sl %.2f -> %.2f%s",
+                     type == POSITION_TYPE_BUY ? "BUY" : "SELL", ticket, currentSl, slToSend,
+                     currentTp != 0.0 ? " (clearing stale broker TP)" : "");
+      else
+         trade.PositionModify(ticket, slToSend, 0.0);
    }
 }
 
