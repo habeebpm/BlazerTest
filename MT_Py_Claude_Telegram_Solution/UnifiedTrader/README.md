@@ -109,6 +109,14 @@ long outage and only delivered once the EA reconnects is dropped as stale
 rather than force-closing positions you may no longer want touched - just
 resend it if it's still what you want.
 
+**Shown as tappable buttons, not just typed text.** The EA sends a
+Telegram reply-keyboard (the row of buttons under the message box) once
+at startup and again with every confirmation reply, so you don't have to
+type the command by hand. Tapping a button sends its label as an ordinary
+message - identical to typing it - so nothing about how commands are
+matched changes; typing the exact text still works too, from any
+Telegram client (including ones where reply keyboards render oddly).
+
 | Command | What it does |
 |---|---|
 | `PauseHab` | Closes every open position on this chart's symbol, under both magics, cancels Telegram pending orders there, and blocks new Telegram entries until `ResumeHab`. |
@@ -213,3 +221,18 @@ rather than silently resetting to "resumed".
   principle, testable the way `ClaudeSMC_Trader/python/backtest.py`
   already is (it simulates the identical lock-then-trail logic), just not
   through this MQL5 file directly.
+- **Telegram network calls can briefly delay live position management.**
+  MQL5's `WebRequest` is synchronous, and `OnTick()` (where
+  `ManageAllPositions()` trails/locks every open position) is serialized
+  behind `OnTimer()` (where all Telegram polling and sending happens) on
+  this EA's own event thread - a slow `getUpdates` poll or a remote-control
+  confirmation reply can delay that tick's position management by however
+  long the request takes, up to its own timeout. This isn't new to remote
+  control (`getUpdates` has always worked this way whenever Telegram
+  signals are enabled) - each confirmation reply just adds one more such
+  call, capped at 3 seconds *per reply* (deliberately lower than a
+  user-raised `InpHttpTimeoutMs`, which governs polling reliability
+  instead) - so if more than one control command lands in the same
+  `InpPollSeconds` window, each gets its own confirmation send and its own
+  up-to-3s wait, one after another, not a single shared 3s bound for the
+  whole tick.

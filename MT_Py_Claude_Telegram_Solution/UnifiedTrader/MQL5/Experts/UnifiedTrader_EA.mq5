@@ -109,7 +109,16 @@
 //| 1:1 chat, never the signal channel/group) - a completely separate   |
 //| command path from trading-signal parsing, matched by EXACT text     |
 //| (trimmed, case-insensitive), not substring, since these close real  |
-//| positions:                                                          |
+//| positions. Shown as a Telegram reply-keyboard (tappable buttons     |
+//| under the message box) rather than requiring you to type them:      |
+//| TelegramSendMessage() attaches the keyboard once, on the first poll |
+//| tick after this EA starts (from TelegramPoll(), not OnInit() -      |
+//| keeps EA attach/reattach fast and network-independent), and again   |
+//| on every command's confirmation reply. A button tap is delivered by |
+//| Telegram as an ordinary text message equal to the button's label,   |
+//| so it reaches ProcessControlCommand() exactly like typing the same  |
+//| text would; nothing about the matching logic below                  |
+//| knows or cares whether a command was tapped or typed.               |
 //|   PauseHab        - closes every open position on THIS CHART'S       |
 //|                      SYMBOL under both magics, and cancels Telegram   |
 //|                      pending orders there, then blocks new Telegram   |
@@ -277,6 +286,8 @@ datetime g_currentDay    = 0;
 int      g_tradesToday   = 0;
 int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - see OnInit/OnDeinit
 bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab - see file header
+bool     g_sentControlStartupMsg = false;    // one-shot: the buttons/keyboard intro, sent from TelegramPoll()
+long     g_lastControlChatSentTo = 0;        // which chat it was last actually sent to, this session
 
 // Forward declarations
 double   BreakevenAtrDistance();
@@ -303,6 +314,7 @@ int      CloseAllMine();
 int      CancelAllPendingMine();
 int      CloseAllClaudeMine();
 void     SetTelegramPaused(bool paused);
+void     SendControlReply(const string &summary);
 void     ProcessControlCommand(const string &rawText);
 bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                            string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode);
@@ -312,6 +324,8 @@ void     ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 bool     TelegramGetUpdates(string &jsonOut);
 void     ExtractUpdates(const string &json, TgUpdate &updates[]);
 void     TelegramPoll();
+string   JsonEscape(const string &s);
+bool     TelegramSendMessage(long chatId, const string &text);
 void     StripUnicodeEscapes(string &s);
 string   DirToStr(int dir);
 void     LogSignalRow(long chatId, const string &action, const string &direction, bool symbolOk,
@@ -457,6 +471,19 @@ int OnInit()
 
    g_currentDay  = DateToDay(TimeCurrent());
    g_tradesToday = 0;
+
+   // Only reset the one-shot startup-message flag when InpControlChatId
+   // actually differs from whichever chat it was last sent to THIS
+   // session - not on every OnInit(), which would resend it (and re-push
+   // the keyboard) to the operator's phone on every unrelated input tweak
+   // or recompile during live trading. Plain globals do NOT reset on their
+   // own across an input-parameter-triggered reinit (no detach/reattach),
+   // so without this check at all, switching InpControlChatId to a
+   // different chat would instead leave that new chat never seeing the
+   // startup message until it happened to receive some other confirmation
+   // reply first - this reset only when it needs to.
+   if(InpControlChatId != g_lastControlChatSentTo)
+      g_sentControlStartupMsg = false;
 
    // The timer also has to run when ONLY remote control is wanted (Telegram
    // signal EXECUTION itself off) - ProcessSignal()'s own InpEnableTelegramSignals
@@ -959,6 +986,20 @@ void SetTelegramPaused(bool paused)
 }
 
 //+------------------------------------------------------------------+
+//| Common tail for every ProcessControlCommand() branch below - logs |
+//| `summary` to the terminal (prefixed) and sends it, unprefixed, to |
+//| InpControlChatId as the command's confirmation reply. A single     |
+//| shared place for this pairing so the two can never drift apart     |
+//| between branches (e.g. one gaining a retry or rate-limit guard      |
+//| the others don't).                                                  |
+//+------------------------------------------------------------------+
+void SendControlReply(const string &summary)
+{
+   Print("UnifiedTrader_EA: " + summary);
+   TelegramSendMessage(InpControlChatId, summary);
+}
+
+//+------------------------------------------------------------------+
 //| Remote control commands from InpControlChatId - see file header's |
 //| REMOTE CONTROL section for the full semantics of each. Matched by  |
 //| EXACT text (trimmed, case-insensitive), not substring - unlike     |
@@ -980,19 +1021,20 @@ void ProcessControlCommand(const string &rawText)
       int telCancelled = CancelAllPendingMine();
       int claudeClosed = CloseAllClaudeMine();
       SetTelegramPaused(true);
-      PrintFormat("UnifiedTrader_EA: PauseHab %s %d Telegram position(s), %d pending order(s), %d "
-                  "Claude position(s). New Telegram entries are now BLOCKED until ResumeHab. "
-                  "Claude-side NEW entries are python/main.py's own decision - this EA cannot "
-                  "block those; stop main.py separately if you need to.",
+      SendControlReply(StringFormat(
+                  "PauseHab %s %d Telegram position(s), %d pending order(s), %d Claude "
+                  "position(s). New Telegram entries are now BLOCKED until ResumeHab. Claude-side "
+                  "NEW entries are python/main.py's own decision - this EA cannot block those; "
+                  "stop main.py separately if you need to.",
                   InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
-                  telClosed, telCancelled, claudeClosed);
+                  telClosed, telCancelled, claudeClosed));
       return;
    }
    if(cmd == "RESUMEHAB")
    {
       SetTelegramPaused(false);
-      Print("UnifiedTrader_EA: ResumeHab received - new Telegram entries re-enabled (still subject "
-            "to InpEnableTelegramSignals). Nothing was reopened.");
+      SendControlReply("ResumeHab done - new Telegram entries re-enabled (still subject to "
+                        "InpEnableTelegramSignals). Nothing was reopened.");
       return;
    }
    if(cmd == "PAUSETELHAB")
@@ -1002,10 +1044,11 @@ void ProcessControlCommand(const string &rawText)
       int telClosed    = CloseAllMine();
       int telCancelled = CancelAllPendingMine();
       SetTelegramPaused(true);
-      PrintFormat("UnifiedTrader_EA: PauseTelHab %s %d position(s), %d pending order(s). New "
-                  "Telegram entries are now BLOCKED until ResumeHab.",
+      SendControlReply(StringFormat(
+                  "PauseTelHab %s %d position(s), %d pending order(s). New Telegram entries are "
+                  "now BLOCKED until ResumeHab.",
                   InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
-                  telClosed, telCancelled);
+                  telClosed, telCancelled));
       return;
    }
    if(cmd == "PAUSECLAUDEHAB")
@@ -1013,15 +1056,17 @@ void ProcessControlCommand(const string &rawText)
       Print("UnifiedTrader_EA: PauseClaudeHab received - closing Claude-sourced positions. Telegram-"
             "sourced positions and its new-entry state are untouched.");
       int claudeClosed = CloseAllClaudeMine();
-      PrintFormat("UnifiedTrader_EA: PauseClaudeHab %s %d Claude position(s). This EA cannot stop "
-                  "python/main.py from opening a NEW Claude-sourced position on its next "
-                  "evaluation cycle - stop main.py separately if you need that blocked too.",
+      SendControlReply(StringFormat(
+                  "PauseClaudeHab %s %d Claude position(s). This EA cannot stop python/main.py "
+                  "from opening a NEW Claude-sourced position on its next evaluation cycle - stop "
+                  "main.py separately if you need that blocked too.",
                   InpDryRun ? "[DRY-RUN] would close" : "done - closed",
-                  claudeClosed);
+                  claudeClosed));
       return;
    }
-   PrintFormat("UnifiedTrader_EA: unrecognized control command from InpControlChatId: '%s' - "
-               "expected exactly one of PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab.", rawText);
+   SendControlReply(StringFormat(
+               "Unrecognized control command: '%s' - tap a button below, or send exactly one of "
+               "PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab.", rawText));
 }
 
 //+------------------------------------------------------------------+
@@ -1547,6 +1592,87 @@ bool TelegramGetUpdates(string &jsonOut)
 }
 
 //+------------------------------------------------------------------+
+//| Minimal JSON string escaping for TelegramSendMessage()'s outbound |
+//| body - only what this file ever actually sends needs covering     |
+//| (plain English status text: fixed words plus %d counts), but      |
+//| covers backslash/quote/newline/CR defensively regardless. Order    |
+//| matters: backslash MUST be escaped first, or the backslashes       |
+//| introduced by the later replacements would themselves get escaped. |
+//+------------------------------------------------------------------+
+string JsonEscape(const string &s)
+{
+   string out = s;
+   StringReplace(out, "\\", "\\\\");
+   StringReplace(out, "\"", "\\\"");
+   StringReplace(out, "\n", "\\n");
+   StringReplace(out, "\r", "\\r");
+   return(out);
+}
+
+//+------------------------------------------------------------------+
+//| Sends `text` to `chatId` with the PauseHab/ResumeHab/PauseTelHab/  |
+//| PauseClaudeHab reply keyboard attached, so the buttons stay        |
+//| visible in Telegram - a reply keyboard persists client-side once   |
+//| shown, so re-attaching it on every message (rather than once at    |
+//| startup only) is redundant but harmless, and simplest to reason    |
+//| about. Never called for anything except InpControlChatId - this    |
+//| EA sends no other outbound messages. A failure here (bad token,    |
+//| network down, rate limited) is logged and never raised - it must   |
+//| never affect whether a pause/close actually happened, only whether |
+//| the operator sees a Telegram confirmation of it.                   |
+//+------------------------------------------------------------------+
+bool TelegramSendMessage(long chatId, const string &text)
+{
+   // A fixed, short cap - not InpHttpTimeoutMs - on purpose: MQL5's
+   // WebRequest is synchronous and this EA's OnTick() (where
+   // ManageAllPositions() trails/locks every open position) is serialized
+   // behind OnTimer() on the same event thread, so any slow WebRequest call
+   // here delays live position management for open trades too. A
+   // confirmation reply is strictly lower priority than that - it's sent
+   // AFTER the pause/close it confirms has already happened - so it should
+   // never get to hold up OnTick() for as long as a user might reasonably
+   // set InpHttpTimeoutMs (which governs the more important getUpdates
+   // polling reliability instead). This caps each individual call, not the
+   // whole OnTimer() tick - if a getUpdates batch ever contains more than
+   // one control command (e.g. two commands sent within the same
+   // InpPollSeconds window), each gets its own confirmation send and its
+   // own up-to-this-cap wait, one after another.
+   int sendTimeoutMs = (int)MathMin(InpHttpTimeoutMs, 3000);
+   string keyboardJson =
+      "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"PauseClaudeHab\"]],"
+      "\"resize_keyboard\":true,\"is_persistent\":true}";
+   string body = StringFormat("{\"chat_id\":%I64d,\"text\":\"%s\",\"reply_markup\":%s}",
+                               chatId, JsonEscape(text), keyboardJson);
+
+   string url     = "https://api.telegram.org/bot" + InpBotToken + "/sendMessage";
+   string headers = "Content-Type: application/json\r\n";
+   char   post[];
+   char   result[];
+   string resultHeaders;
+   StringToCharArray(body, post, 0, WHOLE_ARRAY, CP_UTF8);
+   // StringToCharArray() appends a trailing NUL the body itself doesn't
+   // need - WebRequest would otherwise POST one extra byte.
+   if(ArraySize(post) > 0 && post[ArraySize(post) - 1] == 0)
+      ArrayResize(post, ArraySize(post) - 1);
+
+   ResetLastError();
+   int rc = WebRequest("POST", url, headers, sendTimeoutMs, post, result, resultHeaders);
+   if(rc == -1)
+   {
+      PrintFormat("UnifiedTrader_EA: sendMessage WebRequest failed, error=%d - the button keyboard/"
+                  "confirmation won't reach Telegram, but this never affects what the command "
+                  "actually did.", GetLastError());
+      return(false);
+   }
+   if(rc != 200)
+   {
+      PrintFormat("UnifiedTrader_EA: Telegram sendMessage HTTP status %d", rc);
+      return(false);
+   }
+   return(true);
+}
+
+//+------------------------------------------------------------------+
 //| Same \uXXXX-escape handling as TelegramSMC_Copier.mq5 - see its    |
 //| own comment for why this matters for whole-word boundary checks.  |
 //+------------------------------------------------------------------+
@@ -1676,6 +1802,28 @@ void ExtractUpdates(const string &json, TgUpdate &updates[])
 void TelegramPoll()
 {
    if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION)) return;
+
+   if(InpControlChatId != 0 && !g_sentControlStartupMsg)
+   {
+      // Sent here, not from OnInit(), on purpose: OnInit() must stay fast
+      // and network-independent (every attach/reattach/parameter change
+      // would otherwise block on a WebRequest for up to InpHttpTimeoutMs),
+      // and this placement inherits the MQL_TESTER/MQL_OPTIMIZATION guard
+      // above for free - an optimization run firing this hundreds/
+      // thousands of times (once per OnInit() per pass) would otherwise
+      // either flood the operator's real chat or waste wall-clock time on
+      // timeouts with no network access. Set the flag before attempting so
+      // a failed send (logged inside TelegramSendMessage()) is tried at
+      // most once per (session, InpControlChatId value) pair, not retried
+      // every poll cycle forever - see OnInit()'s g_lastControlChatSentTo
+      // check for the one case this does get sent again mid-session:
+      // InpControlChatId itself changing to a chat it wasn't already sent to.
+      g_sentControlStartupMsg = true;
+      g_lastControlChatSentTo = InpControlChatId;
+      TelegramSendMessage(InpControlChatId,
+         StringFormat("UnifiedTrader_EA is listening on %s. Tap a button, or type its text.%s",
+                      _Symbol, g_telegramPaused ? "\n\n(Telegram entries are currently PAUSED.)" : ""));
+   }
 
    string json;
    if(!TelegramGetUpdates(json)) return;

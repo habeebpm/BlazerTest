@@ -338,10 +338,11 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
 
 **Optional remote control:** set `InpControlChatId` to your own DM chat id
 with the bot to enable `PauseHab`/`ResumeHab`/`PauseTelHab`/
-`PauseClaudeHab` - text commands that close positions and pause new
-Telegram entries on demand. See `UnifiedTrader/README.md` § "Remote
-control" - note it can close open Claude-sourced positions but can't stop
-Python from opening a new one next cycle.
+`PauseClaudeHab` - shown as tappable buttons in that chat (typing the
+exact text also works), closing positions and pausing new Telegram
+entries on demand. See `UnifiedTrader/README.md` § "Remote control" - note
+it can close open Claude-sourced positions but can't stop Python from
+opening a new one next cycle.
 
 **Making the shared cap symmetric (recommended):** this EA enforces the
 combined cap for its own Telegram entries only - it can't intercept an
