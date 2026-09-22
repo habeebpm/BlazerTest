@@ -6,4 +6,9 @@ MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.log
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.csv
 MT_Py_Claude_Telegram_Solution/XTR_Export/python/xtr_data/
 # A service account key is a secret - never committed, whatever it's named.
-MT_Py_Claude_Telegram_Solution/XTR_Export/python/*service*account*.json
+# xtr_export.py's own --help text uses "sa.json" as its example filename,
+# which a *service*account*.json-only pattern wouldn't catch - so this
+# ignores every .json directly under python/ instead of guessing at names.
+# No .json file has ever been meant to be tracked here (manifests/caches
+# both already live under xtr_data/, which is fully ignored above).
+MT_Py_Claude_Telegram_Solution/XTR_Export/python/*.json

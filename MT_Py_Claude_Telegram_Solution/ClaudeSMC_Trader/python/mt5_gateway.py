@@ -170,21 +170,13 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
     `additional_magics` too - so a shared position cap (see AdvisorConfig.
     shared_cap_magic_numbers) can count another system's positions on this
     account without this system needing to know anything about that system
-    beyond its magic number.
+    beyond its magic number. Built on open_positions() (one positions_get()
+    call per magic, rather than one filtered by a magic set) so the two
+    never drift apart on what counts as "this magic's position" or how a
+    position's direction is derived.
     """
-    magics = {magic, *additional_magics}
-    m = mt5()
-    positions = m.positions_get(symbol=symbol)
-    if positions is None:
-        return 0
-    count = 0
-    for p in positions:
-        if p.magic not in magics:
-            continue
-        pdir = "buy" if p.type == m.POSITION_TYPE_BUY else "sell"
-        if pdir == direction:
-            count += 1
-    return count
+    return sum(1 for magic_id in {magic, *additional_magics}
+              for p in open_positions(symbol, magic_id) if p["direction"] == direction)
 
 
 def price_distance_for_dollars(spec: SymbolSpec, dollars: float, lots: float) -> float:
