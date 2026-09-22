@@ -7,7 +7,8 @@ fresh clone to something running, live-account cautions included.
 
 ## 0. What's here, and how the pieces fit together
 
-Four independent systems live in this repo. None of them share code,
+Five independent solutions live in this repo (four trading/copying
+systems, plus a read-only data exporter). None of them share code,
 config, or a magic number with any other, so you can run one, several, or
 all of them on the same MT5 account/chart without them interfering with
 each other. Pick what you need:
@@ -18,6 +19,7 @@ each other. Pick what you need:
 | B | **Telegram SMC Copier** | Copies BUY/SELL signals posted in a Telegram channel into MT5, after a price-action/SMC sanity check | MT5 + a Telegram bot (MQL5), or MT5 + Python + a Telegram account (Python) | `README.md` § "Telegram SMC Copier", `python/README.md` § "Telegram signal copier" |
 | B+ | **Trade Logger + Dashboard** | Generic CSV trade journal (any EA/magic) plus a read-only web dashboard over it | MT5 (Logger EA), IIS + ASP.NET (Dashboard) | `ASPX/README.md` |
 | C | **Claude-SMC Trader** | Builds a full market-intelligence snapshot (indicators + SMC structure) and asks Claude to validate a 3-confluence setup before trading | MT5 + Python + an Anthropic API key | `ClaudeSMC_Trader/README.md` |
+| D | **XTR_Export** | Read-only: exports MT5's own M5/M15/H1 XAUUSD bars to CSV (true UTC, XTR's exact column/precision spec), optionally synced to Google Drive | MT5 + Python; Google Drive for Desktop or a Drive API service account | `XTR_Export/README.md` |
 
 **Only System A or C generates its own trade ideas.** System B copies
 someone else's. Running more than one trading system (A, B, C) on the
@@ -423,7 +425,50 @@ on Claude's calls exactly as before, since it never touches Telegram.
 
 ---
 
-## 5. Running more than one system at once - magic number reference
+## 5. System D - XTR_Export (MT5 -> Google Drive, for XTR)
+
+Read-only - never places, modifies, or closes an order. Exports MT5's own
+XAUUSD M5/M15/H1 bars to CSV in the exact format an external tool ("XTR")
+needs to analyze trades against MT5's own price feed instead of Twelve
+Data, refreshed on every new M5 close.
+
+### 5a. Export locally
+
+```bash
+cd XTR_Export/python
+pip install -r requirements.txt
+python xtr_export.py --check    # connect, print quote precision, export once, exit
+python xtr_export.py            # loop: export on every new M5 candle close
+```
+
+Writes `XAUUSD_M5.csv`, `XAUUSD_M15.csv`, `XAUUSD_H1.csv` (datetime in
+**true UTC**, not broker-server time - see `XTR_Export/README.md` for why
+that distinction matters and how it's handled automatically) and
+`XAUUSD_manifest.json` to `--out-dir` (default `xtr_data/`).
+
+### 5b. Get the files onto Google Drive - pick one
+
+- **MT5 machine has a desktop:** install Google Drive for Desktop, point
+  it at `--out-dir`. No code, no credentials in this repo.
+- **MT5 runs headless (a VPS):** `python xtr_export.py --upload-drive
+  --drive-folder-id <id> --drive-credentials service-account.json` pushes
+  every export via the Drive API. Needs a one-time Google Cloud service
+  account setup - full steps in `XTR_Export/README.md` § "Option B".
+
+### 5c. Test without a live account
+
+```bash
+cd XTR_Export/python
+python selftest.py
+```
+
+Entirely offline - a fake gateway exercises the UTC-offset detection, bar
+formatting, the full export pipeline, and the Drive create-vs-update
+logic. No MT5, no Google credentials, no network.
+
+---
+
+## 6. Running more than one system at once - magic number reference
 
 Every EA/script below defaults to a **different** magic number
 specifically so they can coexist on the same account without one system
@@ -443,7 +488,7 @@ using it to watch that system.
 
 ---
 
-## 6. Quick reference - every offline test command
+## 7. Quick reference - every offline test command
 
 ```bash
 # System A (Confluence EA, Python port)
@@ -455,16 +500,19 @@ python telegram_copier.py --replay sample_signals.txt
 
 # System C (Claude-SMC Trader)
 cd ClaudeSMC_Trader/python && python selftest.py
+
+# System D (XTR_Export)
+cd XTR_Export/python && python selftest.py
 ```
 
-None of these need MT5, a broker connection, Telegram credentials, or an
-Anthropic API key - run them after cloning, and again after changing any
-threshold, formula, or config default, before touching a live/demo
-account.
+None of these need MT5, a broker connection, Telegram credentials, a
+Google credential, or an Anthropic API key - run them after cloning, and
+again after changing any threshold, formula, or config default, before
+touching a live/demo account.
 
 ---
 
-## 7. Troubleshooting quick reference
+## 8. Troubleshooting quick reference
 
 - **"WebRequest ... not allowed"** (System B, MQL5) - Tools -> Options ->
   Expert Advisors -> add `https://api.telegram.org` to the allowed URL
@@ -486,5 +534,13 @@ account.
   machine).
 - **Two systems' trades look mixed together in one log** - check the
   `source`/`comment` column (`Telegram_Sig` vs `Claude_Sig` vs the
-  Confluence EA's own comment) and the magic number (§ 5 table) - every
+  Confluence EA's own comment) and the magic number (§ 6 table) - every
   log in this repo tags its origin for exactly this reason.
+- **XTR_Export uploads fail with a quota/storage error** - the target
+  Drive folder wasn't shared with the service account's own email address
+  (§ 5b) - a service account has no storage of its own.
+- **XTR's readings (EMA/MACD/etc.) look off from what the MT5 chart
+  shows** - check `XAUUSD_manifest.json`'s `broker_utc_offset_hours`
+  against your broker's actual GMT offset (Tools > Options > Server tab in
+  MT5) - a wrong value usually means this machine's own clock isn't
+  correct (see `XTR_Export/README.md` § "Honest limitations").

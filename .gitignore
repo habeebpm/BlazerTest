@@ -4,3 +4,6 @@ MT_Py_Claude_Telegram_Solution/python/logs/*.log
 MT_Py_Claude_Telegram_Solution/python/logs/*.csv
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.log
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.csv
+MT_Py_Claude_Telegram_Solution/XTR_Export/python/xtr_data/
+# A service account key is a secret - never committed, whatever it's named.
+MT_Py_Claude_Telegram_Solution/XTR_Export/python/*service*account*.json

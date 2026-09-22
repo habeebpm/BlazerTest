@@ -1,0 +1,12 @@
+# The MetaTrader5 package is Windows-only (it drives a local MT5 terminal).
+# The marker lets `pip install -r requirements.txt` succeed on Linux/macOS so
+# exporter.py's formatting logic and selftest.py stay runnable everywhere -
+# only xtr_export.py's live loop needs it.
+MetaTrader5>=5.0.45; sys_platform == "win32"
+pandas>=2.0
+
+# Only needed with --upload-drive (imported lazily, same pattern as
+# MetaTrader5 above) - if your MT5 machine has a desktop, use Google Drive
+# for Desktop instead and skip these entirely (see README.md).
+google-api-python-client>=2.100
+google-auth>=2.23
