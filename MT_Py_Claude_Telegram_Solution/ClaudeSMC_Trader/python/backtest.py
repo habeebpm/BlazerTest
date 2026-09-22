@@ -254,7 +254,19 @@ class HistoricalGateway:
         bar = self.current_bar
         high, low = float(bar["high"]), float(bar["low"])
         min_stop_dist = self.spec.stops_level_points * self.spec.point
-        manage_one = self._manage_fixed_tp if cfg.exit_style == "fixed_tp" else self._manage_sl_to_tp1
+        if cfg.exit_style == "fixed_tp":
+            manage_one = self._manage_fixed_tp
+        elif cfg.exit_style == "sl_to_tp1":
+            manage_one = self._manage_sl_to_tp1
+        else:
+            # No backtest simulation of "breakeven_r_decay" exists yet (it's
+            # live-only, implemented in the MQL5 EAs - see config.py's
+            # module docstring) - fail loudly rather than silently running
+            # it through _manage_sl_to_tp1, which doesn't have its earlier
+            # breakeven-at-ATR/decay-window step and would misrepresent it.
+            raise ValueError(
+                f"backtest.py has no simulation for exit_style={cfg.exit_style!r} yet - only "
+                f"'sl_to_tp1' and 'fixed_tp' are supported here.")
         still_open = []
         for pos in self.open_positions:
             exit_price, exit_reason = manage_one(cfg, pos, high, low, min_stop_dist)

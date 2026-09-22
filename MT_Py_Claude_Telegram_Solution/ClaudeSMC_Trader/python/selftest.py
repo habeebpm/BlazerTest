@@ -5,13 +5,18 @@ of ../../python/copier_selftest.py: every piece of decision logic is pure or
 dependency-injected, so it's exercised here with synthetic data and fakes.
 
 Covers:
-  * indicator math (EMA/RSI/MACD/ATR/Bollinger/ADX-DI/Stochastic) sanity
+  * indicator math (EMA/RSI/MACD/ATR/Bollinger/ADX-DI/Stochastic) sanity,
+    including macd_hist_shape()'s peak/decline detection (the extended-entry
+    deceleration check in claude_advisor.SYSTEM_PROMPT)
   * SMC liquidity-sweep detection and premium/discount zoning
   * candle pattern detection
   * market structure (swing points, HH/HL/LH/LL, BOS/CHoCH), order blocks,
     fair value gaps (open and filled), and previous day/week high-low
   * the dollar -> price-distance conversion executor.execute() relies on
-  * executor.gate()/execute() gating logic against a fake MT5 gateway
+  * executor.gate()/execute() gating logic against a fake MT5 gateway,
+    including exit_style routing (sl_to_tp1/breakeven_r_decay both send no
+    broker TP, fixed_tp sends a real one) and the ValueError an unrecognized
+    exit_style raises instead of silently mimicking a known one
   * claude_advisor.get_verdict() wiring against a fake Anthropic client
   * claude_advisor's Claude-API error classification (out of credits,
     bad key, rate limit, overload, network) - built from the real
@@ -92,6 +97,29 @@ def test_indicators() -> bool:
 
     k, d = market_intel.stochastic(df)
     ok &= check("Stochastic %K/%D stay within 0-100", k.between(0, 100).all() and d.between(0, 100).all())
+
+    # macd_hist_shape: peak detection for the extended-entry deceleration
+    # check (claude_advisor.SYSTEM_PROMPT) - peak is read in the direction
+    # the histogram already leans (max for bullish, min for bearish).
+    bull_rising = pd.Series([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    ok &= check("bullish histogram still rising bar-over-bar is not declining_from_peak",
+                not market_intel.macd_hist_shape(bull_rising)["declining_from_peak"])
+
+    bull_peaked = pd.Series([0.1, 0.3, 0.5, 0.6, 0.5, 0.4])
+    ok &= check("bullish histogram that ticked down from its window peak is declining_from_peak",
+                market_intel.macd_hist_shape(bull_peaked)["declining_from_peak"])
+
+    bear_accelerating = pd.Series([-0.1, -0.2, -0.3, -0.4, -0.5, -0.6])
+    ok &= check("bearish histogram still getting more negative is not declining_from_peak",
+                not market_intel.macd_hist_shape(bear_accelerating)["declining_from_peak"])
+
+    bear_retreating = pd.Series([-0.1, -0.3, -0.6, -0.7, -0.6, -0.5])
+    ok &= check("bearish histogram retreating back toward zero from its trough is declining_from_peak",
+                market_intel.macd_hist_shape(bear_retreating)["declining_from_peak"])
+
+    new_peak = pd.Series([0.1, 0.05, 0.2, 0.15, 0.3, 0.35])
+    ok &= check("the current bar itself being the window's new peak is not declining_from_peak",
+                not market_intel.macd_hist_shape(new_peak)["declining_from_peak"])
 
     return ok
 
@@ -343,6 +371,25 @@ def test_executor() -> bool:
     executor.execute(fg_fixed, cfg_fixed_tp, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("exit_style=fixed_tp sends a real non-zero broker take-profit",
                 fg_fixed.orders_sent and fg_fixed.orders_sent[0][3] > 0, fg_fixed.orders_sent)
+
+    cfg_breakeven = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                  exit_style="breakeven_r_decay")
+    fg_breakeven = FakeGateway(same_dir_open=0)
+    executor.execute(fg_breakeven, cfg_breakeven, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("exit_style=breakeven_r_decay also sends tp=0.0 - no broker take-profit, same as "
+                "sl_to_tp1 (the live MQL5 EA's own SL is the only exit mechanism)",
+                fg_breakeven.orders_sent and fg_breakeven.orders_sent[0][3] == 0.0, fg_breakeven.orders_sent)
+
+    cfg_bad_style = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                  exit_style="not_a_real_style")
+    fg_bad = FakeGateway(same_dir_open=0)
+    raised_bad_style = None
+    try:
+        executor.execute(fg_bad, cfg_bad_style, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    except ValueError as exc:
+        raised_bad_style = exc
+    ok &= check("an unrecognized exit_style raises ValueError instead of silently behaving like "
+                "sl_to_tp1", raised_bad_style is not None, raised_bad_style)
 
     with open(executor._csv_path(cfg, "trades.csv")) as f:
         trade_rows = list(csv.DictReader(f))

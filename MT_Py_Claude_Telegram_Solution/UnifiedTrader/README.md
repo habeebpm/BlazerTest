@@ -30,7 +30,7 @@ remain the recommended, more conservative defaults.
 | Decides *whether* to trade | This EA, from a parsed Telegram message | `../ClaudeSMC_Trader/python/main.py` (unchanged - MQL5 can't practically call the Claude API, see below) |
 | Validation before entry | Chat allow-list, signal age, price-vs-zone deviation, the shared position cap, daily trade cap. **No SMC filter. No check on the message's own SL/TP1/TP2/TP3** - none of that is used | Claude's own 3-confluence + full-conviction gate (unchanged) |
 | Entry SL/TP | **Fixed `InpSlDollars`/no broker TP** - never the message's own numbers | Python's own fixed `sl_dollars`/no broker TP (unchanged) |
-| Exit management | This EA (lock-then-trail, see below) | This EA (identical logic, different magic number) |
+| Exit management | This EA (lock-then-trail only - `InpExitStyle` breakeven step never applies) | This EA (identical logic, different magic number; `InpExitStyle` opt-in breakeven step applies here) |
 | Magic number | `InpTelegramMagicNumber` (default 20260922) | `InpClaudeMagicNumber` (must match `AdvisorConfig.magic`, default 20260921) |
 
 **Why the Claude side still needs Python running.** MQL5 has no JSON
@@ -43,13 +43,31 @@ management, identical in mechanism to `ClaudeSMC_TradeManager.mq5`.
 
 ## Shared exit design (both sources, identical logic)
 
-`exit_style="sl_to_tp1"`, same as `ClaudeSMC_TradeManager.mq5`: no broker
-take-profit is ever placed - the stop-loss is the only exit. Once floating
-profit reaches `InpTp1Dollars` ($6), the SL moves to **exactly** that
-price (a deterministic lock, no buffer), then trails `InpTrailDollars`
-($3) behind new highs/lows, tightening only. "Armed" is derived every tick
-from the position's own current SL, never stored - this EA needs no
-memory across ticks or restarts.
+`exit_style="sl_to_tp1"` (the default for both sources), same as
+`ClaudeSMC_TradeManager.mq5`: no broker take-profit is ever placed - the
+stop-loss is the only exit. Once floating profit reaches `InpTp1Dollars`
+($6), the SL moves to **exactly** that price (a deterministic lock, no
+buffer), then trails `InpTrailDollars` ($3) behind new highs/lows,
+tightening only. "Armed" is derived every tick from the position's own
+current SL, never stored - this EA needs no memory across ticks or
+restarts.
+
+**`InpExitStyle=EXIT_BREAKEVEN_R_DECAY` is a Claude-management-side option
+only** - it applies exclusively to `InpClaudeMagicNumber` positions;
+Telegram-sourced positions always use plain `sl_to_tp1` regardless of this
+setting. It adds one earlier protective step before the lock above: once
+floating profit reaches `InpBreakevenAtrMult` (0.5) x the position's own
+`InpAtrPeriod`-bar ATR on `InpAtrTimeframe` (M5 by default), **or**
+`InpDecayWindowMinutes` (15) have passed since entry - whichever happens
+first, and only once price has actually moved far enough into profit to
+place a valid stop there - the SL moves to **exactly** the entry price
+(breakeven). A fast move can still jump straight past this step to the
+full TP1 lock in one tick. Must match
+`../ClaudeSMC_Trader/python/config.py`'s `AdvisorConfig.exit_style` and its
+`breakeven_atr_mult`/`breakeven_atr_period`/`decay_window_minutes` - keep
+both sides in sync by hand, the same way `InpTrailDollars`/`trail_dollars`
+already have to be. See `../ClaudeSMC_Trader/README.md`'s "Exit design"
+section for the full rationale.
 
 ## Shared position cap
 
@@ -99,7 +117,11 @@ for you - check it by hand.
      `AdvisorConfig.magic` (both default 20260921), and that
      `python main.py` is running (dry-run or live) - this EA never
      opens Claude-sourced positions itself, only manages ones Python
-     already opened.
+     already opened. If Python's `AdvisorConfig.exit_style` is
+     `"breakeven_r_decay"`, set `InpExitStyle=EXIT_BREAKEVEN_R_DECAY` here
+     too and keep `InpBreakevenAtrMult`/`InpAtrPeriod`/
+     `InpDecayWindowMinutes`/`InpAtrTimeframe` in sync with it by hand -
+     otherwise leave `InpExitStyle` at its default.
 3. Drag onto an XAUUSD chart, tick "Allow Algo Trading" (and "Allow
    WebRequest" is already covered by step 1 if using Telegram).
 4. Leave `InpDryRun=true` until you trust the logged behavior.
@@ -122,7 +144,9 @@ for you - check it by hand.
 - **No "move SL to breakeven" text command**, unlike `TelegramSMC_Copier.mq5`
   - the automatic lock-then-trail exit already gets every position to
   breakeven-or-better once `InpTp1Dollars` is reached, generally faster
-  and more consistently than a manual per-message command would.
+  and more consistently than a manual per-message command would. Note that
+  even the automated `EXIT_BREAKEVEN_R_DECAY` step (see above) never
+  applies to Telegram-sourced positions - it's Claude-management-side only.
 - **No backtest** - same reason as `TelegramSMC_Copier.mq5`: there's no
   historical Telegram feed to replay, and this EA disables Telegram
   polling inside the Strategy Tester. The Claude-management half is, in

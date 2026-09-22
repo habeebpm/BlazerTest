@@ -8,10 +8,14 @@
 //| is tick-by-tick trade management, which Python's poll loop is too  |
 //| coarse-grained to do reliably.                                     |
 //|                                                                    |
-//| EXIT DESIGN (exit_style="sl_to_tp1" in python/config.py):          |
-//| Python opens every position with a stop-loss and, deliberately, NO |
-//| broker-side take-profit at all (see executor.py). This EA is the   |
-//| ONLY thing that ever closes a position early, via the stop-loss:   |
+//| EXIT DESIGN - InpExitStyle selects which of two exit shapes this    |
+//| EA runs, mirroring python/config.py's AdvisorConfig.exit_style      |
+//| (keep the two in sync by hand - see that module's docstring):       |
+//|                                                                    |
+//| EXIT_SL_TO_TP1 (default): Python opens every position with a       |
+//| stop-loss and, deliberately, NO broker-side take-profit at all     |
+//| (see executor.py). This EA is the ONLY thing that ever closes a    |
+//| position early, via the stop-loss:                                 |
 //|   1. Before InpTp1Dollars of floating profit is reached, the SL    |
 //|      just sits at whatever Python originally set it to.            |
 //|   2. The instant profit reaches InpTp1Dollars, the SL is moved to  |
@@ -19,10 +23,25 @@
 //|      less, in one deterministic step.                              |
 //|   3. From then on the SL trails InpTrailDollars behind new highs/  |
 //|      lows, tightening only, for the rest of the move.              |
-//| "Armed" (state 2/3 vs state 1) is never stored in the EA - it's    |
-//| derived every tick from whether the position's OWN current SL has  |
-//| already reached the lock level, so this EA needs no memory across  |
-//| ticks or restarts and stays correct even if reattached mid-trade.  |
+//|                                                                    |
+//| EXIT_BREAKEVEN_R_DECAY: the same steps 2/3 above, plus one earlier |
+//| protective step before either can happen:                          |
+//|   0. Once floating profit reaches InpBreakevenAtrMult x this        |
+//|      position's own InpAtrPeriod-bar ATR on InpAtrTimeframe, OR    |
+//|      InpDecayWindowMinutes have passed since the position opened   |
+//|      (whichever happens first) - AND ONLY IF price has actually     |
+//|      moved into profit far enough to place a valid stop there -     |
+//|      the SL moves to EXACTLY the entry price (breakeven), no        |
+//|      further, no earlier. A fast move can still jump straight from |
+//|      step 0 to step 2 in one tick (the TP1-lock check always runs  |
+//|      first) - this step only fires when TP1 hasn't been reached    |
+//|      yet.                                                           |
+//|                                                                    |
+//| "Armed"/"at breakeven" is never stored in the EA in either style - |
+//| it's derived every tick from whether the position's OWN current SL |
+//| has already reached the lock/breakeven level, so this EA needs no  |
+//| memory across ticks or restarts and stays correct even if          |
+//| reattached mid-trade.                                               |
 //|                                                                    |
 //| WHY NO BROKER TAKE-PROFIT AT ALL: an earlier design placed a real  |
 //| TP at entry+InpTp1Dollars - the exact same price this EA's arm     |
@@ -81,7 +100,23 @@ input group "=== Exit rule - USD amounts, converted to price per position's own 
 input double InpTp1Dollars    = 6.0;         // Floating profit (USD) that locks the stop-loss in here
 input double InpTrailDollars  = 3.0;         // Trailing distance (USD) once locked/armed
 
+enum ENUM_EXIT_STYLE
+{
+   EXIT_SL_TO_TP1,          // Default - lock at InpTp1Dollars, then trail (see file header)
+   EXIT_BREAKEVEN_R_DECAY   // Adds an earlier breakeven step before the same lock/trail (see file header)
+};
+
+input group "=== Exit style - must match python/config.py AdvisorConfig.exit_style ==="
+input ENUM_EXIT_STYLE InpExitStyle = EXIT_SL_TO_TP1;
+
+input group "=== EXIT_BREAKEVEN_R_DECAY only - ignored under EXIT_SL_TO_TP1 ==="
+input double         InpBreakevenAtrMult   = 0.5;        // Move SL to breakeven once profit reaches this x ATR
+input ENUM_TIMEFRAMES InpAtrTimeframe      = PERIOD_M5;  // Timeframe the ATR is read from
+input int             InpAtrPeriod         = 14;         // ATR period
+input double         InpDecayWindowMinutes = 15.0;       // Force breakeven after this long even short of the ATR trigger
+
 CTrade trade;
+int g_atrHandle = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -90,6 +125,21 @@ int OnInit()
    {
       Print("ClaudeSMC_TradeManager: InpTp1Dollars and InpTrailDollars must both be positive.");
       return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
+   {
+      if(InpBreakevenAtrMult <= 0.0 || InpAtrPeriod <= 0 || InpDecayWindowMinutes <= 0.0)
+      {
+         Print("ClaudeSMC_TradeManager: InpBreakevenAtrMult, InpAtrPeriod and InpDecayWindowMinutes "
+               "must all be positive under EXIT_BREAKEVEN_R_DECAY.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+      g_atrHandle = iATR(_Symbol, InpAtrTimeframe, InpAtrPeriod);
+      if(g_atrHandle == INVALID_HANDLE)
+      {
+         Print("ClaudeSMC_TradeManager: iATR() failed - cannot run EXIT_BREAKEVEN_R_DECAY.");
+         return(INIT_FAILED);
+      }
    }
    if(MQLInfoInteger(MQL_TESTER))
       Print("ClaudeSMC_TradeManager: running in the Strategy Tester - InpDryRun still governs "
@@ -116,6 +166,48 @@ int OnInit()
                      stopsLevelPrice);
    }
    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   if(g_atrHandle != INVALID_HANDLE)
+      IndicatorRelease(g_atrHandle);
+}
+
+//+------------------------------------------------------------------+
+//| EXIT_BREAKEVEN_R_DECAY only: InpBreakevenAtrMult x the position's  |
+//| own ATR, as a price distance - ATR is already a price-unit value,  |
+//| so no dollar conversion is needed here (unlike InpTp1Dollars/       |
+//| InpTrailDollars, which ARE dollar amounts). Returns DBL_MAX (never |
+//| triggers) if the ATR buffer isn't ready yet, so a position can      |
+//| still be protected by the decay-window fallback below.             |
+//+------------------------------------------------------------------+
+double BreakevenAtrDistance()
+{
+   if(g_atrHandle == INVALID_HANDLE)
+      return(DBL_MAX);
+   double atrBuf[];
+   if(CopyBuffer(g_atrHandle, 0, 0, 1, atrBuf) <= 0)
+      return(DBL_MAX);
+   return(InpBreakevenAtrMult * atrBuf[0]);
+}
+
+//+------------------------------------------------------------------+
+//| EXIT_BREAKEVEN_R_DECAY only: true once EITHER the ATR-based        |
+//| profit trigger OR the decay window has been reached - "whichever   |
+//| happens first" per the file header. Does not itself check that     |
+//| price has actually moved far enough to place a valid breakeven      |
+//| stop - the caller (ManagePosition) guards that separately, since    |
+//| it already has the broker's minimum-stop-distance check in hand.    |
+//+------------------------------------------------------------------+
+bool BreakevenDue(ulong ticket, double profit)
+{
+   if(profit >= BreakevenAtrDistance())
+      return(true);
+   datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+   long decaySeconds = (long)(InpDecayWindowMinutes * 60);
+   return((TimeCurrent() - openTime) >= decaySeconds);
 }
 
 //+------------------------------------------------------------------+
@@ -181,6 +273,15 @@ void ManagePosition(ulong ticket)
             newSl = lockLevel;
             changeSl = true;
          }
+         else if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
+         {
+            bool atBreakeven = (currentSl > 0.0 && currentSl >= openPrice - point);
+            if(!atBreakeven && (tick.bid - openPrice) >= minStopDist && BreakevenDue(ticket, profit))
+            {
+               newSl = NormalizeDouble(openPrice, digits);
+               changeSl = true;
+            }
+         }
       }
       else
       {
@@ -203,6 +304,15 @@ void ManagePosition(ulong ticket)
          {
             newSl = lockLevel;
             changeSl = true;
+         }
+         else if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
+         {
+            bool atBreakeven = (currentSl > 0.0 && currentSl <= openPrice + point);
+            if(!atBreakeven && (openPrice - tick.ask) >= minStopDist && BreakevenDue(ticket, profit))
+            {
+               newSl = NormalizeDouble(openPrice, digits);
+               changeSl = true;
+            }
          }
       }
       else

@@ -58,6 +58,12 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.trail_dollars = args.trail_dollars
     if args.exit_style:
         cfg.exit_style = args.exit_style
+    if args.breakeven_atr_mult is not None:
+        cfg.breakeven_atr_mult = args.breakeven_atr_mult
+    if args.breakeven_atr_period is not None:
+        cfg.breakeven_atr_period = args.breakeven_atr_period
+    if args.decay_window_minutes is not None:
+        cfg.decay_window_minutes = args.decay_window_minutes
     if args.model:
         cfg.claude_model = args.model
     if args.poll_seconds is not None:
@@ -117,10 +123,24 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--trail-dollars", type=float, dest="trail_dollars",
                         help="trailing distance once armed, in USD (default 3) - enforced by the "
                              "MQL5 ClaudeSMC_TradeManager EA, not this script; see README.md")
-    parser.add_argument("--exit-style", choices=["sl_to_tp1", "fixed_tp"], dest="exit_style",
+    parser.add_argument("--exit-style", choices=["sl_to_tp1", "breakeven_r_decay", "fixed_tp"],
+                        dest="exit_style",
                         help="default sl_to_tp1 (see config.py's module docstring for why); "
-                             "fixed_tp is only implemented here and in backtest.py --compare, "
-                             "not in the live MQL5 EA")
+                             "breakeven_r_decay adds an earlier breakeven step before the same "
+                             "tp1/trail lock, both live in the MQL5 EAs (InpExitStyle - keep it in "
+                             "sync by hand); fixed_tp is only implemented here and in backtest.py "
+                             "--compare, not in either live MQL5 EA")
+    parser.add_argument("--breakeven-atr-mult", type=float, dest="breakeven_atr_mult",
+                        help="exit_style=breakeven_r_decay only: move SL to breakeven once profit "
+                             "reaches this x the position's own M5 ATR (default 0.5) - enforced by "
+                             "the MQL5 EA's InpBreakevenAtrMult, not this script; see README.md")
+    parser.add_argument("--breakeven-atr-period", type=int, dest="breakeven_atr_period",
+                        help="exit_style=breakeven_r_decay only: ATR period for the breakeven trigger "
+                             "(default 14) - enforced by the MQL5 EA's InpAtrPeriod, not this script")
+    parser.add_argument("--decay-window-minutes", type=float, dest="decay_window_minutes",
+                        help="exit_style=breakeven_r_decay only: force the SL to breakeven after this "
+                             "many minutes even short of the ATR trigger (default 15) - enforced by "
+                             "the MQL5 EA's InpDecayWindowMinutes, not this script")
     parser.add_argument("--model", help="Claude model id (default claude-opus-5)")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
@@ -158,9 +178,11 @@ def main(argv: list | None = None) -> int:
     if args.check:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
         log.info("Config: lot=%.2f max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
-                  "exit_style=%s min_confluence=%d/3 require_full=%s model=%s dry_run=%s",
+                  "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
+                  "min_confluence=%d/3 require_full=%s model=%s dry_run=%s",
                   cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
                   cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
+                  cfg.breakeven_atr_mult, cfg.breakeven_atr_period, cfg.decay_window_minutes,
                   cfg.min_confluence_count, cfg.require_full_conviction, cfg.claude_model, cfg.dry_run)
         return 0
 

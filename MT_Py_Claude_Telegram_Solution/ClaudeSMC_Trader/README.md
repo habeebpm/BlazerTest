@@ -75,7 +75,10 @@ containing:
 - **Trend**: EMA20/EMA50/EMA200 on the primary timeframe, EMA200 macro bias
   on the trend timeframe (H4 by default), ATR14
 - **Momentum**: RSI14, MACD(12,26,9) line/signal/histogram (current and
-  previous, so Claude can see whether it's expanding), Stochastic(14,3,3)
+  previous, so Claude can see whether it's expanding), a 6-bar MACD
+  histogram window plus whether the current bar is declining from that
+  window's own peak (`macd_hist_shape` - see the extended-entry check
+  below), Stochastic(14,3,3)
 - **Strength**: ADX14, +DI/-DI
 - **Volatility**: ATR14, Bollinger Bands(20,2) %B and bandwidth
 - **SMC structure**:
@@ -109,6 +112,21 @@ room to down-weight a mechanically-passing setup that's structurally ugly
 (say, a "confirmed" trend leg pointed straight into an unswept liquidity
 pool) or up-weight one with strong SMC alignment. See the full prompt in
 `python/claude_advisor.py`.
+
+**Extended-entry momentum check.** If Claude judges an entry as already
+stretched/chasing (price noticeably extended from its EMAs, RSI14 already
+elevated toward the 70/30 block zone rather than freshly crossing into
+confluence), momentum passing the mechanical MOMENTUM test above isn't
+enough on its own - it also needs to still be *building*, not just present.
+`macd_hist_shape.declining_from_peak` tells Claude whether the current
+histogram bar has already ticked down from its recent high/low, even though
+it may still be on the trade's side of zero. For an entry judged extended,
+`declining_from_peak: true` is a NO TRADE (or "partial" at best, never
+"full") - wait for a pullback/reset rather than chase decelerating
+momentum. This does *not* apply to a fresh, early-stage move that isn't
+extended. Added after reviewing real trade history: a losing chase entry
+had momentum already peaking and rolling over at entry, while the winning
+chase entries all had momentum still accelerating.
 
 ### Honest limitations
 
@@ -161,31 +179,56 @@ regardless of XAUUSD's contract size there.
 ## Exit design: `exit_style` in `config.py`
 
 Every position opens with a `$6` stop-loss. What happens from there is
-controlled by `AdvisorConfig.exit_style`, with two values:
+controlled by `AdvisorConfig.exit_style`, with three values:
 
-- **`"sl_to_tp1"` (default, and the only style `ClaudeSMC_TradeManager.mq5`
-  implements live).** Python places **no broker take-profit at all**
-  (`tp_price=0.0`) - the stop-loss is the only thing that can ever close the
-  position. Once floating profit reaches `tp1_dollars` ($6), the EA moves
-  the SL to *exactly* that price in one deterministic step, locking in that
-  much profit. From then on it trails `trail_dollars` ($3) behind new highs/
-  lows, tightening only, for the rest of the move. "Armed" (locked vs.
-  trailing) is never stored anywhere - the EA derives it every tick from
-  whether the position's own current SL has already reached the lock level,
-  so it needs no memory across ticks or restarts.
+- **`"sl_to_tp1"` (default, and implemented live by both
+  `ClaudeSMC_TradeManager.mq5` and `UnifiedTrader_EA.mq5`'s Claude-management
+  half).** Python places **no broker take-profit at all** (`tp_price=0.0`) -
+  the stop-loss is the only thing that can ever close the position. Once
+  floating profit reaches `tp1_dollars` ($6), the EA moves the SL to
+  *exactly* that price in one deterministic step, locking in that much
+  profit. From then on it trails `trail_dollars` ($3) behind new highs/lows,
+  tightening only, for the rest of the move. "Armed" (locked vs. trailing)
+  is never stored anywhere - the EA derives it every tick from whether the
+  position's own current SL has already reached the lock level, so it needs
+  no memory across ticks or restarts.
+- **`"breakeven_r_decay"` (also implemented live, opt-in via each EA's
+  `InpExitStyle`).** Adds one earlier protective step before the
+  `sl_to_tp1` lock above: once floating profit reaches `breakeven_atr_mult`
+  (0.5) x the position's own M5 ATR, **or** `decay_window_minutes` (15) have
+  passed since entry - whichever happens first, and only once price has
+  actually moved far enough into profit to place a valid stop there - the SL
+  moves to *exactly* the entry price (breakeven), no earlier. A fast move
+  can still jump straight from unprotected to the full TP1 lock in one tick
+  (the lock check always runs first). This came from comparing manual trade
+  history against the mechanical exits: `tp1_dollars` at $6 (1.0R) was
+  rarely reached fast enough, and a plain time-or-profit breakeven step got
+  trades to at least no-loss sooner than waiting for the full TP1 lock.
+  `breakeven_atr_period` (14) sets the ATR's own period; the MQL5 side reads
+  ATR from `InpAtrTimeframe` (default M5) - keep that timeframe and all
+  three dollar/period values in sync with the EA's own
+  `InpBreakevenAtrMult`/`InpAtrPeriod`/`InpDecayWindowMinutes` inputs by
+  hand, the same way `trail_dollars`/`InpTrailDollars` already have to be
+  kept in sync. On `UnifiedTrader_EA.mq5` specifically, this style only ever
+  applies to `InpClaudeMagicNumber` positions - Telegram-sourced positions
+  always use plain `sl_to_tp1` regardless of `InpExitStyle`.
 - **`"fixed_tp"` (the original design, kept only as a comparison baseline -
-  not implemented in the live MQL5 EA).** A real broker take-profit is
+  not implemented in either live MQL5 EA).** A real broker take-profit is
   placed at `entry + tp1_dollars` - the exact same price the trail would
   arm at. See "What the backtest found" below for why that's a problem and
   why `sl_to_tp1` replaced it as the default.
 
-Override with `main.py --exit-style sl_to_tp1|fixed_tp` (or
-`backtest.py --exit-style` / `--compare`, see "Backtesting" below).
+Override with `main.py --exit-style sl_to_tp1|breakeven_r_decay|fixed_tp`
+(or `backtest.py --exit-style` / `--compare`, see "Backtesting" below;
+`backtest.py` has no simulation of `breakeven_r_decay` yet - it's live-only,
+see "Honest limitations of the backtest itself"). `breakeven_r_decay`'s own
+three fields have matching CLI flags: `--breakeven-atr-mult`,
+`--breakeven-atr-period`, `--decay-window-minutes`.
 
-**If `ClaudeSMC_TradeManager.mq5` isn't running**, a position opened under
-the default `sl_to_tp1` style has *only* its initial $6 stop-loss protecting
-it - no broker take-profit exists to fall back on, and nothing will ever
-move the SL to lock in profit or trail. Both halves need to be running for
+**If neither MQL5 EA is running**, a position opened under any `exit_style`
+except `fixed_tp` has *only* its initial $6 stop-loss protecting it - no
+broker take-profit exists to fall back on, and nothing will ever move the SL
+to breakeven, lock in profit, or trail. Both halves need to be running for
 the full exit design to work; see "2. MQL5 side" below.
 
 ## Setup
@@ -234,7 +277,13 @@ actually placed).
 2. Drag it onto an XAUUSD chart. In the **Inputs** tab, confirm
    `InpMagicNumber` matches `python/config.py`'s `AdvisorConfig.magic`
    (both default to `20260921` - only change one if you change the other).
-   Tick "Allow Algo Trading".
+   If you're using `exit_style="breakeven_r_decay"`, also set
+   `InpExitStyle` to `EXIT_BREAKEVEN_R_DECAY` and keep
+   `InpBreakevenAtrMult`/`InpAtrPeriod`/`InpDecayWindowMinutes` (and
+   `InpAtrTimeframe`) in sync with `breakeven_atr_mult`/
+   `breakeven_atr_period`/`decay_window_minutes` in `config.py` by hand -
+   otherwise leave `InpExitStyle` at its default (`EXIT_SL_TO_TP1`). Tick
+   "Allow Algo Trading".
 3. Leave `InpDryRun = true` until you've watched it log a few would-be
    trail modifications and trust the output, then flip it off.
 
@@ -394,6 +443,10 @@ difference on real data. Run `--compare` against real exported history (or
 
 ### Honest limitations of the backtest itself
 
+- **No `breakeven_r_decay` simulation.** `backtest.py` only simulates
+  `sl_to_tp1` and `fixed_tp` - `breakeven_r_decay` is live-only, implemented
+  in the MQL5 EAs (see "Exit design" above). Passing it to `backtest.py`
+  raises rather than silently mis-simulating it as `sl_to_tp1`.
 - **Bar-level, not tick-level.** Exit checks use each bar's high/low, not
   genuine intrabar sequencing - see `HistoricalGateway.manage_positions`'s
   docstring for the specific, documented ordering assumption (a trail that

@@ -50,20 +50,36 @@
 //| 20260921) or this EA will simply never see the positions Python    |
 //| opens.                                                              |
 //|                                                                    |
-//| SHARED EXIT DESIGN, BOTH SOURCES (exit_style="sl_to_tp1", matching |
-//| ClaudeSMC_TradeManager.mq5): no broker take-profit is ever placed. |
-//| The stop-loss is the only exit mechanism. Once floating profit     |
-//| reaches InpTp1Dollars, the SL moves to EXACTLY that price - locking|
-//| in that much profit, no more no less, in one deterministic step -  |
-//| then trails InpTrailDollars behind new highs/lows from there,      |
-//| tightening only. "Armed" (locked vs. still trailing) is derived    |
-//| every tick from whether a position's OWN current SL has already    |
-//| reached the lock level, never stored - this EA needs no memory     |
-//| across ticks or restarts and stays correct even if reattached      |
-//| mid-trade. Dollar amounts are converted to a price distance per     |
-//| position using that position's own volume and the symbol's live    |
-//| tick value/size (price_distance = dollars * tick_size /            |
-//| (tick_value * volume)) - never an assumed contract size.            |
+//| SHARED EXIT DESIGN, BOTH SOURCES: no broker take-profit is ever    |
+//| placed. The stop-loss is the only exit mechanism. Once floating    |
+//| profit reaches InpTp1Dollars, the SL moves to EXACTLY that price - |
+//| locking in that much profit, no more no less, in one deterministic |
+//| step - then trails InpTrailDollars behind new highs/lows from      |
+//| there, tightening only. "Armed" (locked vs. still trailing) is     |
+//| derived every tick from whether a position's OWN current SL has    |
+//| already reached the lock level, never stored - this EA needs no    |
+//| memory across ticks or restarts and stays correct even if          |
+//| reattached mid-trade. Dollar amounts are converted to a price       |
+//| distance per position using that position's own volume and the     |
+//| symbol's live tick value/size (price_distance = dollars *           |
+//| tick_size / (tick_value * volume)) - never an assumed contract     |
+//| size. This is InpExitStyle=EXIT_SL_TO_TP1 (the default) and it's   |
+//| the ONLY style Telegram-sourced positions ever use.                |
+//|                                                                    |
+//| InpExitStyle=EXIT_BREAKEVEN_R_DECAY adds one earlier protective    |
+//| step before the above, and applies ONLY to InpClaudeMagicNumber    |
+//| positions (mirrors python/config.py AdvisorConfig.exit_style -     |
+//| keep the two in sync by hand): once floating profit reaches         |
+//| InpBreakevenAtrMult x this position's own InpAtrPeriod-bar ATR on   |
+//| InpAtrTimeframe, OR InpDecayWindowMinutes have passed since the     |
+//| position opened (whichever happens first) - and only if price has  |
+//| actually moved far enough into profit to place a valid stop there  |
+//| - the SL moves to EXACTLY the entry price (breakeven). A fast move |
+//| can still jump straight past this step to the full TP1 lock in one |
+//| tick (the lock check always runs first). See                       |
+//| ../../ClaudeSMC_Trader/MQL5/Experts/ClaudeSMC_TradeManager.mq5's   |
+//| own file header for the full design rationale - this EA's copy is  |
+//| identical logic, just scoped to InpClaudeMagicNumber only.          |
 //|                                                                    |
 //| SHARED POSITION CAP: InpMaxPositionsPerDirection (default 5) is a  |
 //| SINGLE combined ceiling counted across BOTH InpTelegramMagicNumber |
@@ -154,6 +170,19 @@ input long    InpTelegramMagicNumber = 20260922;   // This EA's own Telegram-sou
 input long    InpClaudeMagicNumber   = 20260921;   // MUST match python/config.py AdvisorConfig.magic
 input bool    InpDryRun              = true;       // Log what would happen; do not send/modify real orders
 
+enum ENUM_EXIT_STYLE
+{
+   EXIT_SL_TO_TP1,          // Default - lock at InpTp1Dollars, then trail (see file header)
+   EXIT_BREAKEVEN_R_DECAY   // Adds an earlier breakeven step, InpClaudeMagicNumber positions only - see below
+};
+
+input group "=== Claude-management exit style - InpClaudeMagicNumber positions ONLY, never Telegram's ==="
+input ENUM_EXIT_STYLE InpExitStyle = EXIT_SL_TO_TP1;      // Must match python/config.py AdvisorConfig.exit_style
+input double          InpBreakevenAtrMult   = 0.5;        // EXIT_BREAKEVEN_R_DECAY only: move SL to breakeven once profit reaches this x ATR
+input ENUM_TIMEFRAMES InpAtrTimeframe       = PERIOD_M5;  // EXIT_BREAKEVEN_R_DECAY only: timeframe the ATR is read from
+input int             InpAtrPeriod          = 14;         // EXIT_BREAKEVEN_R_DECAY only: ATR period
+input double          InpDecayWindowMinutes = 15.0;       // EXIT_BREAKEVEN_R_DECAY only: force breakeven after this long even short of the ATR trigger
+
 input group "=== Telegram Bot - only used if InpEnableTelegramSignals (see file header for setup) ==="
 input string  InpBotToken          = "";           // Bot token from @BotFather
 input long    InpChannelId1        = 0;            // Only copy signals from this chat id (0 = slot unused)
@@ -199,8 +228,11 @@ CTrade   trade;
 long     g_lastUpdateId  = 0;
 datetime g_currentDay    = 0;
 int      g_tradesToday   = 0;
+int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - see OnInit/OnDeinit
 
 // Forward declarations
+double   BreakevenAtrDistance();
+bool     BreakevenDue(ulong ticket, double profit);
 double   PipSize();
 bool     IsAllowedChat(long chatId);
 datetime DateToDay(datetime t);
@@ -258,6 +290,23 @@ int OnInit()
       Print("UnifiedTrader_EA: InpTelegramMagicNumber and InpClaudeMagicNumber must differ - otherwise "
             "this EA cannot tell the two sources' positions apart.");
       return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
+   {
+      if(InpBreakevenAtrMult <= 0.0 || InpAtrPeriod <= 0 || InpDecayWindowMinutes <= 0.0)
+      {
+         Print("UnifiedTrader_EA: InpBreakevenAtrMult, InpAtrPeriod and InpDecayWindowMinutes must all "
+               "be positive under EXIT_BREAKEVEN_R_DECAY.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+      g_atrHandle = iATR(_Symbol, InpAtrTimeframe, InpAtrPeriod);
+      if(g_atrHandle == INVALID_HANDLE)
+      {
+         Print("UnifiedTrader_EA: iATR() failed - cannot run EXIT_BREAKEVEN_R_DECAY.");
+         return(INIT_FAILED);
+      }
+      Print("UnifiedTrader_EA: EXIT_BREAKEVEN_R_DECAY is active for InpClaudeMagicNumber positions only "
+            "- InpTelegramMagicNumber positions always use EXIT_SL_TO_TP1 regardless of this setting.");
    }
 
    if(InpEnableTelegramSignals)
@@ -329,10 +378,12 @@ int OnInit()
       EventSetTimer(MathMax(1, InpPollSeconds));
 
    PrintFormat("UnifiedTrader_EA: ready. symbol=%s lot=%.2f max_per_direction=%d (shared) "
-               "telegram=%s (magic=%I64d) claude=%s (magic=%I64d) sl=$%.2f tp1=$%.2f trail=$%.2f dryrun=%s",
+               "telegram=%s (magic=%I64d) claude=%s (magic=%I64d, exit_style=%s breakeven_atr_mult=%.2f "
+               "atr_period=%d decay_window_minutes=%.1f) sl=$%.2f tp1=$%.2f trail=$%.2f dryrun=%s",
                _Symbol, InpFixedLot, InpMaxPositionsPerDirection,
                InpEnableTelegramSignals ? "ON" : "off", InpTelegramMagicNumber,
                InpEnableClaudeManagement ? "ON" : "off", InpClaudeMagicNumber,
+               EnumToString(InpExitStyle), InpBreakevenAtrMult, InpAtrPeriod, InpDecayWindowMinutes,
                InpSlDollars, InpTp1Dollars, InpTrailDollars, InpDryRun ? "true" : "false");
 
    return(INIT_SUCCEEDED);
@@ -346,6 +397,32 @@ void OnDeinit(const int reason)
    EventKillTimer();
    GlobalVariableSet(GV_LAST_UPDATE_ID, (double)g_lastUpdateId);
    Comment("");
+   if(g_atrHandle != INVALID_HANDLE)
+      IndicatorRelease(g_atrHandle);
+}
+
+//+------------------------------------------------------------------+
+//| EXIT_BREAKEVEN_R_DECAY only (InpClaudeMagicNumber positions) -    |
+//| identical to ClaudeSMC_TradeManager.mq5's own copy of these two   |
+//| functions; see that file for the full design rationale.           |
+//+------------------------------------------------------------------+
+double BreakevenAtrDistance()
+{
+   if(g_atrHandle == INVALID_HANDLE)
+      return(DBL_MAX);
+   double atrBuf[];
+   if(CopyBuffer(g_atrHandle, 0, 0, 1, atrBuf) <= 0)
+      return(DBL_MAX);
+   return(InpBreakevenAtrMult * atrBuf[0]);
+}
+
+bool BreakevenDue(ulong ticket, double profit)
+{
+   if(profit >= BreakevenAtrDistance())
+      return(true);
+   datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+   long decaySeconds = (long)(InpDecayWindowMinutes * 60);
+   return((TimeCurrent() - openTime) >= decaySeconds);
 }
 
 //+------------------------------------------------------------------+
@@ -836,7 +913,11 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
 //| ../../ClaudeSMC_Trader/MQL5/Experts/ClaudeSMC_TradeManager.mq5's  |
 //| ManagePosition(), generalized to take the expected magic number   |
 //| as a parameter so the identical logic serves both sources - see   |
-//| file header's "SHARED EXIT DESIGN".                                |
+//| file header's "SHARED EXIT DESIGN". The one difference from that   |
+//| file: EXIT_BREAKEVEN_R_DECAY's extra breakeven step only ever      |
+//| applies when magic == InpClaudeMagicNumber (see useBreakevenDecay  |
+//| below) - Telegram-sourced positions always use plain lock-then-    |
+//| trail, regardless of InpExitStyle.                                  |
 //+------------------------------------------------------------------+
 void ManagePositionExit(ulong ticket, long magic)
 {
@@ -869,6 +950,11 @@ void ManagePositionExit(ulong ticket, long magic)
    bool changeSl = false;
    double newSl = currentSl;
 
+   // EXIT_BREAKEVEN_R_DECAY is a Claude-management-side setting only (see the
+   // input group comment) - Telegram-sourced positions always use the plain
+   // lock-then-trail shape below, regardless of InpExitStyle.
+   bool useBreakevenDecay = (InpExitStyle == EXIT_BREAKEVEN_R_DECAY && magic == InpClaudeMagicNumber);
+
    if(type == POSITION_TYPE_BUY)
    {
       double lockLevel = NormalizeDouble(openPrice + tp1Dist, digits);
@@ -880,6 +966,15 @@ void ManagePositionExit(ulong ticket, long magic)
          {
             newSl = lockLevel;
             changeSl = true;
+         }
+         else if(useBreakevenDecay)
+         {
+            bool atBreakeven = (currentSl > 0.0 && currentSl >= openPrice - point);
+            if(!atBreakeven && (tick.bid - openPrice) >= minStopDist && BreakevenDue(ticket, profit))
+            {
+               newSl = NormalizeDouble(openPrice, digits);
+               changeSl = true;
+            }
          }
       }
       else
@@ -903,6 +998,15 @@ void ManagePositionExit(ulong ticket, long magic)
          {
             newSl = lockLevel;
             changeSl = true;
+         }
+         else if(useBreakevenDecay)
+         {
+            bool atBreakeven = (currentSl > 0.0 && currentSl <= openPrice + point);
+            if(!atBreakeven && (openPrice - tick.ask) >= minStopDist && BreakevenDue(ticket, profit))
+            {
+               newSl = NormalizeDouble(openPrice, digits);
+               changeSl = true;
+            }
          }
       }
       else

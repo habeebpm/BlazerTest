@@ -10,6 +10,15 @@
 ; (both default 20260921). Ships with InpDryRun=true; only flip it once you
 ; trust the log output for how it wants to act.
 ;
+; InpExitStyle applies to InpClaudeMagicNumber positions ONLY (Telegram-
+; sourced positions always use plain lock-then-trail) - 0 is EXIT_SL_TO_TP1
+; (the default, matches AdvisorConfig.exit_style="sl_to_tp1"). Set it to 1
+; (EXIT_BREAKEVEN_R_DECAY) only if AdvisorConfig.exit_style is also
+; "breakeven_r_decay" - see config.py's module docstring - and keep
+; InpBreakevenAtrMult/InpAtrPeriod/InpDecayWindowMinutes in sync with
+; breakeven_atr_mult/breakeven_atr_period/decay_window_minutes there by
+; hand. InpAtrTimeframe=5 is PERIOD_M5 (MT5's raw ENUM_TIMEFRAMES value).
+;
 InpEnableTelegramSignals=false
 InpEnableClaudeManagement=false
 InpFixedLot=0.01
@@ -20,6 +29,11 @@ InpTrailDollars=3.0
 InpTelegramMagicNumber=20260922
 InpClaudeMagicNumber=20260921
 InpDryRun=true
+InpExitStyle=0
+InpBreakevenAtrMult=0.5
+InpAtrTimeframe=5
+InpAtrPeriod=14
+InpDecayWindowMinutes=15.0
 InpBotToken=
 InpChannelId1=0
 InpChannelId2=0

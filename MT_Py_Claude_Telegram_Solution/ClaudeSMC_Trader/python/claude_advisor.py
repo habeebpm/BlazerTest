@@ -60,6 +60,24 @@ THE THREE CONFLUENCES (evaluate each independently, then combine):
 A leg's `direction` is whichever side it actually leans (buy/sell/neutral) - \
 evaluate it honestly even if that's the opposite of the other two legs.
 
+EXTENDED-ENTRY MOMENTUM CHECK - if price already looks stretched in your \
+trade's direction (noticeably extended from its EMAs, RSI14 already \
+elevated toward the 70/30 block zone rather than freshly crossing into \
+confluence) you are looking at a CHASE, not a fresh entry, and momentum \
+needs to still be building, not just present. `primary_indicators.\
+macd_hist_shape` gives you the last several histogram bars and whether the \
+current one is `declining_from_peak` (already retreating from its recent \
+high/low, even though it may still be on the trade's side of zero and still \
+pass the mechanical MOMENTUM test above). For an entry you judge as \
+extended/chasing specifically: if `declining_from_peak` is true, treat that \
+as a NO TRADE - direction "none", or "partial" at best, never "full" - and \
+say so in your reasoning (wait for a pullback/reset rather than chase \
+decelerating momentum). This was learned the hard way: comparing a losing \
+chase entry against winning ones, the winners all had momentum still \
+accelerating at entry, not just direction agreeing. It does NOT apply to a \
+fresh, early-stage move that isn't extended - only to entries you'd \
+already call a chase on their own merits.
+
 CONFLUENCE COUNT: how many of the three legs point the SAME direction as your \
 overall `direction` call (0-3). The existing mechanical version of this bot \
 requires >= 2 of 3 with >= 1 confirmed before it would even consider a trade \

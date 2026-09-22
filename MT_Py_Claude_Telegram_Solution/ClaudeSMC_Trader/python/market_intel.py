@@ -16,7 +16,10 @@ can't.
 
 What's fed to Claude, all computed here:
   - Trend:      EMA20/EMA50/EMA200 (primary TF), H4 EMA200 macro bias, ATR
-  - Momentum:   RSI(14), MACD(12,26,9) line/signal/histogram, Stochastic
+  - Momentum:   RSI(14), MACD(12,26,9) line/signal/histogram, Stochastic,
+                a 6-bar MACD histogram window + whether it's declining from
+                its recent peak (for the extended-entry check - see
+                claude_advisor.SYSTEM_PROMPT)
   - Strength:   ADX(14), +DI/-DI
   - Volatility: ATR(14), Bollinger Bands(20,2) %B and bandwidth
   - SMC:        liquidity sweep (stop-hunt-then-reclaim) detection,
@@ -69,6 +72,35 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
+
+
+def macd_hist_shape(hist: pd.Series, lookback: int = 6) -> dict:
+    """A short window of MACD histogram bars, so Claude can tell decelerating
+    momentum from accelerating momentum - something a single-bar macd_hist
+    vs macd_hist_prev comparison can't see. Added for the "extended-entry"
+    momentum check in claude_advisor.SYSTEM_PROMPT: a chased entry where the
+    histogram already peaked and is now retreating (still on the right side
+    of zero, still passing the mechanical momentum test) is a materially
+    weaker setup than one where momentum is still building - measured in
+    practice against trade history (a loss on an extended entry with a
+    already-declining histogram, versus wins on extended entries where it
+    was still accelerating).
+
+    "Peak" is read in the direction the histogram already leans: the highest
+    value in the window for bullish (positive) momentum, the lowest (most
+    negative) for bearish - so this works the same for either direction
+    without needing to know the trade's intended direction up front.
+    """
+    recent = hist.tail(lookback)
+    current = float(recent.iloc[-1])
+    peak = float(recent.max()) if current >= 0 else float(recent.min())
+    declining = current < peak if current >= 0 else current > peak
+    return {
+        "lookback_bars": lookback,
+        "values": [round(float(v), 4) for v in recent.tolist()],
+        "peak_in_window": round(peak, 4),
+        "declining_from_peak": bool(declining),
+    }
 
 
 def true_range(df: pd.DataFrame) -> pd.Series:
@@ -387,6 +419,7 @@ def timeframe_indicators(df: pd.DataFrame) -> dict:
         "rsi14": last(rsi(close)),
         "macd_line": last(macd_line), "macd_signal": last(macd_signal), "macd_hist": last(macd_hist),
         "macd_hist_prev": round(float(macd_hist.iloc[-2]), 4),
+        "macd_hist_shape": macd_hist_shape(macd_hist),
         "adx14": last(adx), "plus_di": last(plus_di), "minus_di": last(minus_di),
         "stoch_k": last(stoch_k), "stoch_d": last(stoch_d),
         "atr14": last(atr14),

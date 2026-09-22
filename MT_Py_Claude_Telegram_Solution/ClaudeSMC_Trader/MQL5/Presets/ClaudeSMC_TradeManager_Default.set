@@ -8,7 +8,21 @@
 ; opens. Ships with InpDryRun=true; only flip it once you trust the log
 ; output for how it wants to modify a real position.
 ;
+; InpExitStyle=0 is EXIT_SL_TO_TP1 (the default - matches AdvisorConfig.
+; exit_style="sl_to_tp1"). Set it to 1 (EXIT_BREAKEVEN_R_DECAY) only if
+; AdvisorConfig.exit_style is also "breakeven_r_decay" - see config.py's
+; module docstring - and keep InpBreakevenAtrMult/InpAtrPeriod/
+; InpDecayWindowMinutes in sync with breakeven_atr_mult/breakeven_atr_period/
+; decay_window_minutes there by hand. InpAtrTimeframe=5 is PERIOD_M5 (MT5's
+; raw ENUM_TIMEFRAMES value), matching config.py's default breakeven ATR
+; timeframe - the MetaTrader Inputs dialog itself will show it as "M5".
+;
 InpMagicNumber=20260921
 InpDryRun=true
 InpTp1Dollars=6.0
 InpTrailDollars=3.0
+InpExitStyle=0
+InpBreakevenAtrMult=0.5
+InpAtrTimeframe=5
+InpAtrPeriod=14
+InpDecayWindowMinutes=15.0
