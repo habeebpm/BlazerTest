@@ -19,6 +19,12 @@
 ; breakeven_atr_mult/breakeven_atr_period/decay_window_minutes there by
 ; hand. InpAtrTimeframe=5 is PERIOD_M5 (MT5's raw ENUM_TIMEFRAMES value).
 ;
+; InpControlChatId=0 (default) disables remote control entirely. Set it to
+; your own DM chat id with this bot (never the signal channel's) to enable
+; PauseHab/ResumeHab/PauseTelHab/PauseClaudeHab - see the .mq5 file header's
+; REMOTE CONTROL section. Needs InpBotToken set even if
+; InpEnableTelegramSignals is false.
+;
 InpEnableTelegramSignals=false
 InpEnableClaudeManagement=false
 InpFixedLot=0.01
@@ -44,3 +50,4 @@ InpTradeXAUUSDOnly=true
 InpMaxTradesPerDay=0
 InpPendingExpiryMin=240
 InpMaxEntryDeviationPips=200.0
+InpControlChatId=0

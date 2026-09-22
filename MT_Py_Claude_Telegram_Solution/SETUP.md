@@ -336,6 +336,13 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
    `InpTrailDollars=3.0`.
 6. Leave `InpDryRun=true` until you trust the logged behavior.
 
+**Optional remote control:** set `InpControlChatId` to your own DM chat id
+with the bot to enable `PauseHab`/`ResumeHab`/`PauseTelHab`/
+`PauseClaudeHab` - text commands that close positions and pause new
+Telegram entries on demand. See `UnifiedTrader/README.md` § "Remote
+control" - note it can close open Claude-sourced positions but can't stop
+Python from opening a new one next cycle.
+
 **Making the shared cap symmetric (recommended):** this EA enforces the
 combined cap for its own Telegram entries only - it can't intercept an
 order Python places directly.
@@ -413,6 +420,13 @@ formula, or config default.
 - **UnifiedTrader_EA's shared cap doesn't hold Claude back** - set
   Python's `shared_cap_magic_numbers` to `[InpTelegramMagicNumber]` too
   (§ 6) - this EA alone can't intercept Python's own orders.
+- **PauseHab/PauseClaudeHab closed Claude positions but a new one opened
+  anyway** - expected (§ 6) - this EA can't stop `python/main.py` from
+  deciding a new entry; stop `main.py` itself if you need that blocked too.
+- **PauseHab/ResumeHab don't seem to do anything** - `InpControlChatId`
+  must be your own DM chat id with the bot, never `InpChannelId1`/
+  `InpChannelId2` (OnInit refuses to start if they match) - see
+  `UnifiedTrader/README.md` § "Remote control" for how to find it.
 - **XTR_Export uploads fail with a quota/storage error** - the target
   Drive folder wasn't shared with the service account's email (a service
   account has no storage of its own).

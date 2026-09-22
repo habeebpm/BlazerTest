@@ -98,6 +98,63 @@ wins for its own new entries while the higher one keeps opening past it.
 `shared_cap_magic_numbers` is set, but can't verify the MQL5-side value
 for you - check it by hand.
 
+## Remote control (optional): PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab
+
+Four plain-text commands, DM'd to this bot from your own Telegram account
+(`InpControlChatId`) - a completely separate command path from trading
+signals, matched by **exact** text (trimmed, case-insensitive), never
+substring, since these close real positions. Also subject to
+`InpMaxSignalAgeSec` like any trading signal: a command queued during a
+long outage and only delivered once the EA reconnects is dropped as stale
+rather than force-closing positions you may no longer want touched - just
+resend it if it's still what you want.
+
+| Command | What it does |
+|---|---|
+| `PauseHab` | Closes every open position on this chart's symbol, under both magics, cancels Telegram pending orders there, and blocks new Telegram entries until `ResumeHab`. |
+| `ResumeHab` | Re-enables new Telegram entries. Reopens nothing. |
+| `PauseTelHab` | Closes this symbol's Telegram-sourced positions/orders only and blocks new Telegram entries until `ResumeHab`. Claude-sourced positions untouched. |
+| `PauseClaudeHab` | Closes this symbol's Claude-sourced (`InpClaudeMagicNumber`) positions only. |
+
+**Scope: this chart's symbol only**, like every other position-management
+function in this file (`CloseAllMine`/`CancelAllPendingMine`/
+`ManageAllPositions`) - a position opened by hand on a different symbol is
+untouched by any of these four commands.
+
+**Run only one instance of this EA per terminal, on any symbol.** This was
+already true before remote control existed - the Telegram update-id
+cursor is a terminal-wide Global Variable, not scoped per chart - and
+remains true for the new pause state too (the same mechanism): a second
+running instance, even on a different symbol or with its own bot token,
+shares both with this one and will corrupt them, including silently
+pausing or resuming a chart nobody ever sent a command to. (The daily
+trade counter is unaffected - that one's plain per-instance memory.)
+
+**This EA can only gate its own new entries (Telegram) - never Python's.**
+`PauseHab`/`PauseClaudeHab` close every open Claude-sourced position right
+now, but cannot stop `python/main.py` from opening a *new* one on its very
+next evaluation cycle - there is no channel for this EA to tell that
+separate process to stop. If you need Claude-side entries blocked too,
+stop `main.py` itself (or send it `--once` runs only) in addition to
+sending the command.
+
+**Setup:**
+1. Set `InpControlChatId` to your own DM chat id with this bot - **never**
+   `InpChannelId1`/`InpChannelId2` (OnInit refuses to start if they match).
+   To find it: message the bot directly (not the signal channel) once,
+   then open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser
+   and read `"chat":{"id": ...}` from that message's entry.
+2. `InpBotToken` must be set even if `InpEnableTelegramSignals` is false -
+   a bot token is needed to receive the control DM regardless of whether
+   Telegram signal *execution* is on.
+3. Leaving `InpControlChatId=0` (the default) disables this feature
+   entirely - no behavior change, nothing extra polled.
+
+The pause state (new Telegram entries blocked or not) is saved to a
+terminal Global Variable the moment it changes, the same mechanism already
+used for the Telegram update-id cursor - it survives a restart/reattach
+rather than silently resetting to "resumed".
+
 ## Setup
 
 1. Copy `MQL5/Experts/UnifiedTrader_EA.mq5` into your terminal's
@@ -138,9 +195,12 @@ for you - check it by hand.
 - **The shared position cap is only truly symmetric if you also configure
   Python's `shared_cap_magic_numbers`** - see above. This EA alone can
   only gate its own new entries, not intercept another process's.
-- **CLOSE/CANCEL act only on Telegram-sourced positions/orders**, never on
-  Claude-sourced ones - those remain Python's (and, for exits,
-  `ManagePositionExit`'s) to manage.
+- **CLOSE/CANCEL (from the signal channel) act only on Telegram-sourced
+  positions/orders**, never on Claude-sourced ones - those remain
+  Python's (and, for exits, `ManagePositionExit`'s) to manage. The
+  separate remote-control `PauseClaudeHab`/`PauseHab` commands (see above)
+  are the one deliberate exception - they close Claude-sourced positions
+  too, but only ever from `InpControlChatId`, never the signal channel.
 - **No "move SL to breakeven" text command**, unlike `TelegramSMC_Copier.mq5`
   - the automatic lock-then-trail exit already gets every position to
   breakeven-or-better once `InpTp1Dollars` is reached, generally faster

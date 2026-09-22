@@ -104,6 +104,49 @@
 //| InpTelegramMagicNumber positions/pending orders only - never on    |
 //| InpClaudeMagicNumber ones, which are Python's to manage.            |
 //|                                                                    |
+//| REMOTE CONTROL (InpControlChatId, optional): four plain-text        |
+//| commands, DM'd to this bot from InpControlChatId ONLY (a private    |
+//| 1:1 chat, never the signal channel/group) - a completely separate   |
+//| command path from trading-signal parsing, matched by EXACT text     |
+//| (trimmed, case-insensitive), not substring, since these close real  |
+//| positions:                                                          |
+//|   PauseHab        - closes every open position on THIS CHART'S       |
+//|                      SYMBOL under both magics, and cancels Telegram   |
+//|                      pending orders there, then blocks new Telegram   |
+//|                      entries until ResumeHab.                        |
+//|   ResumeHab        - re-enables new Telegram entries. Reopens        |
+//|                      nothing.                                        |
+//|   PauseTelHab      - closes this symbol's Telegram-sourced           |
+//|                      positions/orders only and blocks new Telegram   |
+//|                      entries until ResumeHab. Claude-sourced         |
+//|                      positions untouched.                            |
+//|   PauseClaudeHab   - closes this symbol's Claude-sourced             |
+//|                      (InpClaudeMagicNumber) positions only.          |
+//| SCOPE: like every other position-management function in this file    |
+//| (CloseAllMine/CancelAllPendingMine/ManageAllPositions), all four      |
+//| commands only ever touch positions/orders on the symbol of the chart |
+//| this EA instance is attached to - a position opened by hand on a     |
+//| different symbol is untouched. RUN ONLY ONE INSTANCE OF THIS EA PER   |
+//| TERMINAL, on any symbol - this was already true before remote        |
+//| control existed (GV_LAST_UPDATE_ID is a terminal-wide Global          |
+//| Variable, not scoped per chart) and remains true for the new pause    |
+//| state too (GV_TELEGRAM_PAUSED, same mechanism): a second running      |
+//| instance, even on a different symbol or with its own InpBotToken,     |
+//| shares BOTH of those with this one and will corrupt them - including  |
+//| silently pausing/resuming a chart nobody sent a command to. (This     |
+//| does NOT affect g_currentDay/g_tradesToday - those are plain          |
+//| per-instance memory, never written to a Global Variable.)              |
+//| IMPORTANT LIMIT: this EA can gate its OWN new entries (Telegram)     |
+//| but never Python's - PauseHab/PauseClaudeHab close open Claude       |
+//| positions right now, but CANNOT stop python/main.py from opening a   |
+//| NEW Claude-sourced one on its very next evaluation cycle. Stop       |
+//| main.py separately if you need that blocked too. The pause state     |
+//| (Telegram entries blocked or not) is saved to a terminal Global      |
+//| Variable, the same mechanism InpControlChatId=0 already uses for     |
+//| g_lastUpdateId, so it survives a restart/reattach rather than        |
+//| silently resetting to "resumed". Leaving InpControlChatId=0 (the     |
+//| default) disables this feature entirely - no behavior change.        |
+//|                                                                    |
 //| TELEGRAM SETUP (only if InpEnableTelegramSignals): identical to    |
 //| TelegramSMC_Copier.mq5's - @BotFather /newbot for InpBotToken, add  |
 //| that bot to the channel as admin, Tools > Options > Expert Advisors|
@@ -141,6 +184,7 @@
 #define ACTION_MODIFY_SL 4
 
 #define GV_LAST_UPDATE_ID "UnifiedTrader_EA_LastUpdateId"
+#define GV_TELEGRAM_PAUSED "UnifiedTrader_EA_TelegramPaused"
 
 // Deliberately NOT TelegramSMC_Common.mqh's TSMC_SIGNAL_SOURCE ("Telegram_Sig")
 // - that constant's own doc comment reserves it for TelegramSMC_Copier.mq5
@@ -189,13 +233,16 @@ input long    InpChannelId1        = 0;            // Only copy signals from thi
 input long    InpChannelId2        = 0;            // ...and this one (0 = slot unused; both 0 = ANY chat - unsafe, first-run only)
 input int     InpPollSeconds       = 5;            // How often to poll Telegram for new messages
 input int     InpHttpTimeoutMs     = 5000;         // WebRequest timeout (ms)
-input int     InpMaxSignalAgeSec   = 180;          // Reject a signal older than this many seconds (0 = no limit)
+input int     InpMaxSignalAgeSec   = 180;          // Reject a signal/control command older than this many seconds (0 = no limit)
 input bool    InpTradeXAUUSDOnly   = true;         // Require chart symbol to contain "XAU"
 input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-sourced trades only)
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity - kept from TelegramSMC_Copier.mq5 (pips; 1 pip = 10 broker points) ==="
 input double  InpMaxEntryDeviationPips = 200.0;    // Reject if current price is this far outside the signaled zone
+
+input group "=== Remote control (optional) - see file header's REMOTE CONTROL section ==="
+input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
 
 //================================= TYPES ====================================
 
@@ -229,6 +276,7 @@ long     g_lastUpdateId  = 0;
 datetime g_currentDay    = 0;
 int      g_tradesToday   = 0;
 int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - see OnInit/OnDeinit
+bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab - see file header
 
 // Forward declarations
 double   BreakevenAtrDistance();
@@ -250,8 +298,12 @@ void     ParseSignalText(const string &rawText, SignalMsg &msg);
 double   DollarsToPrice(double dollars, double volume);
 int      CountSameDirection(int direction);
 void     ExpirePendingOrders();
-void     CloseAllMine();
-void     CancelAllPendingMine();
+int      ClosePositionsByMagic(long magic, const string &label);
+int      CloseAllMine();
+int      CancelAllPendingMine();
+int      CloseAllClaudeMine();
+void     SetTelegramPaused(bool paused);
+void     ProcessControlCommand(const string &rawText);
 bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                            string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode);
 void     ManagePositionExit(ulong ticket, long magic);
@@ -285,8 +337,15 @@ int OnInit()
       Print("UnifiedTrader_EA: InpFixedLot, InpSlDollars, InpTp1Dollars and InpTrailDollars must all be positive.");
       return(INIT_PARAMETERS_INCORRECT);
    }
-   if(InpEnableTelegramSignals && InpTelegramMagicNumber == InpClaudeMagicNumber)
+   if(InpTelegramMagicNumber == InpClaudeMagicNumber)
    {
+      // Unconditional, not just under InpEnableTelegramSignals: the remote-
+      // control commands (PauseTelHab/PauseClaudeHab/PauseHab) and
+      // ManageAllPositions() both dispatch on these two magics whenever this
+      // EA is running at all, regardless of which source(s) are enabled - a
+      // collision here would make PauseTelHab close Claude-sourced positions
+      // too (or vice versa), silently contradicting what each command
+      // documents itself as touching.
       Print("UnifiedTrader_EA: InpTelegramMagicNumber and InpClaudeMagicNumber must differ - otherwise "
             "this EA cannot tell the two sources' positions apart.");
       return(INIT_PARAMETERS_INCORRECT);
@@ -338,6 +397,24 @@ int OnInit()
    if(InpEnableClaudeManagement)
       PrintFormat("UnifiedTrader_EA: managing exits for magic=%I64d (must match python/config.py's "
                   "AdvisorConfig.magic).", InpClaudeMagicNumber);
+   if(InpControlChatId != 0)
+   {
+      if(StringLen(InpBotToken) == 0)
+      {
+         Print("UnifiedTrader_EA: InpControlChatId is set but InpBotToken is empty - a bot token is "
+               "needed to receive control-command DMs even if InpEnableTelegramSignals is off.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+      if(InpChannelId1 == InpControlChatId || InpChannelId2 == InpControlChatId)
+      {
+         Print("UnifiedTrader_EA: InpControlChatId must differ from InpChannelId1/InpChannelId2 - a "
+               "message from the signal channel must never be treated as a control command.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+      PrintFormat("UnifiedTrader_EA: remote control ENABLED via chat %I64d (PauseHab/ResumeHab/"
+                  "PauseTelHab/PauseClaudeHab) - see file header's REMOTE CONTROL section.",
+                  InpControlChatId);
+   }
    if(InpDryRun)
       Print("UnifiedTrader_EA: DRY-RUN mode - no real orders will be sent or positions modified. Set "
             "InpDryRun=false only after checking the log against every message/position it handles.");
@@ -367,6 +444,13 @@ int OnInit()
    double gv;
    g_lastUpdateId = GlobalVariableGet(GV_LAST_UPDATE_ID, gv) ? (long)gv : 0;
 
+   double gvPaused;
+   g_telegramPaused = GlobalVariableGet(GV_TELEGRAM_PAUSED, gvPaused) ? (gvPaused != 0.0) : false;
+   if(g_telegramPaused)
+      Print("UnifiedTrader_EA: restored PAUSED state from a previous PauseHab/PauseTelHab - new "
+            "Telegram entries remain BLOCKED until ResumeHab (persisted across restarts - see file "
+            "header's REMOTE CONTROL section).");
+
    trade.SetDeviationInPoints(30);
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.LogLevel(LOG_LEVEL_ERRORS);
@@ -374,17 +458,24 @@ int OnInit()
    g_currentDay  = DateToDay(TimeCurrent());
    g_tradesToday = 0;
 
-   if(InpEnableTelegramSignals)
+   // The timer also has to run when ONLY remote control is wanted (Telegram
+   // signal EXECUTION itself off) - ProcessSignal()'s own InpEnableTelegramSignals
+   // check (see below) is what actually keeps that combination from opening
+   // any position; the timer running is not itself permission to trade.
+   if(InpEnableTelegramSignals || InpControlChatId != 0)
       EventSetTimer(MathMax(1, InpPollSeconds));
 
    PrintFormat("UnifiedTrader_EA: ready. symbol=%s lot=%.2f max_per_direction=%d (shared) "
-               "telegram=%s (magic=%I64d) claude=%s (magic=%I64d, exit_style=%s breakeven_atr_mult=%.2f "
-               "atr_period=%d decay_window_minutes=%.1f) sl=$%.2f tp1=$%.2f trail=$%.2f dryrun=%s",
+               "telegram=%s (magic=%I64d, paused=%s) claude=%s (magic=%I64d, exit_style=%s "
+               "breakeven_atr_mult=%.2f atr_period=%d decay_window_minutes=%.1f) sl=$%.2f tp1=$%.2f "
+               "trail=$%.2f dryrun=%s control_chat=%s",
                _Symbol, InpFixedLot, InpMaxPositionsPerDirection,
                InpEnableTelegramSignals ? "ON" : "off", InpTelegramMagicNumber,
+               g_telegramPaused ? "true" : "false",
                InpEnableClaudeManagement ? "ON" : "off", InpClaudeMagicNumber,
                EnumToString(InpExitStyle), InpBreakevenAtrMult, InpAtrPeriod, InpDecayWindowMinutes,
-               InpSlDollars, InpTp1Dollars, InpTrailDollars, InpDryRun ? "true" : "false");
+               InpSlDollars, InpTp1Dollars, InpTrailDollars, InpDryRun ? "true" : "false",
+               InpControlChatId != 0 ? "set" : "off");
 
    return(INIT_SUCCEEDED);
 }
@@ -763,34 +854,174 @@ void ExpirePendingOrders()
 }
 
 //+------------------------------------------------------------------+
-//| CLOSE/CANCEL act only on this EA's own Telegram-sourced positions |
-//| and pending orders - never on InpClaudeMagicNumber ones, which    |
-//| are Python's to manage (see file header).                          |
+//| Shared loop for CloseAllMine()/CloseAllClaudeMine() below -       |
+//| closes every open position on THIS symbol under `magic`. `label`  |
+//| is cosmetic only (which side the dry-run/failure log line names). |
+//| Returns how many were ACTUALLY closed (or, under InpDryRun, would |
+//| be) - a failed trade.PositionClose() (requote, busy trade context, |
+//| broker reject) is logged and does NOT count, so a PauseHab/        |
+//| PauseTelHab/PauseClaudeHab summary never overstates how much       |
+//| exposure is really gone during what's usually an emergency action. |
 //+------------------------------------------------------------------+
-void CloseAllMine()
+int ClosePositionsByMagic(long magic, const string &label)
 {
+   int closed = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((long)PositionGetInteger(POSITION_MAGIC) != InpTelegramMagicNumber) continue;
-      if(InpDryRun) PrintFormat("UnifiedTrader_EA: [DRY-RUN] would close ticket %I64u", ticket);
-      else trade.PositionClose(ticket);
+      if((long)PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(InpDryRun)
+      {
+         PrintFormat("UnifiedTrader_EA: [DRY-RUN] would close %s ticket %I64u", label, ticket);
+         closed++;
+      }
+      else if(trade.PositionClose(ticket))
+         closed++;
+      else
+         PrintFormat("UnifiedTrader_EA: FAILED to close %s ticket %I64u (retcode=%d %s) - still "
+                     "OPEN, check manually.", label, ticket, trade.ResultRetcode(),
+                     trade.ResultRetcodeDescription());
    }
+   return(closed);
 }
 
-void CancelAllPendingMine()
+//+------------------------------------------------------------------+
+//| CLOSE/CANCEL (from the signal channel) and PauseHab/PauseTelHab   |
+//| (from InpControlChatId) all act only on this EA's own Telegram-   |
+//| sourced positions and pending orders - never on InpClaudeMagic    |
+//| Number ones, which are Python's to manage (see file header).      |
+//+------------------------------------------------------------------+
+int CloseAllMine()
 {
+   return(ClosePositionsByMagic(InpTelegramMagicNumber, "Telegram"));
+}
+
+int CancelAllPendingMine()
+{
+   int cancelled = 0;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
       if((long)OrderGetInteger(ORDER_MAGIC) != InpTelegramMagicNumber) continue;
-      if(InpDryRun) PrintFormat("UnifiedTrader_EA: [DRY-RUN] would cancel pending order %I64u", ticket);
-      else trade.OrderDelete(ticket);
+      if(InpDryRun)
+      {
+         PrintFormat("UnifiedTrader_EA: [DRY-RUN] would cancel pending order %I64u", ticket);
+         cancelled++;
+      }
+      else if(trade.OrderDelete(ticket))
+         cancelled++;
+      else
+         PrintFormat("UnifiedTrader_EA: FAILED to cancel pending order %I64u (retcode=%d %s) - "
+                     "still PENDING, check manually.", ticket, trade.ResultRetcode(),
+                     trade.ResultRetcodeDescription());
    }
+   return(cancelled);
+}
+
+//+------------------------------------------------------------------+
+//| PauseClaudeHab/PauseHab only - closes InpClaudeMagicNumber        |
+//| positions. Unlike CloseAllMine() there is no matching "cancel      |
+//| pending" step: Python always sends market orders, never a resting |
+//| order under this magic (see file header) - nothing to cancel.     |
+//+------------------------------------------------------------------+
+int CloseAllClaudeMine()
+{
+   return(ClosePositionsByMagic(InpClaudeMagicNumber, "Claude"));
+}
+
+//+------------------------------------------------------------------+
+//| Sets g_telegramPaused for THIS run (so the pause gate in           |
+//| ProcessSignal is actually exercisable while dry-run testing this   |
+//| feature, per SETUP.md's own "leave InpDryRun=true until you trust  |
+//| it" workflow), but under InpDryRun never persists it to the        |
+//| terminal Global Variable - so a restart/reattach, or flipping      |
+//| InpDryRun to false and reattaching, always starts unpaused rather   |
+//| than silently inheriting a pause that was only ever a dry-run test. |
+//| Outside InpDryRun, persists immediately (not deferred to OnDeinit)  |
+//| so a real pause survives a crash/kill, not just a clean restart.    |
+//+------------------------------------------------------------------+
+void SetTelegramPaused(bool paused)
+{
+   g_telegramPaused = paused;
+   if(InpDryRun)
+   {
+      PrintFormat("UnifiedTrader_EA: [DRY-RUN] telegram-paused=%s for this run only - new Telegram "
+                  "OPEN signals will be gated accordingly while this run lasts, but nothing is "
+                  "persisted, so a restart/reattach (or flipping InpDryRun off) starts unpaused.",
+                  paused ? "true" : "false");
+      return;
+   }
+   GlobalVariableSet(GV_TELEGRAM_PAUSED, paused ? 1.0 : 0.0);
+}
+
+//+------------------------------------------------------------------+
+//| Remote control commands from InpControlChatId - see file header's |
+//| REMOTE CONTROL section for the full semantics of each. Matched by  |
+//| EXACT text (trimmed, case-insensitive), not substring - unlike     |
+//| trading-signal parsing, a false-positive match here closes real    |
+//| positions.                                                          |
+//+------------------------------------------------------------------+
+void ProcessControlCommand(const string &rawText)
+{
+   string cmd = rawText;
+   StringTrimLeft(cmd);
+   StringTrimRight(cmd);
+   StringToUpper(cmd);
+
+   if(cmd == "PAUSEHAB")
+   {
+      Print("UnifiedTrader_EA: PauseHab received - closing this symbol's positions under both "
+            "magics and pausing new Telegram entries.");
+      int telClosed    = CloseAllMine();
+      int telCancelled = CancelAllPendingMine();
+      int claudeClosed = CloseAllClaudeMine();
+      SetTelegramPaused(true);
+      PrintFormat("UnifiedTrader_EA: PauseHab %s %d Telegram position(s), %d pending order(s), %d "
+                  "Claude position(s). New Telegram entries are now BLOCKED until ResumeHab. "
+                  "Claude-side NEW entries are python/main.py's own decision - this EA cannot "
+                  "block those; stop main.py separately if you need to.",
+                  InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
+                  telClosed, telCancelled, claudeClosed);
+      return;
+   }
+   if(cmd == "RESUMEHAB")
+   {
+      SetTelegramPaused(false);
+      Print("UnifiedTrader_EA: ResumeHab received - new Telegram entries re-enabled (still subject "
+            "to InpEnableTelegramSignals). Nothing was reopened.");
+      return;
+   }
+   if(cmd == "PAUSETELHAB")
+   {
+      Print("UnifiedTrader_EA: PauseTelHab received - closing Telegram-sourced positions/orders and "
+            "pausing new Telegram entries. Claude-sourced positions are untouched.");
+      int telClosed    = CloseAllMine();
+      int telCancelled = CancelAllPendingMine();
+      SetTelegramPaused(true);
+      PrintFormat("UnifiedTrader_EA: PauseTelHab %s %d position(s), %d pending order(s). New "
+                  "Telegram entries are now BLOCKED until ResumeHab.",
+                  InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
+                  telClosed, telCancelled);
+      return;
+   }
+   if(cmd == "PAUSECLAUDEHAB")
+   {
+      Print("UnifiedTrader_EA: PauseClaudeHab received - closing Claude-sourced positions. Telegram-"
+            "sourced positions and its new-entry state are untouched.");
+      int claudeClosed = CloseAllClaudeMine();
+      PrintFormat("UnifiedTrader_EA: PauseClaudeHab %s %d Claude position(s). This EA cannot stop "
+                  "python/main.py from opening a NEW Claude-sourced position on its next "
+                  "evaluation cycle - stop main.py separately if you need that blocked too.",
+                  InpDryRun ? "[DRY-RUN] would close" : "done - closed",
+                  claudeClosed);
+      return;
+   }
+   PrintFormat("UnifiedTrader_EA: unrecognized control command from InpControlChatId: '%s' - "
+               "expected exactly one of PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab.", rawText);
 }
 
 //+------------------------------------------------------------------+
@@ -1134,6 +1365,21 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
 //+------------------------------------------------------------------+
 void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 {
+   if(!InpEnableTelegramSignals)
+   {
+      // Checked FIRST, before IsAllowedChat() - the timer can now run for
+      // InpControlChatId alone (see OnInit) even with Telegram signal
+      // EXECUTION fully off, and IsAllowedChat() treats
+      // InpChannelId1==InpChannelId2==0 (the shipped default - the exact
+      // state a control-only setup is left in) as "allow ANY chat", a
+      // deliberate first-run discovery behavior for setting UP Telegram
+      // signals. Without this check first, that combination would let a
+      // message from ANY chat - not just the intended signal channel, not
+      // just InpControlChatId - reach CLOSE/CANCEL below and close real
+      // positions. When Telegram signal execution is off, nothing from any
+      // chat may reach ProcessSignal's CLOSE/CANCEL/OPEN handling, full stop.
+      return;
+   }
    if(!IsAllowedChat(chatId))
    {
       PrintFormat("UnifiedTrader_EA: ignoring message from chat %I64d (allowed: %I64d, %I64d)",
@@ -1165,6 +1411,14 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       Print("UnifiedTrader_EA: message did not parse as an actionable signal - ignoring.");
       LogSignalRow(chatId, "UNKNOWN", "", msg.symbolOk, 0, 0, "", true, "", false, "", 0, 0,
                    InpDryRun, 0, 0, rawText);
+      return;
+   }
+   if(g_telegramPaused)
+   {
+      Print("UnifiedTrader_EA: new Telegram entries are PAUSED (PauseHab/PauseTelHab) - ignoring "
+            "signal. Send ResumeHab to re-enable.");
+      LogSignalRow(chatId, "OPEN", "", msg.symbolOk, msg.entryA, msg.entryB, "",
+                   true, "paused via PauseHab/PauseTelHab", false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
 
@@ -1441,8 +1695,27 @@ void TelegramPoll()
       if(updates[i].isEdited) continue;
       if(StringLen(updates[i].text) == 0) continue;
 
+      // Control commands go through InpMaxSignalAgeSec too, same as trading
+      // signals - a PauseHab queued during a long outage and only delivered
+      // once the EA reconnects could otherwise force-close real, currently-
+      // healthy positions the operator no longer intends to touch. Dropping
+      // it and logging clearly (so the operator can just resend it if still
+      // needed) is the safer failure mode than silently acting on a stale
+      // command with no chance to reconsider.
       long age = (long)TimeGMT() - updates[i].date;
-      if(InpMaxSignalAgeSec > 0 && updates[i].date > 0 && age > InpMaxSignalAgeSec)
+      bool isStale = (InpMaxSignalAgeSec > 0 && updates[i].date > 0 && age > InpMaxSignalAgeSec);
+
+      if(InpControlChatId != 0 && updates[i].chat_id == InpControlChatId)
+      {
+         if(isStale)
+            PrintFormat("UnifiedTrader_EA: control command '%s' is %ds old (> %ds) - STALE, ignoring "
+                        "(resend it if it's still what you want).", updates[i].text, age, InpMaxSignalAgeSec);
+         else
+            ProcessControlCommand(updates[i].text);
+         continue;
+      }
+
+      if(isStale)
       {
          PrintFormat("UnifiedTrader_EA: message from chat %I64d is %ds old (> %ds) - stale, skipping.",
                      updates[i].chat_id, age, InpMaxSignalAgeSec);
@@ -1471,7 +1744,10 @@ void OnTick()
 
 //+------------------------------------------------------------------+
 //| Expert timer function - only set up when InpEnableTelegramSignals |
-//| is true (see OnInit). Polls Telegram and does light upkeep.        |
+//| or InpControlChatId != 0 (see OnInit); the latter alone still      |
+//| polls Telegram (for control commands), but TelegramPoll()'s own    |
+//| ProcessSignal() call refuses to open a position when               |
+//| InpEnableTelegramSignals is false. Also does light upkeep.         |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
