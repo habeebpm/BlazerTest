@@ -25,7 +25,7 @@ they can be measured against each other (see backtest.py --compare):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -41,6 +41,15 @@ class AdvisorConfig:
     trail_dollars: float = 3.0       # trailing distance once armed, either exit_style
     exit_style: str = "sl_to_tp1"    # "sl_to_tp1" (recommended, live default) or "fixed_tp" (comparison only)
     max_trades_per_day: int = 0      # 0 = unlimited
+
+    # Other magic numbers to fold into max_open_positions_per_direction's own
+    # count - empty by default (unchanged behavior: the cap only ever counts
+    # this system's own `magic`). Set this when a single unified EA (see
+    # ../../UnifiedTrader/) is also opening same-direction XAUUSD positions
+    # under a different magic number (e.g. Telegram-sourced trades) and the
+    # two sources are meant to share ONE combined 5-per-direction ceiling
+    # rather than 5 each. See mt5_gateway.count_same_direction().
+    shared_cap_magic_numbers: list = field(default_factory=list)
 
     # --- Order plumbing ---
     magic: int = 20260921

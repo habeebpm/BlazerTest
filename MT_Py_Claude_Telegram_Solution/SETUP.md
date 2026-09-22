@@ -7,7 +7,7 @@ fresh clone to something running, live-account cautions included.
 
 ## 0. What's here, and how the pieces fit together
 
-Five independent solutions live in this repo (four trading/copying
+Six independent solutions live in this repo (five trading/copying
 systems, plus a read-only data exporter). None of them share code,
 config, or a magic number with any other, so you can run one, several, or
 all of them on the same MT5 account/chart without them interfering with
@@ -20,20 +20,24 @@ each other. Pick what you need:
 | B+ | **Trade Logger + Dashboard** | Generic CSV trade journal (any EA/magic) plus a read-only web dashboard over it | MT5 (Logger EA), IIS + ASP.NET (Dashboard) | `ASPX/README.md` |
 | C | **Claude-SMC Trader** | Builds a full market-intelligence snapshot (indicators + SMC structure) and asks Claude to validate a 3-confluence setup before trading | MT5 + Python + an Anthropic API key | `ClaudeSMC_Trader/README.md` |
 | D | **XTR_Export** | Read-only: exports MT5's own M5/M15/H1 XAUUSD bars to CSV (true UTC, XTR's exact column/precision spec), optionally synced to Google Drive | MT5 + Python; Google Drive for Desktop or a Drive API service account | `XTR_Export/README.md` |
+| E | **UnifiedTrader_EA** | ONE EA combining unvalidated Telegram signal execution with ClaudeSMC_Trader exit management, sharing one risk model/position cap - an alternative to B+C, not an addition to them | MT5 (+ Python for the Claude side, unchanged) | `UnifiedTrader/README.md` |
 
-**Only System A or C generates its own trade ideas.** System B copies
-someone else's. Running more than one trading system (A, B, C) on the
-*same account and symbol* at once means their positions are independent of
-each other but still correlated (all XAUUSD) - each system's own
-`max_open_positions`/daily-loss guard only sees its own trades, not the
-others'. Size accordingly if you run more than one.
+**Only System A, C, or E's Telegram half generates its own trade ideas.**
+System B copies someone else's, and System E's Telegram half does too
+(just without B's SMC/SL validation - see its own README). Running more
+than one trading system on the *same account and symbol* at once means
+their positions are independent of each other but still correlated (all
+XAUUSD) - each system's own `max_open_positions`/daily-loss guard only
+sees its own trades, not the others'. Size accordingly if you run more
+than one.
 
-**Pick one implementation per system, not both.** System A and System B
-each ship as *both* a native MQL5 EA and a Python script that do the same
-job - they're alternatives (e.g. so you can run on a headless Linux box via
-Python instead of a Windows MT5 terminal running the EA), not meant to run
-simultaneously against the same account, since they'd duplicate every
-trade.
+**Pick one implementation per job, not both.** System A and System B each
+ship as *both* a native MQL5 EA and a Python script that do the same job -
+alternatives, not meant to run simultaneously against the same account.
+**System E is an alternative to running B and C separately**, not an
+addition to them - it deliberately trades off B's SMC/SL validation for a
+single combined EA and a shared position cap; read its README's "Honest
+limitations" before choosing it over B+C.
 
 ---
 
@@ -468,7 +472,56 @@ logic. No MT5, no Google credentials, no network.
 
 ---
 
-## 6. Running more than one system at once - magic number reference
+## 6. System E - UnifiedTrader_EA (Telegram + Claude, one EA)
+
+One MQL5 EA combining Telegram signal execution and ClaudeSMC_Trader exit
+management, toggled independently. **Trades off System B's SMC filter and
+SL-sanity checks for a single combined risk model** - read
+`UnifiedTrader/README.md` in full before choosing this over running
+System B and System C separately.
+
+### 6a. Setup
+
+1. Copy `UnifiedTrader/MQL5/Experts/UnifiedTrader_EA.mq5` into your
+   terminal's `MQL5/Experts/`. It also needs
+   `MQL5/Include/TelegramSMC_Common.mqh` (from System B) copied into your
+   terminal's `MQL5/Include/`, at compile time, regardless of which
+   source(s) you enable. Compile.
+2. Load `UnifiedTrader/MQL5/Presets/UnifiedTrader_EA_Default.set`. Both
+   sources ship **disabled** - set `InpEnableTelegramSignals=true` and/or
+   `InpEnableClaudeManagement=true`.
+3. For the Telegram side: same Bot API setup as System B (§ 3a) -
+   `InpBotToken`, `InpChannelId1`/`InpChannelId2`.
+4. For the Claude side: confirm `InpClaudeMagicNumber` matches
+   `ClaudeSMC_Trader/python/config.py`'s `AdvisorConfig.magic` (both
+   default `20260921`), and keep `python main.py` running as usual - this
+   EA never decides those entries itself, only manages their exits.
+5. Shared defaults: `InpFixedLot=0.01`, `InpMaxPositionsPerDirection=5`
+   (combined across both magics, not 5 each), `InpSlDollars=6.0`,
+   `InpTp1Dollars=6.0` (exact lock, no buffer), `InpTrailDollars=3.0`.
+6. Leave `InpDryRun=true` until you trust the logged behavior.
+
+### 6b. Making the shared cap symmetric (optional but recommended)
+
+This EA enforces the combined 5-per-direction cap for its own Telegram
+entries, but can't intercept an order Python places directly. To have
+Python's own gate also back off once Telegram-sourced positions fill the
+cap:
+
+```bash
+cd ClaudeSMC_Trader/python
+python main.py --shared-cap-magic 20260922 ...   # matches InpTelegramMagicNumber
+```
+
+### 6c. Test without a live account
+
+Covered by the two systems it's built from - `ClaudeSMC_Trader/python
+selftest.py` now also verifies `shared_cap_magic_numbers` is wired through
+`executor.gate()` correctly (§ 8 below).
+
+---
+
+## 7. Running more than one system at once - magic number reference
 
 Every EA/script below defaults to a **different** magic number
 specifically so they can coexist on the same account without one system
@@ -480,6 +533,8 @@ managing another's positions:
 | Telegram Copier - MQL5 (3c) | `20260918` | - |
 | Telegram Copier - Python (3d) | `20260920` | `Telegram_Sig` |
 | Claude-SMC Trader (4b/4c) | `20260921` | `Claude_Sig` |
+| UnifiedTrader_EA - Telegram half (6) | `20260922` | `Telegram_Sig` |
+| UnifiedTrader_EA - Claude half (6) | `20260921` (must equal Claude-SMC Trader's own) | `Claude_Sig` |
 
 If you change a magic number on one side (Python config or an EA's
 `InpMagicNumber`), change it identically on the other side of that same
@@ -488,7 +543,7 @@ using it to watch that system.
 
 ---
 
-## 7. Quick reference - every offline test command
+## 8. Quick reference - every offline test command
 
 ```bash
 # System A (Confluence EA, Python port)
@@ -498,7 +553,8 @@ cd python && python trader.py --selftest && python test_integration.py
 cd python && python telegram_copier.py --selftest
 python telegram_copier.py --replay sample_signals.txt
 
-# System C (Claude-SMC Trader)
+# System C (Claude-SMC Trader) - also covers System E's Claude-side wiring
+# (shared_cap_magic_numbers)
 cd ClaudeSMC_Trader/python && python selftest.py
 
 # System D (XTR_Export)
@@ -512,7 +568,7 @@ touching a live/demo account.
 
 ---
 
-## 8. Troubleshooting quick reference
+## 9. Troubleshooting quick reference
 
 - **"WebRequest ... not allowed"** (System B, MQL5) - Tools -> Options ->
   Expert Advisors -> add `https://api.telegram.org` to the allowed URL
@@ -534,8 +590,12 @@ touching a live/demo account.
   machine).
 - **Two systems' trades look mixed together in one log** - check the
   `source`/`comment` column (`Telegram_Sig` vs `Claude_Sig` vs the
-  Confluence EA's own comment) and the magic number (§ 6 table) - every
+  Confluence EA's own comment) and the magic number (§ 7 table) - every
   log in this repo tags its origin for exactly this reason.
+- **UnifiedTrader_EA's shared position cap doesn't seem to hold Claude
+  back** - expected unless Python's own `shared_cap_magic_numbers` is also
+  set to `[InpTelegramMagicNumber]` (§ 6b) - this EA alone can't intercept
+  an order Python places directly.
 - **XTR_Export uploads fail with a quota/storage error** - the target
   Drive folder wasn't shared with the service account's own email address
   (§ 5b) - a service account has no storage of its own.

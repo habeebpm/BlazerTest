@@ -102,7 +102,8 @@ def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: 
         return f"conviction is {verdict.conviction!r}, not full"
     if cfg.max_trades_per_day and trades_today >= cfg.max_trades_per_day:
         return f"max trades/day reached ({cfg.max_trades_per_day})"
-    same_dir_open = gateway.count_same_direction(cfg.symbol, cfg.magic, verdict.direction)
+    same_dir_open = gateway.count_same_direction(cfg.symbol, cfg.magic, verdict.direction,
+                                                  cfg.shared_cap_magic_numbers)
     if same_dir_open >= cfg.max_open_positions_per_direction:
         return (f"already {same_dir_open} open {verdict.direction} position(s) "
                 f"(max {cfg.max_open_positions_per_direction})")

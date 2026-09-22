@@ -48,6 +48,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.fixed_lot = args.lots
     if args.max_positions is not None:
         cfg.max_open_positions_per_direction = args.max_positions
+    if args.shared_cap_magic:
+        cfg.shared_cap_magic_numbers = [int(m) for m in args.shared_cap_magic.split(",") if m.strip()]
     if args.sl_dollars is not None:
         cfg.sl_dollars = args.sl_dollars
     if args.tp_dollars is not None:
@@ -101,6 +103,12 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--lots", type=float, help="override fixed lot size (default 0.01)")
     parser.add_argument("--max-positions", type=int, dest="max_positions",
                         help="max concurrent same-direction positions (default 5)")
+    parser.add_argument("--shared-cap-magic", dest="shared_cap_magic",
+                        help="comma-separated extra magic number(s) to fold into --max-positions' own "
+                             "count (default: none - the cap only counts this system's own magic) - set "
+                             "this to the UnifiedTrader EA's InpTelegramMagicNumber if you want the two "
+                             "sources to share one combined per-direction cap instead of 5 each; see "
+                             "config.py's AdvisorConfig.shared_cap_magic_numbers")
     parser.add_argument("--sl-dollars", type=float, dest="sl_dollars", help="stop-loss in USD (default 6)")
     parser.add_argument("--tp-dollars", type=float, dest="tp_dollars",
                         help="TP1 level in USD (default 6) - the profit level that locks in the "
@@ -140,11 +148,11 @@ def main(argv: list | None = None) -> int:
 
     if args.check:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
-        log.info("Config: lot=%.2f max_same_dir=%d sl=$%.2f tp1=$%.2f trail=$%.2f exit_style=%s "
-                  "min_confluence=%d/3 require_full=%s model=%s dry_run=%s",
-                  cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.sl_dollars,
-                  cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style, cfg.min_confluence_count,
-                  cfg.require_full_conviction, cfg.claude_model, cfg.dry_run)
+        log.info("Config: lot=%.2f max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
+                  "exit_style=%s min_confluence=%d/3 require_full=%s model=%s dry_run=%s",
+                  cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
+                  cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
+                  cfg.min_confluence_count, cfg.require_full_conviction, cfg.claude_model, cfg.dry_run)
         return 0
 
     if cfg.dry_run:

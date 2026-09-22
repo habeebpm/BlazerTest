@@ -217,7 +217,11 @@ class HistoricalGateway:
         return gw.price_distance_for_dollars(spec, dollars, lots)
 
     # --- paper broker ----------------------------------------------------- #
-    def count_same_direction(self, symbol: str, magic: int, direction: str) -> int:
+    def count_same_direction(self, symbol: str, magic: int, direction: str, additional_magics=()) -> int:
+        # additional_magics accepted only for interface parity with the real
+        # mt5_gateway.count_same_direction() - a backtest run only ever
+        # simulates one system's own position book (self.open_positions),
+        # so there is nothing else to count regardless of what's passed here.
         return sum(1 for p in self.open_positions if p.direction == direction)
 
     def place_market_order(self, spec, direction: str, lots: float, sl_price: float, tp_price: float,

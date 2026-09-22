@@ -295,8 +295,10 @@ class FakeGateway:
         self.same_dir_open = same_dir_open
         self.bid, self.ask = bid, ask
         self.orders_sent = []
+        self.last_additional_magics = None
 
-    def count_same_direction(self, symbol, magic, direction):
+    def count_same_direction(self, symbol, magic, direction, additional_magics=()):
+        self.last_additional_magics = additional_magics
         return self.same_dir_open
 
     def get_tick(self, symbol):
@@ -365,6 +367,18 @@ def test_executor() -> bool:
     d4 = executor.execute(fg4, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("the same-direction position cap (5) blocks a 6th buy",
                 not d4.executed and "already 5 open" in d4.reject_reason, d4.reject_reason)
+    ok &= check("with no shared_cap_magic_numbers configured, gate() asks the gateway to count "
+                "only this system's own magic (an empty additional_magics tuple)",
+                fg4.last_additional_magics == [], fg4.last_additional_magics)
+
+    cfg_shared = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                               shared_cap_magic_numbers=[20260922])
+    fg4b = FakeGateway(same_dir_open=0)
+    executor.execute(fg4b, cfg_shared, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("shared_cap_magic_numbers is passed straight through to the gateway's "
+                "count_same_direction() call, so a unified EA's other-source magic gets folded "
+                "into the same cap",
+                fg4b.last_additional_magics == [20260922], fg4b.last_additional_magics)
 
     fg5 = FakeGateway(same_dir_open=0)
     d5 = executor.execute(fg5, cfg, make_verdict("none", 0, "none"), spec, trades_today=0)

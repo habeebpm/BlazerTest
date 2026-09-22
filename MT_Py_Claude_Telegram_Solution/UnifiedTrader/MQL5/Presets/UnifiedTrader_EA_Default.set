@@ -1,0 +1,32 @@
+; UnifiedTrader_EA - default preset
+; In MT5: Strategy Tester > Expert Advisor: UnifiedTrader_EA > Inputs tab > Load
+; or on the chart's EA Inputs dialog > Load.
+;
+; Ships with BOTH sources disabled - you must explicitly enable
+; InpEnableTelegramSignals and/or InpEnableClaudeManagement. If enabling
+; Telegram, also set InpBotToken/InpChannelId1 (see the .mq5 file header for
+; setup steps). If enabling Claude management, InpClaudeMagicNumber MUST
+; match ../../../ClaudeSMC_Trader/python/config.py's AdvisorConfig.magic
+; (both default 20260921). Ships with InpDryRun=true; only flip it once you
+; trust the log output for how it wants to act.
+;
+InpEnableTelegramSignals=false
+InpEnableClaudeManagement=false
+InpFixedLot=0.01
+InpMaxPositionsPerDirection=5
+InpSlDollars=6.0
+InpTp1Dollars=6.0
+InpTrailDollars=3.0
+InpTelegramMagicNumber=20260922
+InpClaudeMagicNumber=20260921
+InpDryRun=true
+InpBotToken=
+InpChannelId1=0
+InpChannelId2=0
+InpPollSeconds=5
+InpHttpTimeoutMs=5000
+InpMaxSignalAgeSec=180
+InpTradeXAUUSDOnly=true
+InpMaxTradesPerDay=0
+InpPendingExpiryMin=240
+InpMaxEntryDeviationPips=200.0
