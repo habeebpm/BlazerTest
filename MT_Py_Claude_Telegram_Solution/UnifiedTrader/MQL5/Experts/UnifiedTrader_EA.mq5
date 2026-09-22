@@ -154,7 +154,13 @@
 //| Variable, the same mechanism InpControlChatId=0 already uses for     |
 //| g_lastUpdateId, so it survives a restart/reattach rather than        |
 //| silently resetting to "resumed". Leaving InpControlChatId=0 (the     |
-//| default) disables this feature entirely - no behavior change.        |
+//| default) disables this feature entirely - no behavior change - this  |
+//| holds even if a REAL pause was set during an earlier session with    |
+//| remote control enabled: that pause goes dormant (never enforced,     |
+//| never logged) while InpControlChatId=0, rather than silently         |
+//| blocking every Telegram entry forever with no ResumeHab reachable    |
+//| to clear it. Setting InpControlChatId back to a real chat restores   |
+//| whatever pause was last actually set, unchanged.                     |
 //|                                                                    |
 //| TELEGRAM SETUP (only if InpEnableTelegramSignals): identical to    |
 //| TelegramSMC_Copier.mq5's - @BotFather /newbot for InpBotToken, add  |
@@ -458,8 +464,20 @@ int OnInit()
    double gv;
    g_lastUpdateId = GlobalVariableGet(GV_LAST_UPDATE_ID, gv) ? (long)gv : 0;
 
+   // Only ever true when InpControlChatId != 0 - deliberately NOT just
+   // "whatever the persisted Global Variable says", because a real pause
+   // set during an earlier session with remote control enabled must not
+   // silently keep blocking every Telegram entry forever once
+   // InpControlChatId is set back to 0: ResumeHab is only reachable
+   // through InpControlChatId, so a stale g_telegramPaused=true with no
+   // control chat configured would be a pause nothing could ever clear -
+   // directly contradicting "InpControlChatId=0 disables this feature
+   // entirely, no behavior change" (see file header). The persisted value
+   // itself is left untouched either way, so re-enabling InpControlChatId
+   // later correctly restores whatever real pause was last set.
    double gvPaused;
-   g_telegramPaused = GlobalVariableGet(GV_TELEGRAM_PAUSED, gvPaused) ? (gvPaused != 0.0) : false;
+   g_telegramPaused = (InpControlChatId != 0)
+                       && GlobalVariableGet(GV_TELEGRAM_PAUSED, gvPaused) && (gvPaused != 0.0);
    if(g_telegramPaused)
       Print("UnifiedTrader_EA: restored PAUSED state from a previous PauseHab/PauseTelHab - new "
             "Telegram entries remain BLOCKED until ResumeHab (persisted across restarts - see file "

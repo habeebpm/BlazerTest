@@ -161,7 +161,12 @@ sending the command.
 The pause state (new Telegram entries blocked or not) is saved to a
 terminal Global Variable the moment it changes, the same mechanism already
 used for the Telegram update-id cursor - it survives a restart/reattach
-rather than silently resetting to "resumed".
+rather than silently resetting to "resumed". This still holds even if you
+later set `InpControlChatId` back to `0`: a real pause set earlier goes
+dormant (never enforced) rather than silently blocking every Telegram
+entry forever with no `ResumeHab` reachable to clear it - setting
+`InpControlChatId` back to a real chat restores whatever pause was last
+actually set, unchanged.
 
 ## Setup
 
