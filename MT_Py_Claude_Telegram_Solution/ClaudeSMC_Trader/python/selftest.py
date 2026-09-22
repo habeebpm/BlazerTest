@@ -26,6 +26,9 @@ Covers:
     both its exit simulations - exit_style="fixed_tp" (arm-then-drop-TP,
     the old design) and exit_style="sl_to_tp1" (lock-SL-then-trail, the
     live default) - and a tiny end-to-end mechanical-mode backtest run
+  * telegram_alert.send_alert()'s blank-credentials no-op, successful post,
+    and never-raises-on-failure behavior against a fake poster (no network),
+    and format_full_conviction_message()'s executed/rejected wording
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ import backtest
 import claude_advisor
 import executor
 import market_intel
+import telegram_alert
 import mt5_gateway as gw
 from claude_advisor import ConfluenceLeg, ConfluenceVerdict
 from config import AdvisorConfig
@@ -855,6 +859,45 @@ def test_backtest_end_to_end_mechanical() -> bool:
     return ok
 
 
+def test_telegram_alert() -> bool:
+    print("\n=== 13. telegram_alert: full-conviction notification (fake poster, no network) ===")
+    ok = True
+
+    calls = []
+    def fake_poster(url, payload):
+        calls.append((url, payload))
+
+    def raising_poster(url, payload):
+        raise RuntimeError("network down")
+
+    ok &= check("blank bot_token/chat_id is a safe no-op - no HTTP call, returns False",
+                telegram_alert.send_alert("", "", "hello", poster=fake_poster) is False
+                and calls == [], calls)
+
+    sent = telegram_alert.send_alert("TOKEN123", "CHAT456", "hello world", poster=fake_poster)
+    ok &= check("both credentials set posts to the right sendMessage URL with the right payload, "
+                "returns True",
+                sent is True and calls
+                and calls[0][0] == "https://api.telegram.org/botTOKEN123/sendMessage"
+                and calls[0][1] == {"chat_id": "CHAT456", "text": "hello world"}, calls)
+
+    ok &= check("a poster that raises is caught, not propagated - returns False",
+                telegram_alert.send_alert("TOKEN123", "CHAT456", "hello", poster=raising_poster) is False)
+
+    verdict = make_verdict("buy", 3, "full")
+    msg_exec = telegram_alert.format_full_conviction_message("XAUUSD", verdict, executed=True)
+    ok &= check("the executed message names the direction, symbol, confluence count and EXECUTED",
+                "BUY XAUUSD" in msg_exec and "confluence 3/3" in msg_exec and "EXECUTED" in msg_exec,
+                msg_exec)
+
+    msg_rej = telegram_alert.format_full_conviction_message(
+        "XAUUSD", verdict, executed=False, reject_reason="already 5 open buy position(s) (max 5)")
+    ok &= check("a rejected verdict's message includes the reject_reason, not just NOT executed",
+                "NOT executed - already 5 open buy position(s) (max 5)" in msg_rej, msg_rej)
+
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -870,6 +913,7 @@ def main() -> int:
         test_backtest_exit_simulation(),
         test_backtest_exit_simulation_sl_to_tp1(),
         test_backtest_end_to_end_mechanical(),
+        test_telegram_alert(),
     ]
     print()
     if all(results):

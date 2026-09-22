@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -23,6 +24,7 @@ import claude_advisor
 import executor
 import market_intel
 import mt5_gateway as gw
+import telegram_alert
 from config import AdvisorConfig
 
 log = logging.getLogger("main")
@@ -64,6 +66,10 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.breakeven_atr_period = args.breakeven_atr_period
     if args.decay_window_minutes is not None:
         cfg.decay_window_minutes = args.decay_window_minutes
+    if args.telegram_alert_bot_token:
+        cfg.telegram_alert_bot_token = args.telegram_alert_bot_token
+    if args.telegram_alert_chat_id:
+        cfg.telegram_alert_chat_id = args.telegram_alert_chat_id
     if args.model:
         cfg.claude_model = args.model
     if args.poll_seconds is not None:
@@ -100,6 +106,25 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     decision = executor.execute(gw, cfg, verdict, spec, day.trades_today)
     if decision.executed:
         day.trades_today += 1
+    if verdict.conviction == "full" and verdict.direction in ("buy", "sell"):
+        # Fires on EVERY full-conviction verdict, whether or not it actually
+        # executed - gate() can still reject it (position cap, daily trade
+        # limit, confluence floor); the message says so either way. Excludes
+        # direction="none" (schema-legal alongside conviction="full", though
+        # SYSTEM_PROMPT says not to produce it) since gate() always rejects
+        # it as "no actionable direction" anyway - not worth an alert. A
+        # no-op (and never raises) if telegram_alert_bot_token/chat_id
+        # aren't configured - see config.py. Sent from a daemon thread, not
+        # inline, so a slow/unreachable Telegram API (up to the 10s urlopen
+        # timeout) never delays the next poll cycle - send_alert() itself
+        # never raises, so there's nothing here to join or catch.
+        message = telegram_alert.format_full_conviction_message(
+            cfg.symbol, verdict, decision.executed, decision.reject_reason)
+        threading.Thread(
+            target=telegram_alert.send_alert,
+            args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, message),
+            daemon=True,
+        ).start()
 
 
 def main(argv: list | None = None) -> int:
@@ -141,6 +166,12 @@ def main(argv: list | None = None) -> int:
                         help="exit_style=breakeven_r_decay only: force the SL to breakeven after this "
                              "many minutes even short of the ATR trigger (default 15) - enforced by "
                              "the MQL5 EA's InpDecayWindowMinutes, not this script")
+    parser.add_argument("--telegram-alert-bot-token", dest="telegram_alert_bot_token",
+                        help="bot token from @BotFather - sends a one-way Telegram message on every "
+                             "'full' conviction verdict, executed or not (default: unset, alerts off). "
+                             "See README.md for setup; see telegram_alert.py for what's sent")
+    parser.add_argument("--telegram-alert-chat-id", dest="telegram_alert_chat_id",
+                        help="chat id to send full-conviction alerts to (default: unset, alerts off)")
     parser.add_argument("--model", help="Claude model id (default claude-opus-5)")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
@@ -179,11 +210,12 @@ def main(argv: list | None = None) -> int:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
         log.info("Config: lot=%.2f max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
-                  "min_confluence=%d/3 require_full=%s model=%s dry_run=%s",
+                  "min_confluence=%d/3 require_full=%s model=%s dry_run=%s telegram_alerts=%s",
                   cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
                   cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
                   cfg.breakeven_atr_mult, cfg.breakeven_atr_period, cfg.decay_window_minutes,
-                  cfg.min_confluence_count, cfg.require_full_conviction, cfg.claude_model, cfg.dry_run)
+                  cfg.min_confluence_count, cfg.require_full_conviction, cfg.claude_model, cfg.dry_run,
+                  "on" if (cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
         return 0
 
     if cfg.dry_run:

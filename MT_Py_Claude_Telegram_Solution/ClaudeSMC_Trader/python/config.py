@@ -82,6 +82,19 @@ class AdvisorConfig:
     # mt5_gateway.count_same_direction() and main.py's startup warning.
     shared_cap_magic_numbers: list = field(default_factory=list)
 
+    # --- Telegram alert (optional, send-only - see telegram_alert.py) ---
+    # Fires on EVERY "full" conviction verdict from Claude, whether or not it
+    # actually executes (executor.gate() can still reject it - position cap,
+    # daily trade limit, confluence floor - the alert message says so either
+    # way). Completely independent of the Telegram signal-copying stack
+    # elsewhere in this repo (../../python/, ../../MQL5/, ../UnifiedTrader/'s
+    # own Telegram side) - a dedicated bot is recommended so this alert
+    # traffic never mixes with that stack's chat. Off by default: leave
+    # either field blank and send_alert() is a safe no-op.
+    telegram_alert_bot_token: str = ""   # from @BotFather
+    telegram_alert_chat_id: str = ""     # your own chat id - DM the bot, then GET
+                                         # https://api.telegram.org/bot<token>/getUpdates to find it
+
     # --- Order plumbing ---
     magic: int = 20260921
     comment: str = "Claude_Sig"

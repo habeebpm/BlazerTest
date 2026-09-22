@@ -294,6 +294,45 @@ Python places no broker take-profit at all - if the MQL5 EA isn't running,
 a trade is protected by nothing but its initial $6 SL, with no lock-in and
 no trail (see "Exit design" above).
 
+### 3. Telegram full-conviction alerts (optional)
+
+`python/telegram_alert.py` sends a one-way Telegram message every time
+Claude issues a **"full"** conviction verdict - whether or not the trade
+actually executes (`executor.gate()` can still reject it: position cap,
+daily trade limit, confluence floor - the message says so either way). This
+is send-only and completely independent of the Telegram signal-copying
+stack elsewhere in this repo (`../python/`, `../MQL5/`,
+`../UnifiedTrader/`'s own Telegram side) - it never reads a channel, never
+places an order, and a bad token here can't affect trading either direction.
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`,
+   and follow the prompts to get a bot token.
+2. Start a chat with your new bot (search its username, send it any
+   message) so it's allowed to message you back.
+3. Find your chat id: open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser right after
+   step 2 and read `"chat":{"id": ...}` from the JSON response.
+4. Pass both to `main.py`:
+
+```bash
+python main.py --telegram-alert-bot-token <TOKEN> --telegram-alert-chat-id <CHAT_ID>
+```
+
+(or set `AdvisorConfig.telegram_alert_bot_token`/`telegram_alert_chat_id`
+directly in `config.py`). Leave either blank and alerts are simply off -
+`send_alert()` is a no-op, and nothing else about the system changes. A
+dedicated bot (not one already used by the Telegram copier stack or
+`UnifiedTrader_EA.mq5`) is recommended, purely to keep this alert traffic
+out of that stack's own chat. `--check` prints `telegram_alerts=on|off`
+(never the token itself) so you can confirm it's wired up without spending
+a Claude API call.
+
+A Telegram outage, bad token, or rate limit here is caught and logged as a
+warning - it never raises, never blocks `run_once()`, and never affects
+whether a trade executes. This alert is not simulated in `backtest.py`
+(`run_backtest()` never calls it), so a historical replay never spams your
+chat even if these two fields are set.
+
 ## Running with only one side available
 
 This solution and the Telegram copier stack (`../python/`, `../MQL5/`) share
@@ -334,10 +373,11 @@ python selftest.py
 ```
 
 Runs entirely offline - synthetic price data exercises the real indicator
-and SMC code, a fake MT5 gateway exercises `executor.py`'s gating logic, and
-a fake Anthropic client exercises `claude_advisor.py`'s wiring. No MT5
-terminal, no API key, no network needed. This is also the test to run after
-changing any threshold or formula in this solution.
+and SMC code, a fake MT5 gateway exercises `executor.py`'s gating logic, a
+fake Anthropic client exercises `claude_advisor.py`'s wiring, and a fake
+HTTP poster exercises `telegram_alert.py`'s send/no-op/failure-handling
+logic. No MT5 terminal, no API key, no network needed. This is also the
+test to run after changing any threshold or formula in this solution.
 
 ## Backtesting
 
