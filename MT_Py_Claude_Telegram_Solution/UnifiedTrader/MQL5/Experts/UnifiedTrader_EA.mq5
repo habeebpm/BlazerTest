@@ -232,7 +232,7 @@ int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - se
 
 // Forward declarations
 double   BreakevenAtrDistance();
-bool     BreakevenDue(ulong ticket, double profit);
+bool     BreakevenDue(double profit);
 double   PipSize();
 bool     IsAllowedChat(long chatId);
 datetime DateToDay(datetime t);
@@ -416,7 +416,7 @@ double BreakevenAtrDistance()
    return(InpBreakevenAtrMult * atrBuf[0]);
 }
 
-bool BreakevenDue(ulong ticket, double profit)
+bool BreakevenDue(double profit)
 {
    if(profit >= BreakevenAtrDistance())
       return(true);
@@ -970,7 +970,7 @@ void ManagePositionExit(ulong ticket, long magic)
          else if(useBreakevenDecay)
          {
             bool atBreakeven = (currentSl > 0.0 && currentSl >= openPrice - point);
-            if(!atBreakeven && (tick.bid - openPrice) >= minStopDist && BreakevenDue(ticket, profit))
+            if(!atBreakeven && (tick.bid - openPrice) >= minStopDist && BreakevenDue(profit))
             {
                newSl = NormalizeDouble(openPrice, digits);
                changeSl = true;
@@ -1002,7 +1002,7 @@ void ManagePositionExit(ulong ticket, long magic)
          else if(useBreakevenDecay)
          {
             bool atBreakeven = (currentSl > 0.0 && currentSl <= openPrice + point);
-            if(!atBreakeven && (openPrice - tick.ask) >= minStopDist && BreakevenDue(ticket, profit))
+            if(!atBreakeven && (openPrice - tick.ask) >= minStopDist && BreakevenDue(profit))
             {
                newSl = NormalizeDouble(openPrice, digits);
                changeSl = true;

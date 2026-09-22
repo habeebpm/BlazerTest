@@ -200,8 +200,11 @@ double BreakevenAtrDistance()
 //| price has actually moved far enough to place a valid breakeven      |
 //| stop - the caller (ManagePosition) guards that separately, since    |
 //| it already has the broker's minimum-stop-distance check in hand.    |
+//| Reads POSITION_TIME off whatever position the caller already has   |
+//| selected (via PositionSelectByTicket) - takes no ticket of its own  |
+//| to select, so it must only ever be called right after that select. |
 //+------------------------------------------------------------------+
-bool BreakevenDue(ulong ticket, double profit)
+bool BreakevenDue(double profit)
 {
    if(profit >= BreakevenAtrDistance())
       return(true);
@@ -276,7 +279,7 @@ void ManagePosition(ulong ticket)
          else if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
          {
             bool atBreakeven = (currentSl > 0.0 && currentSl >= openPrice - point);
-            if(!atBreakeven && (tick.bid - openPrice) >= minStopDist && BreakevenDue(ticket, profit))
+            if(!atBreakeven && (tick.bid - openPrice) >= minStopDist && BreakevenDue(profit))
             {
                newSl = NormalizeDouble(openPrice, digits);
                changeSl = true;
@@ -308,7 +311,7 @@ void ManagePosition(ulong ticket)
          else if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
          {
             bool atBreakeven = (currentSl > 0.0 && currentSl <= openPrice + point);
-            if(!atBreakeven && (openPrice - tick.ask) >= minStopDist && BreakevenDue(ticket, profit))
+            if(!atBreakeven && (openPrice - tick.ask) >= minStopDist && BreakevenDue(profit))
             {
                newSl = NormalizeDouble(openPrice, digits);
                changeSl = true;
