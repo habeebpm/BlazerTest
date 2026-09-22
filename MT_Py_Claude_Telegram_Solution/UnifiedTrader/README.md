@@ -54,8 +54,10 @@ memory across ticks or restarts.
 ## Shared position cap
 
 `InpMaxPositionsPerDirection` (default 5) is counted across **both**
-magic numbers together, always - not 5 each. A 6th same-direction position
-is blocked regardless of which source is trying to open it, as long as
+magic numbers together, always - not 5 each (open positions AND pending
+Telegram limit orders both count, so a burst of pending zones can't fill
+simultaneously past the cap). A 6th same-direction position/order is
+blocked regardless of which source is trying to open it, as long as
 either source's positions are visible to this EA (same account/symbol).
 
 **This EA only enforces the cap for its own (Telegram) entries** - it
@@ -66,6 +68,17 @@ Python back once Telegram-sourced positions fill it, set
 `InpTelegramMagicNumber`. Without that, this EA still won't let Telegram
 open past the shared cap, but Claude could independently open up to 5 more
 of its own.
+
+**That wiring alone isn't enough - the two NUMBERS must match too.**
+`shared_cap_magic_numbers` only tells Python's gate *which magics to
+count*; it doesn't keep `InpMaxPositionsPerDirection` (this EA) and
+`max_open_positions_per_direction`/`--max-positions` (Python) equal to
+each other. If they differ, both sides are counting the same combined
+position set but enforcing *different* ceilings - the lower one silently
+wins for its own new entries while the higher one keeps opening past it.
+`main.py` prints a warning reminder at startup whenever
+`shared_cap_magic_numbers` is set, but can't verify the MQL5-side value
+for you - check it by hand.
 
 ## Setup
 

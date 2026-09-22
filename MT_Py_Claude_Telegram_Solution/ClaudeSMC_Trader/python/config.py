@@ -47,8 +47,16 @@ class AdvisorConfig:
     # this system's own `magic`). Set this when a single unified EA (see
     # ../../UnifiedTrader/) is also opening same-direction XAUUSD positions
     # under a different magic number (e.g. Telegram-sourced trades) and the
-    # two sources are meant to share ONE combined 5-per-direction ceiling
-    # rather than 5 each. See mt5_gateway.count_same_direction().
+    # two sources are meant to share ONE combined ceiling rather than
+    # max_open_positions_per_direction each. This wires up WHICH positions
+    # get counted together on the Python side - it does NOT keep the two
+    # ceilings themselves in sync: UnifiedTrader_EA.mq5's own
+    # InpMaxPositionsPerDirection is a separate number in a separate file,
+    # and must be set to the SAME value as max_open_positions_per_direction
+    # by hand, or the "shared" cap silently becomes asymmetric (whichever
+    # side has the lower number stops first, the other keeps opening past
+    # it) even though the magic-number wiring here is correct. See
+    # mt5_gateway.count_same_direction() and main.py's startup warning.
     shared_cap_magic_numbers: list = field(default_factory=list)
 
     # --- Order plumbing ---

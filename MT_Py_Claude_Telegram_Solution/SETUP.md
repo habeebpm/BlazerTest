@@ -513,6 +513,15 @@ cd ClaudeSMC_Trader/python
 python main.py --shared-cap-magic 20260922 ...   # matches InpTelegramMagicNumber
 ```
 
+**This wires up WHICH positions get counted together - it doesn't keep
+the two ceiling NUMBERS in sync.** `InpMaxPositionsPerDirection` (MQL5)
+and `--max-positions`/`max_open_positions_per_direction` (Python) are two
+separate settings in two separate files; set them to the *same* value, or
+the "shared" cap becomes asymmetric even with the magic-number wiring
+correct (whichever side has the lower number stops first, the other keeps
+opening past it). `main.py` warns about this at startup whenever
+`--shared-cap-magic` is set, but can't check the MQL5 side for you.
+
 ### 6c. Test without a live account
 
 Covered by the two systems it's built from - `ClaudeSMC_Trader/python
@@ -533,7 +542,7 @@ managing another's positions:
 | Telegram Copier - MQL5 (3c) | `20260918` | - |
 | Telegram Copier - Python (3d) | `20260920` | `Telegram_Sig` |
 | Claude-SMC Trader (4b/4c) | `20260921` | `Claude_Sig` |
-| UnifiedTrader_EA - Telegram half (6) | `20260922` | `Telegram_Sig` |
+| UnifiedTrader_EA - Telegram half (6) | `20260922` | `Telegram_Sig_Unified` (deliberately distinct from Telegram Copier's own `Telegram_Sig` - see the EA's file header) |
 | UnifiedTrader_EA - Claude half (6) | `20260921` (must equal Claude-SMC Trader's own) | `Claude_Sig` |
 
 If you change a magic number on one side (Python config or an EA's
@@ -589,9 +598,10 @@ touching a live/demo account.
   (the Logger EA hasn't written one, or the path is wrong for this
   machine).
 - **Two systems' trades look mixed together in one log** - check the
-  `source`/`comment` column (`Telegram_Sig` vs `Claude_Sig` vs the
-  Confluence EA's own comment) and the magic number (§ 7 table) - every
-  log in this repo tags its origin for exactly this reason.
+  `source`/`comment` column (`Telegram_Sig` vs `Telegram_Sig_Unified` vs
+  `Claude_Sig` vs the Confluence EA's own comment) and the magic number
+  (§ 7 table) - every log in this repo tags its origin for exactly this
+  reason.
 - **UnifiedTrader_EA's shared position cap doesn't seem to hold Claude
   back** - expected unless Python's own `shared_cap_magic_numbers` is also
   set to `[InpTelegramMagicNumber]` (§ 6b) - this EA alone can't intercept

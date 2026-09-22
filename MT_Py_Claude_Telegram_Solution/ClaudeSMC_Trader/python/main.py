@@ -141,6 +141,15 @@ def main(argv: list | None = None) -> int:
 
     setup_logging(args.verbose)
     cfg = build_config(args)
+    if cfg.shared_cap_magic_numbers:
+        log.warning(
+            "shared_cap_magic_numbers=%s is set - this only folds those magics' positions into THIS "
+            "process's own count_same_direction() check. The other side (UnifiedTrader_EA.mq5's own "
+            "InpMaxPositionsPerDirection) is a SEPARATE number in a separate file - it must be set to "
+            "the SAME value as --max-positions/max_open_positions_per_direction (%d) or the 'shared' "
+            "cap silently becomes asymmetric (whichever side has the lower number stops first, the "
+            "other keeps opening past it). Nothing here can verify that for you - check it by hand.",
+            cfg.shared_cap_magic_numbers, cfg.max_open_positions_per_direction)
 
     gw.connect(login=args.login, password=args.password, server=args.server,
                terminal_path=args.terminal_path)

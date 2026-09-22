@@ -126,6 +126,16 @@
 
 #define GV_LAST_UPDATE_ID "UnifiedTrader_EA_LastUpdateId"
 
+// Deliberately NOT TelegramSMC_Common.mqh's TSMC_SIGNAL_SOURCE ("Telegram_Sig")
+// - that constant's own doc comment reserves it for TelegramSMC_Copier.mq5
+// specifically. This EA's Telegram side has a materially different (lower)
+// validation bar - no SMC filter, no use of the message's own SL (see file
+// header) - so if both EAs ever ran in the same terminal, sharing one tag
+// would make their very-different-risk-profile rows indistinguishable in
+// TelegramSMC_Signals.csv/the ASPX dashboard. Still lands in the SAME file
+// (TSMC_SIGNALS_FILE below) for one unified view - just tagged separately.
+#define UNIFIED_TELEGRAM_SOURCE "Telegram_Sig_Unified"
+
 //================================= INPUTS ====================================
 
 input group "=== Mode selection - enable either or both ==="
@@ -340,6 +350,22 @@ void OnDeinit(const int reason)
 
 //+------------------------------------------------------------------+
 //| Small helpers                                                     |
+//|                                                                    |
+//| NOTE ON DUPLICATION: everything from here down through             |
+//| ParseSignalText/TelegramGetUpdates/ExtractUpdates/TelegramPoll is   |
+//| copied, not shared, from ../../MQL5/Experts/TelegramSMC_Copier.mq5 |
+//| - deliberately, not an oversight. Factoring it into a shared .mqh   |
+//| (the way TelegramSMC_Common.mqh already does for CSV logging)      |
+//| would mean editing that already-shipped, independently-deployed EA |
+//| just to extract code for this one - real regression risk to a       |
+//| production file for a change with zero runtime behavior difference,|
+//| and there's no MQL5 compiler in this environment to verify either   |
+//| file still builds afterward. The tradeoff: a future fix to this     |
+//| parser (this repo's history already has one - a hyphenated-label    |
+//| bug once missed in exactly this kind of duplicated code) must be    |
+//| applied to BOTH this file and TelegramSMC_Copier.mq5 by hand, or    |
+//| the two EAs' signal interpretation will silently diverge on the     |
+//| same input text. Check both whenever you touch parsing here.       |
 //+------------------------------------------------------------------+
 double PipSize() { return(SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10.0); }
 
@@ -579,9 +605,18 @@ double DollarsToPrice(double dollars, double volume)
 }
 
 //+------------------------------------------------------------------+
-//| Open positions on this symbol/direction across BOTH magic         |
-//| numbers together - the shared cap - regardless of which mode(s)   |
-//| are currently enabled (see file header's "SHARED POSITION CAP").  |
+//| Open positions PLUS pending limit orders on this symbol/direction |
+//| across BOTH magic numbers together - the shared cap - regardless  |
+//| of which mode(s) are currently enabled (see file header's         |
+//| "SHARED POSITION CAP"). Pending orders count too, not just filled |
+//| positions: several wide-zone Telegram signals can each place a    |
+//| BuyLimit/SellLimit that fills only much later, and if a single    |
+//| fast move then swept through every zone at once, counting filled  |
+//| positions alone would let far more than InpMaxPositionsPerDirection|
+//| land simultaneously - the cap needs to bound WORST-CASE exposure   |
+//| (positions + still-pending commitments), not just what's already   |
+//| filled right now. Matches ../../MQL5/Experts/TelegramSMC_Copier.mq5|
+//| own CountActiveSlots()'s reasoning for counting both together.     |
 //+------------------------------------------------------------------+
 int CountSameDirection(int direction)
 {
@@ -596,6 +631,29 @@ int CountSameDirection(int direction)
       long type = PositionGetInteger(POSITION_TYPE);
       int posDir = (type == POSITION_TYPE_BUY) ? DIR_BUY : DIR_SELL;
       if(posDir == direction) count++;
+   }
+   // Pending orders only ever come from this EA's own Telegram side
+   // (PlaceCopiedOrder only ever sends BuyLimit/SellLimit or an immediate
+   // market order, never a resting order under InpClaudeMagicNumber - see
+   // the file header, Python always sends market orders) - but this counts
+   // by magic like the position loop above rather than assuming that, so
+   // it stays correct even if that ever changes.
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      long magic = (long)OrderGetInteger(ORDER_MAGIC);
+      if(magic != InpTelegramMagicNumber && magic != InpClaudeMagicNumber) continue;
+      long type = OrderGetInteger(ORDER_TYPE);
+      int orderDir;
+      if(type == ORDER_TYPE_BUY_LIMIT || type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_STOP_LIMIT)
+         orderDir = DIR_BUY;
+      else if(type == ORDER_TYPE_SELL_LIMIT || type == ORDER_TYPE_SELL_STOP || type == ORDER_TYPE_SELL_STOP_LIMIT)
+         orderDir = DIR_SELL;
+      else
+         continue;
+      if(orderDir == direction) count++;
    }
    return(count);
 }
@@ -685,7 +743,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    int    digits    = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double buffer    = 3.0 * point;
    double zoneEntry = isBuy ? upperBound : lowerBound;
-   string comment   = TSMC_SIGNAL_SOURCE;
+   string comment   = UNIFIED_TELEGRAM_SOURCE;
 
    double orderPrice;
    bool   isPending;
@@ -916,9 +974,12 @@ string DirToStr(int dir)
 //+------------------------------------------------------------------+
 //| Appends one row to TelegramSMC_Signals.csv per Telegram message   |
 //| evaluated - same file/header as TelegramSMC_Copier.mq5, so the    |
-//| ASPX dashboard reads either EA's output without changes. SMC      |
-//| columns are always "not applicable" here - this EA never runs an  |
-//| SMC check (see file header).                                       |
+//| ASPX dashboard reads either EA's output without changes, but the   |
+//| "source" column is UNIFIED_TELEGRAM_SOURCE, not that EA's          |
+//| "Telegram_Sig", so rows from the two remain distinguishable if      |
+//| both ever log to the same file (see that constant's own comment).  |
+//| SMC columns are always "not applicable" here - this EA never runs  |
+//| an SMC check (see file header).                                    |
 //+------------------------------------------------------------------+
 void LogSignalRow(long chatId, const string &action, const string &direction, bool symbolOk,
                    double entryLow, double entryHigh, const string &tpsJoined,
@@ -952,7 +1013,7 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
                  IntegerToString(orderTicket) + "," +
                  IntegerToString(retcode) + "," +
                  TsmcCsvField(rawText) + "," +
-                 TsmcCsvField(TSMC_SIGNAL_SOURCE);
+                 TsmcCsvField(UNIFIED_TELEGRAM_SOURCE);
 
    FileWriteString(handle, line + "\r\n");
    FileClose(handle);
