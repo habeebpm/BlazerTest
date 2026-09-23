@@ -354,6 +354,22 @@ is typical) without the breaker itself becoming the strategy - and it also
 sits inside the conventional 1-2%-per-trade risk-management band that
 professional/prop-desk sizing rules use. Set either to `0`/`false` in
 `config.py` to opt back out; both are ordinary fields, not a special mode.
+
+Two things make these numbers mean what they say:
+
+- **The 10% is a real cap, not just a trigger.** Before every new entry,
+  `executor.daily_risk_budget_reason()` adds today's drawdown so far + what
+  every open position (this magic plus `shared_cap_magic_numbers`) still
+  risks down to its stop + the new trade's own risk, and refuses the trade
+  if that total would exceed 10% of the day's starting equity. Without
+  this, 5 concurrent 2% positions could all stop out together past the cap.
+- **SL, TP1 and trail scale together.** `sl_dollars`/`tp1_dollars`/
+  `trail_dollars` are dollars at `fixed_lot` (the reference lot, 0.01),
+  i.e. fixed price distances. At $10k equity a 2% trade is ~0.33 lots: it
+  risks ~$200 at the stop and locks ~$200 at TP1 - the same 1:1 shape as
+  the original $6/$6 at 0.01 lots. `ClaudeSMC_TradeManager.mq5`'s
+  `InpReferenceLot` must equal `fixed_lot`.
+
 `UnifiedTrader_EA.mq5`'s matching inputs (`InpMaxDailyLossPct`,
 `InpUseRiskPercent`, `InpRiskPercent`) ship at the same values - see
 `../UnifiedTrader/README.md`'s "Optional risk features" section.
@@ -362,7 +378,7 @@ professional/prop-desk sizing rules use. Set either to `0`/`false` in
 |---|---|---|
 | Daily loss circuit breaker | `max_daily_loss_pct` (default `10.0`), `use_daily_target`, `daily_target_pct` | `main.py`'s `DayRoll` tracks equity from the first cycle of each UTC day and withholds **new** entries (never touches open positions) once the day is down `max_daily_loss_pct`, or up `daily_target_pct` if `use_daily_target` is set. Mirrors `../../python/trader.py`'s own daily-loss pattern. |
 | Recent-performance feedback | (always on) | `market_intel.recent_performance_summary()` feeds Claude a win/loss/net-P&L summary of this system's own last 10 closed trades (from MT5's real deal history, not just `trades.csv`) as context - it can narrow conviction toward "partial" on a cold streak, but never raises or lowers the bar mechanically. |
-| Equity-scaled lot sizing | `use_risk_percent` (default `true`), `risk_percent` (default `2.0`), `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `ClaudeSMC_TradeManager.mq5` needs no change either way - it already recomputes its dollar-based lock/trail distances from each position's real volume. |
+| Equity-scaled lot sizing | `use_risk_percent` (default `true`), `risk_percent` (default `2.0`), `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `sl_dollars`/`tp1_dollars`/`trail_dollars` are dollars *at `fixed_lot`* (the reference lot), i.e. fixed price distances, so a bigger risk-sized lot risks and locks proportionally more with the same shape. `ClaudeSMC_TradeManager.mq5`'s `InpReferenceLot` MUST equal `fixed_lot` (both default 0.01). |
 | DXY correlation context | `dxy_symbol` | Optional US Dollar Index read (no fixed broker symbol - set this to whatever your broker calls it) fed to Claude as corroborating/contradicting context for gold's usual inverse correlation with the dollar. Gracefully no-ops if the symbol isn't available. |
 | News/calendar blackout windows | `news_blackout_windows` | A hand-maintained list of UTC `(start, end)` pairs (no economic-calendar data source is wired up) - `executor.gate()` rejects any new entry whose evaluation falls inside one, checked before every other gate. |
 | ATR-adaptive initial stop-loss | `sl_mode`, `sl_atr_mult`, `sl_atr_period`, `sl_atr_timeframe`, `sl_dollars_min/max` | `sl_mode="atr"` derives the entry stop from recent ATR instead of the fixed `sl_dollars`, clamped to `[sl_dollars_min, sl_dollars_max]`. Entry SL only - `tp1_dollars`/`trail_dollars` stay fixed either way, since the MQL5 trade manager only ever reads those two INPUT values. |
@@ -386,11 +402,15 @@ you what trades that *looked like this one* actually did on THIS account's
 own history - there is no external dataset, no pretrained model, nothing
 shipped with this repo: a fresh install starts with `ml_win_probability:
 null` and stays that way until you've both installed the optional
-dependencies and traded (dry-run counts) enough to log real snapshots. Only
-`main.py`'s live/dry-run loop logs snapshots (`ml_advisor.log_snapshot()`,
-called right after `executor.execute()` for every EXECUTED trade) -
-`backtest.py` does not, so a backtest run alone will never grow
-`logs/ml_snapshots.csv` or give `train_model()` anything to train on yet.
+dependencies and traded **live** long enough to have at least 30 closed
+trades. Only `main.py --live` logs snapshots (`ml_advisor.log_snapshot()`,
+called right after `executor.execute()` for every executed trade that got
+a real broker ticket) - dry-run trades have no ticket and no real P&L, so
+they can never be labeled, and `backtest.py` doesn't log snapshots either.
+`train_ml_model.py` reports the model's *cross-validated* accuracy next to
+the base rate (always guessing the more common outcome); Claude sees both
+numbers and is told to ignore the model unless it clearly beats the base
+rate.
 Re-run `python train_ml_model.py` periodically as more trades accumulate -
 the live loop only ever reads the persisted model
 (`logs/ml_win_probability_model.joblib`), it never trains one itself, and
@@ -555,6 +575,12 @@ a real, structural race condition (see above) with no observed downside,
 which alone justifies it as the default even before it shows a P&L
 difference on real data. Run `--compare` against real exported history (or
 `--from-mt5`) before drawing any stronger conclusion.
+
+*These figures were measured with the old defaults (fixed 0.01 lot, no
+daily cap). A backtest now uses `config.py`'s current defaults - 2%
+risk-sized lots and the 10% daily cap/budget - so dollar P&L scales with
+equity and won't match the table; pass `--risk-percent 0 --max-daily-loss
+0` to reproduce the old conditions.*
 
 ### Honest limitations of the backtest itself
 

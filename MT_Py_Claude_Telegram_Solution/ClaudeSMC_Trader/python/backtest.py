@@ -365,8 +365,10 @@ class HistoricalGateway:
         chance to engage. Kept only so --compare has the old behavior to
         measure exit_style=sl_to_tp1 against; not used live.
         """
-        arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, pos.lots)
-        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, pos.lots)
+        # At the reference lot (cfg.fixed_lot), exactly like the live MQL5
+        # managers - see _manage_sl_to_tp1's own note.
+        arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.fixed_lot)
+        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.fixed_lot)
         if pos.direction == "buy":
             if low <= pos.sl:
                 return pos.sl, "trail" if pos.armed else "sl"
@@ -402,8 +404,12 @@ class HistoricalGateway:
         point by the time this check fires. Only on LATER bars does the SL
         continue trailing trail_dist behind new highs/lows.
         """
-        tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, pos.lots)
-        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, pos.lots)
+        # TP1/trail are dollars at the REFERENCE lot (cfg.fixed_lot), i.e.
+        # fixed price distances - the same way the entry SL is sized and the
+        # live MQL5 managers convert them. Converting at pos.lots would
+        # shrink them as a risk-sized lot grows (risking ~$200 to lock ~$6).
+        tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.fixed_lot)
+        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.fixed_lot)
         if pos.direction == "buy":
             if low <= pos.sl:
                 return pos.sl, "trail" if pos.armed else "sl"
@@ -601,7 +607,8 @@ def run_backtest(gateway: HistoricalGateway, cfg: AdvisorConfig, client, mechani
         day = gateway.current_time.date()
         trades_today = day_trades.get(day, 0)
         block_reason = day_state.block_reason(gateway, cfg)
-        decision = executor.execute(gateway, cfg, verdict, gateway.spec, trades_today, block_reason)
+        decision = executor.execute(gateway, cfg, verdict, gateway.spec, trades_today, block_reason,
+                                    day_start_equity=day_state.start_equity)
         if decision.executed:
             day_trades[day] = trades_today + 1
 
@@ -661,7 +668,8 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
             day = g.current_time.date()
             trades_today = day_trades[s].get(day, 0)
             block_reason = day_states[s].block_reason(g, cfg)
-            decision = executor.execute(g, cfg, verdict, g.spec, trades_today, block_reason)
+            decision = executor.execute(g, cfg, verdict, g.spec, trades_today, block_reason,
+                                        day_start_equity=day_states[s].start_equity)
             if decision.executed:
                 day_trades[s][day] = trades_today + 1
 
@@ -737,13 +745,14 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--yes", action="store_true", help="skip the cost confirmation prompt")
     parser.add_argument("--out", default="logs/backtest_trades.csv")
     parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
-                        help="simulate the daily loss circuit breaker (see main.py's own flag of the "
-                             "same name / backtest.BacktestDayState) - default 0 = not simulated")
+                        help="daily loss cap in pct (breaker + open-risk budget, see main.py's own flag "
+                             "of the same name / backtest.BacktestDayState) - default 10 (config.py); "
+                             "pass 0 to not simulate it")
     parser.add_argument("--daily-target", type=float, dest="daily_target",
                         help="simulate the daily profit target alongside --max-daily-loss")
     parser.add_argument("--risk-percent", type=float, dest="risk_percent",
-                        help="simulate equity-scaled lot sizing instead of the fixed lot (see "
-                             "main.py's own flag of the same name) - default: unset, fixed lot")
+                        help="pct of equity risked per trade (see main.py's own flag of the same name) "
+                             "- default 2 (config.py); pass 0 to simulate the fixed 0.01 lot instead")
     parser.add_argument("--sl-mode", choices=["fixed", "atr"], dest="sl_mode",
                         help="simulate ATR-adaptive initial stop-loss instead of the fixed sl_dollars "
                              "distance (see main.py's own flag of the same name)")

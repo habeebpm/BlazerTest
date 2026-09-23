@@ -59,11 +59,13 @@
 //| derived every tick from whether a position's OWN current SL has    |
 //| already reached the lock level, never stored - this EA needs no    |
 //| memory across ticks or restarts and stays correct even if          |
-//| reattached mid-trade. Dollar amounts are converted to a price       |
-//| distance per position using that position's own volume and the     |
-//| symbol's live tick value/size (price_distance = dollars *           |
-//| tick_size / (tick_value * volume)) - never an assumed contract     |
-//| size. This is InpExitStyle=EXIT_SL_TO_TP1 (the default) and it's   |
+//| reattached mid-trade. Dollar amounts are USD AT InpFixedLot (the   |
+//| reference lot), converted with the symbol's live tick value/size   |
+//| (price_distance = dollars * tick_size / (tick_value * InpFixedLot))|
+//| - never an assumed contract size. SL, TP1 and trail are therefore  |
+//| fixed price distances whatever lot is traded, so risk-% sizing     |
+//| scales risk and locked profit together. This is                    |
+//| InpExitStyle=EXIT_SL_TO_TP1 (the default) and it's                 |
 //| the ONLY style Telegram-sourced positions ever use.                |
 //|                                                                    |
 //| InpExitStyle=EXIT_BREAKEVEN_R_DECAY adds one earlier protective    |
@@ -227,14 +229,14 @@ input bool    InpEnableTelegramSignals = false;   // Poll Telegram and execute s
 input bool    InpEnableClaudeManagement = false;  // Manage exits for ClaudeSMC_Trader's Python-opened positions
 
 input group "=== Shared business rules - apply to BOTH sources ==="
-input double  InpFixedLot               = 0.01;   // Lot size for every Telegram-sourced entry (or the reference lot for InpSlDollars' price distance when InpUseRiskPercent is true - see below)
+input double  InpFixedLot               = 0.01;   // Reference lot: SL/TP1/trail dollars are priced at this lot (MUST match python AdvisorConfig.fixed_lot); also the traded lot when InpUseRiskPercent=false
 input bool    InpUseRiskPercent         = true;    // Size Telegram-sourced entries from equity instead of always InpFixedLot
 input double  InpRiskPercent            = 2.0;     // InpUseRiskPercent only: risk this % of equity per trade (recommended: InpMaxDailyLossPct / 5)
 input double  InpMaxLotSize             = 5.0;     // InpUseRiskPercent only: hard cap on a risk-sized lot
 input int     InpMaxPositionsPerDirection = 5;     // SHARED cap, counted across BOTH magics together
-input double  InpSlDollars              = 6.0;     // Initial stop-loss (USD-equivalent price distance)
-input double  InpTp1Dollars             = 6.0;     // Floating profit that locks the SL in here (exact, no buffer)
-input double  InpTrailDollars           = 3.0;     // Trailing distance once locked/armed
+input double  InpSlDollars              = 6.0;     // Initial stop-loss (USD at InpFixedLot = a fixed price distance)
+input double  InpTp1Dollars             = 6.0;     // Profit (USD at InpFixedLot) that locks the SL in here (exact, no buffer)
+input double  InpTrailDollars           = 3.0;     // Trailing distance (USD at InpFixedLot) once locked/armed
 
 input group "=== Identification ==="
 input long    InpTelegramMagicNumber = 20260922;   // This EA's own Telegram-sourced trades
@@ -331,6 +333,8 @@ bool     MentionsGold(const string &upperText);
 void     ParseSignalText(const string &rawText, SignalMsg &msg);
 double   DollarsToPrice(double dollars, double volume);
 double   PositionSizeLots();
+double   OpenRiskMoney();
+string   DailyRiskBudgetReason(double newLots);
 int      CountSameDirection(int direction);
 void     ExpirePendingOrders();
 int      ClosePositionsByMagic(long magic, const string &label);
@@ -469,16 +473,16 @@ int OnInit()
    double stopsLevelPrice = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
    if(tickValue > 0.0 && tickSize > 0.0)
    {
-      // Illustrative only, at InpFixedLot - the real per-tick check always
-      // recomputes using each position's own volume (see DollarsToPrice).
+      // Exact for every position, whatever its volume: TP1/trail are fixed
+      // price distances (dollars at InpFixedLot - see ManagePositionExit).
       double sampleTrailDist = InpTrailDollars * tickSize / (tickValue * InpFixedLot);
       if(sampleTrailDist < stopsLevelPrice)
-         PrintFormat("UnifiedTrader_EA: WARNING - at %.2f lots, InpTrailDollars=%.2f converts to a "
+         PrintFormat("UnifiedTrader_EA: WARNING - InpTrailDollars=%.2f at the %.2f reference lot is a "
                      "%.5f price distance, tighter than this symbol's broker minimum stop distance "
-                     "(%.5f). Once locked, the trailing stop may never be able to move for that "
-                     "position size - it will sit at the InpTp1Dollars lock level instead, which is "
-                     "still a valid, protected exit, just not a trailing one.",
-                     InpFixedLot, InpTrailDollars, sampleTrailDist, stopsLevelPrice);
+                     "(%.5f). Once locked, the trailing stop may never be able to move - it will sit "
+                     "at the InpTp1Dollars lock level instead, which is still a valid, protected exit, "
+                     "just not a trailing one.",
+                     InpTrailDollars, InpFixedLot, sampleTrailDist, stopsLevelPrice);
 
       // Risk audit: how many losing Telegram-sourced trades does
       // InpMaxDailyLossPct actually absorb at the lot size that will really
@@ -951,6 +955,84 @@ double PositionSizeLots()
 }
 
 //+------------------------------------------------------------------+
+//| Money still at risk across BOTH magics on this symbol: every open |
+//| position from the current price to its stop, plus every pending  |
+//| order from its entry to its stop. A stop already locked beyond    |
+//| the current price (profit protected) contributes 0; orders with   |
+//| no stop can't be priced and are skipped (this EA always sets one).|
+//| Mirrors ClaudeSMC_Trader/python/executor.py's open_risk_dollars().|
+//+------------------------------------------------------------------+
+double OpenRiskMoney()
+{
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   MqlTick tick;
+   if(tickValue <= 0.0 || tickSize <= 0.0 || !SymbolInfoTick(_Symbol, tick))
+      return(0.0);
+
+   double total = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(magic != InpTelegramMagicNumber && magic != InpClaudeMagicNumber)
+         continue;
+      double sl = PositionGetDouble(POSITION_SL);
+      if(sl <= 0.0)
+         continue;
+      double dist = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? tick.bid - sl : sl - tick.ask;
+      if(dist > 0.0)
+         total += dist / tickSize * tickValue * PositionGetDouble(POSITION_VOLUME);
+   }
+   for(int j = OrdersTotal() - 1; j >= 0; j--)
+   {
+      ulong oticket = OrderGetTicket(j);
+      if(oticket == 0 || OrderGetString(ORDER_SYMBOL) != _Symbol)
+         continue;
+      long omagic = OrderGetInteger(ORDER_MAGIC);
+      if(omagic != InpTelegramMagicNumber && omagic != InpClaudeMagicNumber)
+         continue;
+      double osl = OrderGetDouble(ORDER_SL);
+      if(osl <= 0.0)
+         continue;
+      double odist = MathAbs(OrderGetDouble(ORDER_PRICE_OPEN) - osl);
+      total += odist / tickSize * tickValue * OrderGetDouble(ORDER_VOLUME_CURRENT);
+   }
+   return(total);
+}
+
+//+------------------------------------------------------------------+
+//| Makes InpMaxDailyLossPct a real cap rather than only a trigger:   |
+//| DailyLossBreakerActive() fires only AFTER equity is already down  |
+//| the full %, and never closes anything - so several concurrent     |
+//| risk-sized trades could otherwise all stop out together past it.  |
+//| Returns "" if today's drawdown + OpenRiskMoney() + this new       |
+//| entry's own risk fits within InpMaxDailyLossPct of the day's      |
+//| starting equity, else the reason to skip the signal.              |
+//+------------------------------------------------------------------+
+string DailyRiskBudgetReason(double newLots)
+{
+   if(InpMaxDailyLossPct <= 0.0 || g_dayStartEquity <= 0.0)
+      return("");
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double slDist    = DollarsToPrice(InpSlDollars, InpFixedLot);
+   if(tickValue <= 0.0 || tickSize <= 0.0 || slDist <= 0.0)
+      return("");
+
+   double newRisk   = slDist / tickSize * tickValue * newLots;
+   double budget    = g_dayStartEquity * InpMaxDailyLossPct / 100.0;
+   double drawdown  = MathMax(0.0, g_dayStartEquity - AccountInfoDouble(ACCOUNT_EQUITY));
+   double committed = drawdown + OpenRiskMoney() + newRisk;
+   if(committed > budget + 0.000000001)
+      return(StringFormat("daily loss budget: drawdown + open risk + this trade = %.2f, over the "
+                          "%.2f%% cap (%.2f)", committed, InpMaxDailyLossPct, budget));
+   return("");
+}
+
+//+------------------------------------------------------------------+
 //| Open positions PLUS pending limit orders on this symbol/direction |
 //| across BOTH magic numbers together - the shared cap - regardless  |
 //| of which mode(s) are currently enabled (see file header's         |
@@ -1398,9 +1480,14 @@ void ManagePositionExit(ulong ticket, long magic)
    if(PositionGetString(POSITION_SYMBOL) != _Symbol)
       return;
 
-   double volume = PositionGetDouble(POSITION_VOLUME);
-   double tp1Dist = DollarsToPrice(InpTp1Dollars, volume);
-   double trailDist = DollarsToPrice(InpTrailDollars, volume);
+   // At the REFERENCE lot (InpFixedLot), not this position's own volume -
+   // the SL is already a fixed price distance (InpSlDollars at
+   // InpFixedLot); converting TP1/trail at a risk-sized position's real
+   // volume would shrink them as the lot grows (risking e.g. $200 at the
+   // stop to lock only $6). Fixed price distances keep the SL : TP1 : trail
+   // shape identical at every lot size, for both sources.
+   double tp1Dist = DollarsToPrice(InpTp1Dollars, InpFixedLot);
+   double trailDist = DollarsToPrice(InpTrailDollars, InpFixedLot);
    if(tp1Dist <= 0.0 || trailDist <= 0.0)
       return;
 
@@ -1695,6 +1782,14 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
       LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   string budgetReason = DailyRiskBudgetReason(PositionSizeLots());
+   if(budgetReason != "")
+   {
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", budgetReason);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, budgetReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    int sameDir = CountSameDirection(msg.direction);

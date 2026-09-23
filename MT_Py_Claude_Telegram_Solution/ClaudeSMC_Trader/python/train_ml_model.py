@@ -57,8 +57,12 @@ def main(argv: list | None = None) -> int:
     result = ml_advisor.train_model(cfg, min_samples=args.min_samples,
                                     lookback_days=args.lookback_days)
     if result["trained"]:
-        print(f"Trained on {result['n_samples']} labeled trade(s) - "
-              f"train accuracy {result['train_accuracy'] * 100.0:.1f}%.")
+        print(f"Trained on {result['n_samples']} labeled trade(s) - cross-validated accuracy "
+              f"{result['cv_accuracy'] * 100.0:.1f}% vs a {result['base_rate'] * 100.0:.1f}% base rate "
+              "(always guessing the more common outcome).")
+        if result["cv_accuracy"] <= result["base_rate"]:
+            print("No measurable edge over the base rate yet - Claude is told the same numbers, so "
+                  "it can discount the estimate; keep trading and retrain later.")
         print(f"Model saved to {cfg.log_dir}/{ml_advisor.MODEL_FILENAME} - "
               "main.py's live loop will pick it up on the next evaluation cycle.")
         return 0

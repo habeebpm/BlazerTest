@@ -75,28 +75,23 @@ class AdvisorConfig:
     fixed_lot: float = 0.01
     max_open_positions_per_direction: int = 5
 
-    # --- Equity-scaled lot sizing (opt-in; ports ../../python/mt5_client.py's
+    # --- Equity-scaled lot sizing (ports ../../python/mt5_client.py's
     #     position_size()/TradeConfig.use_risk_percent pattern) - when
     #     use_risk_percent is set, executor.execute() sizes each trade from
-    #     current equity instead of always using fixed_lot: the SAME price
-    #     distance sl_dollars/fixed_lot implies (see sl_dollars' own comment)
-    #     is held fixed, and the lot is solved for so that price distance
-    #     times that lot risks exactly risk_percent% of equity, then clamped
-    #     to [volume_min, volume_max, max_lot_size] and rounded down to the
-    #     broker's volume_step. ClaudeSMC_TradeManager.mq5 needs no change
-    #     either way - it already recomputes InpTp1Dollars/InpTrailDollars'
-    #     price distance from each position's own live volume (see its
-    #     DollarsToPrice()), so a bigger lot still locks/trails at the same
-    #     dollar amounts. Off by default: fixed_lot keeps its old meaning
-    #     (the ONLY lot ever traded) until this is turned on.
-    # Recommended live setting (see README's "Risk parameters" section for
-    # the full standard-practice reasoning): risk_percent = max_daily_loss_pct
-    # / 5, so the daily breaker absorbs ~5 losing trades before halting -
-    # enough to ride out ordinary variance (at ~5 trades/day, 50% win rate,
-    # ~2.4 losers/day is typical) without the breaker itself becoming the
-    # strategy. On by default at 2.0% (= this file's max_daily_loss_pct of
-    # 10.0% / 5), which also sits inside the conventional 1-2%-per-trade
-    # risk-management band professional/prop-desk sizing rules use.
+    #     current equity instead of always using fixed_lot. fixed_lot then
+    #     acts as the REFERENCE lot: sl_dollars/tp1_dollars/trail_dollars are
+    #     dollar amounts at fixed_lot, i.e. fixed PRICE distances, and the
+    #     traded lot is solved so the SL distance risks exactly risk_percent%
+    #     of equity, then clamped to [volume_min, volume_max, max_lot_size]
+    #     and rounded down to the broker's volume_step. Because TP1/trail
+    #     are the same fixed price distances (ClaudeSMC_TradeManager.mq5's
+    #     InpReferenceLot MUST equal fixed_lot), a bigger lot risks AND locks
+    #     proportionally more money with an unchanged SL : TP1 : trail shape.
+    # On by default at 2.0% (= max_daily_loss_pct 10% / 5): the conventional
+    # 1-2%-per-trade band, and ~5 full losses before the daily breaker
+    # halts - see README's "Risk parameters". executor.execute()'s open-risk
+    # budget check keeps several concurrent positions from jointly risking
+    # more than what's left of the daily cap.
     use_risk_percent: bool = True
     risk_percent: float = 2.0       # 2.0% = this file's max_daily_loss_pct (10.0%) / 5
     max_lot_size: float = 5.0       # hard cap on a risk-sized lot, regardless of how large equity grows

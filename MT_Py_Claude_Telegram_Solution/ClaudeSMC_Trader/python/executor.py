@@ -207,6 +207,54 @@ def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> float:
     return round(lots, 2)
 
 
+def open_risk_dollars(gateway, cfg: AdvisorConfig, spec) -> float:
+    """Money still at risk if every open position under cfg.magic (plus
+    shared_cap_magic_numbers - e.g. UnifiedTrader_EA's Telegram side) ran
+    from the current price to its current stop-loss. A stop already locked
+    beyond the current price (profit protected) contributes 0. Positions
+    with no stop at all (sl <= 0) can't be priced and are skipped - every
+    order this solution places carries one.
+    """
+    if spec.tick_size <= 0 or spec.tick_value <= 0:
+        return 0.0
+    tick = gateway.get_tick(cfg.symbol)
+    seen, total = set(), 0.0
+    for magic in [cfg.magic, *cfg.shared_cap_magic_numbers]:
+        for p in gateway.open_positions(cfg.symbol, magic):
+            if p["ticket"] in seen or p["sl"] <= 0:
+                continue
+            seen.add(p["ticket"])
+            if p["direction"] == "buy":
+                dist = tick.bid - p["sl"]
+            else:
+                dist = p["sl"] - tick.ask
+            if dist > 0:
+                total += dist / spec.tick_size * spec.tick_value * p["volume"]
+    return total
+
+
+def daily_risk_budget_reason(gateway, cfg: AdvisorConfig, spec, day_start_equity: float,
+                             new_trade_risk: float) -> str:
+    """Makes max_daily_loss_pct a real cap, not just a stop-new-entries
+    trigger: the daily breaker alone only fires AFTER equity is already down
+    max_daily_loss_pct, and never closes anything - so e.g. five concurrent
+    2%-risk positions could still all stop out together past it. This
+    refuses a new entry if today's drawdown so far + what every open
+    position still risks to its stop + this trade's own risk would exceed
+    max_daily_loss_pct of the day's starting equity. "" if it fits (or the
+    cap/day anchor isn't set).
+    """
+    if cfg.max_daily_loss_pct <= 0 or day_start_equity <= 0:
+        return ""
+    budget = day_start_equity * cfg.max_daily_loss_pct / 100.0
+    drawdown = max(0.0, day_start_equity - gateway.account_equity())
+    committed = drawdown + open_risk_dollars(gateway, cfg, spec) + new_trade_risk
+    if committed > budget + 1e-9:
+        return (f"daily loss budget: today's drawdown + open risk + this trade would total "
+                f"${committed:.2f}, over the {cfg.max_daily_loss_pct:g}% cap (${budget:.2f})")
+    return ""
+
+
 def atr_sl_distance(gateway, cfg: AdvisorConfig, spec) -> float | None:
     """ATR-based entry stop-loss price distance for sl_mode="atr" - see
     config.py's own comment for why this is entry-SL only. Returns None
@@ -227,13 +275,20 @@ def atr_sl_distance(gateway, cfg: AdvisorConfig, spec) -> float | None:
     return max(min_dist, min(sl_dist, max_dist))
 
 
+def _reject(cfg: AdvisorConfig, verdict: ConfluenceVerdict, reason: str) -> Decision:
+    log.info("REJECTED %s: %s", verdict.direction, reason)
+    log_decision(cfg, verdict, executed=False, reject_reason=reason)
+    return Decision(executed=False, reject_reason=reason)
+
+
 def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
-            trades_today: int, daily_block_reason: str = "") -> Decision:
+            trades_today: int, daily_block_reason: str = "",
+            day_start_equity: float = 0.0) -> Decision:
+    """day_start_equity (main.DayRoll / backtest.BacktestDayState's anchor)
+    enables the daily_risk_budget_reason() check; 0 skips it."""
     reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
     if reason:
-        log.info("REJECTED %s: %s", verdict.direction, reason)
-        log_decision(cfg, verdict, executed=False, reject_reason=reason)
-        return Decision(executed=False, reject_reason=reason)
+        return _reject(cfg, verdict, reason)
 
     tick = gateway.get_tick(cfg.symbol)
     entry_price = tick.ask if verdict.direction == "buy" else tick.bid
@@ -249,6 +304,11 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     else:
         raise ValueError(f"Unrecognized sl_mode {cfg.sl_mode!r} - must be 'fixed' or 'atr'.")
     lots = position_size(gateway, cfg, spec, sl_dist)
+    if spec.tick_size > 0:
+        new_trade_risk = sl_dist / spec.tick_size * spec.tick_value * lots
+        budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, new_trade_risk)
+        if budget_reason:
+            return _reject(cfg, verdict, budget_reason)
     if verdict.direction == "buy":
         sl_price = entry_price - sl_dist
     else:

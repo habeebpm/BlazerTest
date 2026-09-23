@@ -201,7 +201,7 @@ def train_model(cfg: AdvisorConfig, gateway=None, min_samples: int = 30,
     logged yet, an MT5 read failure, fewer than min_samples labeled
     examples, or every labeled example sharing one outcome - a classifier
     needs both a win and a loss to learn anything), and {"trained": True,
-    "n_samples": N, "train_accuracy": ...} on success.
+    "n_samples": N, "cv_accuracy": ..., "base_rate": ...} on success.
     """
     try:
         from sklearn.ensemble import GradientBoostingClassifier
@@ -226,10 +226,8 @@ def train_model(cfg: AdvisorConfig, gateway=None, min_samples: int = 30,
     except Exception as exc:
         return {"trained": False, "reason": f"could not read MT5 trade history: {exc}"}
 
-    pnl_by_ticket: dict = {}
-    for t in trades:
-        ticket = str(t["ticket"])
-        pnl_by_ticket[ticket] = pnl_by_ticket.get(ticket, 0.0) + t["pnl_dollars"]
+    import calibration_report
+    pnl_by_ticket = calibration_report.build_pnl_by_ticket(trades)
 
     X, y = [], []
     for row in rows:
@@ -254,15 +252,33 @@ def train_model(cfg: AdvisorConfig, gateway=None, min_samples: int = 30,
                 "reason": "every labeled trade so far shares one outcome (all wins or all "
                           "losses) - a classifier needs both to learn anything yet."}
 
-    model = GradientBoostingClassifier(random_state=0)
+    # Deliberately small/shallow: a few dozen noisy trades can't support a
+    # deep ensemble, and anything bigger just memorizes them.
+    def make_model():
+        return GradientBoostingClassifier(n_estimators=50, max_depth=2, learning_rate=0.05,
+                                          subsample=0.8, random_state=0)
+
+    # Honest skill estimate: out-of-sample accuracy from stratified k-fold
+    # cross-validation, next to the base rate (always guessing the more
+    # common outcome). In-sample accuracy on the training set itself is
+    # ~100% for any boosted model and says nothing about real skill.
+    from sklearn.model_selection import StratifiedKFold, cross_val_score
+    n_folds = max(2, min(5, min(y.count(0), y.count(1))))
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=0)
+    cv_accuracy = float(cross_val_score(make_model(), X, y, cv=cv).mean())
+    base_rate = max(y.count(0), y.count(1)) / len(y)
+
+    model = make_model()
     model.fit(X, y)
-    train_accuracy = float(model.score(X, y))
     os.makedirs(cfg.log_dir, exist_ok=True)
-    joblib.dump({"model": model, "feature_names": FEATURE_NAMES, "n_samples": len(X)},
+    joblib.dump({"model": model, "feature_names": FEATURE_NAMES, "n_samples": len(X),
+                 "cv_accuracy": cv_accuracy, "base_rate": base_rate},
                 _model_path(cfg))
-    log.info("ml_advisor.train_model: trained on %d labeled trade(s) (train accuracy %.1f%%) -> %s",
-              len(X), train_accuracy * 100.0, _model_path(cfg))
-    return {"trained": True, "n_samples": len(X), "train_accuracy": round(train_accuracy, 3)}
+    log.info("ml_advisor.train_model: trained on %d labeled trade(s) - cross-validated accuracy "
+              "%.1f%% vs %.1f%% base rate -> %s",
+              len(X), cv_accuracy * 100.0, base_rate * 100.0, _model_path(cfg))
+    return {"trained": True, "n_samples": len(X), "cv_accuracy": round(cv_accuracy, 3),
+            "base_rate": round(base_rate, 3)}
 
 
 # path -> (mtime, loaded_dict); invalidated whenever the file on disk
@@ -328,6 +344,10 @@ def win_probability_context(cfg: AdvisorConfig, snapshot: dict) -> dict | None:
             "win_probability_pct_buy": round(score("buy") * 100.0, 1),
             "win_probability_pct_sell": round(score("sell") * 100.0, 1),
             "trained_on_n_trades": loaded.get("n_samples"),
+            # Out-of-sample skill vs always guessing the commoner outcome -
+            # a cv accuracy not clearly above the base rate means no edge.
+            "cv_accuracy_pct": round(loaded.get("cv_accuracy", 0.0) * 100.0, 1),
+            "base_rate_pct": round(loaded.get("base_rate", 0.0) * 100.0, 1),
             "note": "locally-trained estimate from this system's own trade history, one per "
                     "candidate direction - informational only, weigh it like recent_performance, "
                     "never a hard rule",

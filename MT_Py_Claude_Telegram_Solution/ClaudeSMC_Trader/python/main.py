@@ -49,6 +49,9 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.symbol = args.symbol
     if args.lots is not None:
         cfg.fixed_lot = args.lots
+        # An explicit lot means "trade exactly this lot" unless --risk-percent
+        # is ALSO given (handled just below, which re-enables risk sizing).
+        cfg.use_risk_percent = False
     if args.max_positions is not None:
         cfg.max_open_positions_per_direction = args.max_positions
     if args.risk_percent is not None:
@@ -309,13 +312,16 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
               verdict.direction, verdict.conviction, verdict.confluence_count, verdict.reasoning)
-    decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, day.block_reason())
+    decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, day.block_reason(),
+                                day_start_equity=day.day_start_equity)
     if decision.executed:
         day.trades_today += 1
-        # Feeds train_model()/train_ml_model.py's offline training later -
-        # never called for a rejected decision, since there's no outcome to
-        # ever join it to. Already never raises (see its own docstring), so
-        # nothing extra to guard here.
+    if decision.executed and decision.ticket:
+        # Feeds train_model()/train_ml_model.py's offline training later.
+        # Only LIVE trades carry a broker ticket that MT5's deal history can
+        # join to a real P&L - a rejected decision or a dry-run "trade" can
+        # never be labeled, so logging it would only add dead rows. Never
+        # raises (see its own docstring).
         ml_advisor.log_snapshot(cfg, features, verdict.direction, decision.ticket)
     if cfg.last_verdict_filename:
         # Local file I/O, not a network call - kept inline rather than
@@ -350,11 +356,15 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
         ).start()
 
 
-def main(argv: list | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--symbol", help="override the traded symbol (default XAUUSD)")
-    parser.add_argument("--lots", type=float, help="override fixed lot size (default 0.01)")
+    parser.add_argument("--lots", type=float,
+                        help="trade this fixed lot instead of risk-%% sizing (default: risk-sized, "
+                             "see --risk-percent). Combined with --risk-percent it only sets the "
+                             "reference lot the $ SL/TP1/trail distances are priced at (default 0.01; "
+                             "must equal the MQL5 manager's InpReferenceLot)")
     parser.add_argument("--max-positions", type=int, dest="max_positions",
                         help="max concurrent same-direction positions (default 5)")
     parser.add_argument("--shared-cap-magic", dest="shared_cap_magic",
@@ -364,13 +374,13 @@ def main(argv: list | None = None) -> int:
                              "sources to share one combined per-direction cap instead of 5 each; see "
                              "config.py's AdvisorConfig.shared_cap_magic_numbers")
     parser.add_argument("--risk-percent", type=float, dest="risk_percent",
-                        help="size each trade from equity instead of a fixed lot, risking this pct "
-                             "of equity per trade (default: unset = always trade --lots); pass 0 to "
-                             "explicitly disable; see config.py's use_risk_percent")
+                        help="pct of equity risked per trade (default 2, i.e. risk-%% sizing is ON); "
+                             "pass 0 to trade the fixed --lots instead; see config.py's use_risk_percent")
     parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
-                        help="stop new entries after the account is down this many pct on the "
-                             "UTC day (default 0 = disabled) - existing positions are left alone, "
-                             "ClaudeSMC_TradeManager.mq5 keeps managing them; see config.py")
+                        help="daily loss cap in pct of the day's starting equity (default 10): stops "
+                             "new entries once hit, and refuses any entry whose risk plus open "
+                             "positions' risk would exceed it; pass 0 to disable. Existing positions "
+                             "are left alone - ClaudeSMC_TradeManager.mq5 keeps managing them")
     parser.add_argument("--daily-target", type=float, dest="daily_target",
                         help="stop new entries once the account is up this many pct on the UTC "
                              "day (default: unset = disabled) - pass 0 to explicitly disable")
@@ -438,7 +448,11 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--server", help="MT5 broker server name")
     parser.add_argument("--terminal-path", dest="terminal_path", help="path to terminal64.exe")
     parser.add_argument("-v", "--verbose", action="store_true")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     setup_logging(args.verbose)
     cfg = build_config(args)

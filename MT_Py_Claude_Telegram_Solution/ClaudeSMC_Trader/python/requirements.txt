@@ -16,9 +16,8 @@ anthropic>=0.75
 pydantic>=2.0
 
 # Local ML win-probability advisor (see ml_advisor.py/train_ml_model.py) -
-# fully optional and pure CPU/local (no cloud API, no GPU). main.py's live
-# loop and selftest.py both run fine without these installed;
-# ml_advisor.train_model()/win_probability_context() just gracefully no-op
-# ("scikit-learn/joblib are not installed") until you install them.
+# pure CPU/local (no cloud API, no GPU). Optional at runtime: if you remove
+# these two lines, main.py runs unchanged (the advisor just no-ops) and
+# selftest.py prints [SKIP] for its training/scoring checks.
 scikit-learn>=1.3
 joblib>=1.3

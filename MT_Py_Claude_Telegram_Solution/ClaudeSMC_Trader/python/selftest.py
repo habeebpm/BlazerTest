@@ -330,7 +330,7 @@ class FakeGateway:
     SymbolSpec = gw.SymbolSpec
 
     def __init__(self, same_dir_open: int = 0, bid: float = 2350.0, ask: float = 2350.2,
-                 equity: float = 10000.0, bars_df=None, now=None):
+                 equity: float = 10000.0, bars_df=None, now=None, positions=None):
         self.same_dir_open = same_dir_open
         self.bid, self.ask = bid, ask
         self.orders_sent = []
@@ -338,10 +338,14 @@ class FakeGateway:
         self.equity = equity
         self.bars_df = bars_df
         self._now = now
+        self.positions = positions or []
 
     def count_same_direction(self, symbol, magic, direction, additional_magics=()):
         self.last_additional_magics = additional_magics
         return self.same_dir_open
+
+    def open_positions(self, symbol, magic):
+        return self.positions
 
     def account_equity(self):
         return self.equity
@@ -618,6 +622,56 @@ def test_executor() -> bool:
     executor.execute(fg8, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("execute() actually sends the risk-sized lot, not fixed_lot",
                 fg8.orders_sent and abs(fg8.orders_sent[0][1] - lots_6k) < 1e-9, fg8.orders_sent)
+
+    # --- daily loss BUDGET (max_daily_loss_pct as a real cap) ---
+    # Defaults: 2% risk, $6 SL at 0.01 lot = 6.0 price -> 0.33 lots risks
+    # $198 at $10k; the 10% cap is $1000 of day-start equity.
+    cfg_budget = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
+
+    def open_buy(ticket, sl=2344.2, volume=0.33):
+        return {"ticket": ticket, "direction": "buy", "volume": volume, "price_open": 2350.2,
+                "sl": sl, "tp": 0.0}
+
+    fg_b0 = FakeGateway(equity=10000.0)
+    d_b0 = executor.execute(fg_b0, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("a first 2%-risk trade fits comfortably inside the 10% daily budget",
+                d_b0.executed, d_b0.reject_reason)
+
+    four_open = [open_buy(i) for i in range(4)]   # each still risks 5.8 price x 0.33 = $191.40
+    fg_b1 = FakeGateway(equity=10000.0, positions=four_open)
+    d_b1 = executor.execute(fg_b1, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("4 open + 1 new at ~2% each (~$964) still fits the $1000 budget",
+                d_b1.executed, d_b1.reject_reason)
+
+    five_open = [open_buy(i) for i in range(5)]
+    fg_b2 = FakeGateway(equity=10000.0, positions=five_open)
+    d_b2 = executor.execute(fg_b2, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("5 open + 1 new would risk ~$1155 at once - refused, so the 10% cap is a real cap "
+                "and not just a trigger that fires after the damage",
+                not d_b2.executed and d_b2.reject_reason.startswith("daily loss budget"),
+                d_b2.reject_reason)
+
+    fg_b3 = FakeGateway(equity=9500.0, positions=[open_buy(0), open_buy(1)])
+    d_b3 = executor.execute(fg_b3, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("today's drawdown so far counts too: $500 down + 2 open + new (~$1069) is refused",
+                not d_b3.executed and d_b3.reject_reason.startswith("daily loss budget"),
+                d_b3.reject_reason)
+
+    locked = [open_buy(i, sl=2351.0) for i in range(5)]   # SL already above bid: profit locked
+    fg_b4 = FakeGateway(equity=10000.0, positions=locked)
+    d_b4 = executor.execute(fg_b4, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("positions whose SL is already locked in profit add no open risk",
+                d_b4.executed, d_b4.reject_reason)
+
+    fg_b5 = FakeGateway(equity=10000.0, positions=five_open)
+    d_b5 = executor.execute(fg_b5, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("no day_start_equity passed (0) skips the budget check entirely",
+                d_b5.executed, d_b5.reject_reason)
 
     return ok
 
@@ -1412,6 +1466,25 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
     ok &= check("arming is deferred when locking would violate the broker's minimum stop distance",
                 pos3 is not None and not pos3.armed and pos3.sl == 2344.0, pos3)
 
+    # Regression: with risk-% sizing the traded lot is much bigger than the
+    # reference fixed_lot. TP1/trail must stay the SAME price distances as at
+    # fixed_lot (like the SL) - not shrink with volume (which once meant
+    # risking ~$200 at the stop to lock only ~$6).
+    g4 = make_gateway(spec)
+    g4.sim_positions = [backtest.SimPosition(ticket=4, direction="buy", lots=0.33,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=0.0)]
+    set_bar(g4, 2350.0, 2352.0, 2349.5, 2351.5)  # +2.0 price: would already arm if TP1 shrank to ~0.09
+    g4.manage_positions(cfg)
+    ok &= check("a 0.33-lot position is NOT locked by a 2.0 price move - TP1 is a fixed price "
+                "distance at the reference lot, not tp1_dollars re-priced at 0.33 lots",
+                not g4.sim_positions[0].armed and g4.sim_positions[0].sl == 2344.0, g4.sim_positions[0])
+    set_bar(g4, 2351.5, 2353.5, 2351.0, 2353.0)
+    g4.manage_positions(cfg)
+    ok &= check("...and it locks at EXACTLY the same price as a 0.01-lot position would (entry+3.0)",
+                g4.sim_positions[0].armed and abs(g4.sim_positions[0].sl - 2353.0) < 1e-9,
+                g4.sim_positions[0])
+
     return ok
 
 
@@ -1785,6 +1858,29 @@ def test_calibration_report() -> bool:
     return ok
 
 
+def test_main_cli_config() -> bool:
+    print("\n=== 16b. main.py CLI -> AdvisorConfig (risk defaults, --lots semantics) ===")
+    ok = True
+
+    def cfg_for(*argv):
+        return main_mod.build_config(main_mod.build_parser().parse_args(list(argv)))
+
+    cfg = cfg_for()
+    ok &= check("no flags: 2% risk sizing and the 10% daily cap are on (the shipped defaults)",
+                cfg.use_risk_percent and cfg.risk_percent == 2.0 and cfg.max_daily_loss_pct == 10.0
+                and cfg.dry_run, cfg)
+    cfg = cfg_for("--lots", "0.05")
+    ok &= check("an explicit --lots alone means 'trade exactly this lot' (risk sizing off)",
+                not cfg.use_risk_percent and cfg.fixed_lot == 0.05, cfg)
+    cfg = cfg_for("--lots", "0.05", "--risk-percent", "1")
+    ok &= check("--lots with --risk-percent keeps risk sizing, --lots only sets the reference lot",
+                cfg.use_risk_percent and cfg.risk_percent == 1.0 and cfg.fixed_lot == 0.05, cfg)
+    cfg = cfg_for("--risk-percent", "0", "--max-daily-loss", "0")
+    ok &= check("--risk-percent 0 / --max-daily-loss 0 turn both features off",
+                not cfg.use_risk_percent and cfg.max_daily_loss_pct == 0.0, cfg)
+    return ok
+
+
 def test_digest_lookback_days() -> bool:
     print("\n=== 16. main.digest_lookback_days() ===")
     ok = True
@@ -1947,6 +2043,15 @@ def test_ml_advisor() -> bool:
         ok &= check("win_probability_context() is None before any local model has been trained",
                     ml_advisor.win_probability_context(cfg, snap) is None)
 
+        try:
+            import joblib  # noqa: F401
+            import sklearn  # noqa: F401
+        except ImportError as exc:
+            print(f"  [SKIP] scikit-learn/joblib not installed - training/scoring checks skipped ({exc})")
+            ok &= check("without scikit-learn, train_model() declines gracefully instead of raising",
+                        ml_advisor.train_model(cfg, gateway=FakePerformanceGateway([]))["trained"] is False)
+            return ok
+
         no_data_cfg = AdvisorConfig(log_dir=os.path.join(tmp, "empty"), magic=999)
         no_data_result = ml_advisor.train_model(no_data_cfg, gateway=FakePerformanceGateway([]))
         ok &= check("train_model() gracefully declines rather than raising when no snapshots have "
@@ -1974,6 +2079,9 @@ def test_ml_advisor() -> bool:
         result = ml_advisor.train_model(cfg, gateway=FakePerformanceGateway(fake_trades), min_samples=10)
         ok &= check("train_model() trains successfully once enough labeled (real-P&L) trades exist",
                     result.get("trained") is True and result["n_samples"] == 20, result)
+        ok &= check("it reports OUT-OF-SAMPLE (cross-validated) accuracy next to the base rate, not "
+                    "an in-sample score that is ~100% for any boosted model",
+                    0.0 <= result["cv_accuracy"] <= 1.0 and result["base_rate"] == 0.5, result)
         ok &= check("the trained model is persisted to disk",
                     os.path.exists(ml_advisor._model_path(cfg)), ml_advisor._model_path(cfg))
 
@@ -1983,7 +2091,8 @@ def test_ml_advisor() -> bool:
                     "once a model is trained",
                     context is not None and 0.0 <= context["win_probability_pct_buy"] <= 100.0
                     and 0.0 <= context["win_probability_pct_sell"] <= 100.0
-                    and context["trained_on_n_trades"] == 20, context)
+                    and context["trained_on_n_trades"] == 20
+                    and context["base_rate_pct"] == 50.0 and "cv_accuracy_pct" in context, context)
 
         under_min_cfg = AdvisorConfig(log_dir=os.path.join(tmp, "under"), magic=999)
         ml_advisor.log_snapshot(under_min_cfg, snap, "buy", "9001")
@@ -2024,6 +2133,7 @@ def main() -> int:
         test_telegram_alert(),
         test_day_roll_daily_limits(),
         test_calibration_report(),
+        test_main_cli_config(),
         test_digest_lookback_days(),
         test_heartbeat(),
         test_ml_advisor(),

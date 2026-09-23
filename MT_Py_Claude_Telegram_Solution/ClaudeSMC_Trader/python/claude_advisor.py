@@ -155,11 +155,14 @@ one actually did historically, drawn only from THIS system's own past \
 trades - `win_probability_pct_buy` and `win_probability_pct_sell` (the \
 SAME current market state scored once per candidate direction, since which \
 side you'll call hasn't been decided yet) plus `trained_on_n_trades` (how \
-much history it's actually based on). Read whichever of the two matches \
-the direction you're actually leaning toward. Treat a low sample count \
-(well under 100) as a weak signal barely worth a mention; only let it \
-meaningfully move your call once `trained_on_n_trades` is reasonably \
-large. Like `recent_performance`, this is pattern-matching against \
+much history it's actually based on) and `cv_accuracy_pct` vs \
+`base_rate_pct` (the model's out-of-sample accuracy vs always guessing the \
+more common outcome). Read whichever probability matches the direction \
+you're actually leaning toward. If `cv_accuracy_pct` is not clearly above \
+`base_rate_pct`, the model has shown no real skill - ignore it. Treat a low \
+sample count (well under 100) as a weak signal barely worth a mention; \
+only let it meaningfully move your call once `trained_on_n_trades` is \
+reasonably large and it has shown skill. Like `recent_performance`, this is pattern-matching against \
 history, not a rule: a low win probability on an otherwise clean setup is \
 a reason to lean toward "partial" rather than "full", never an automatic \
 veto, and a high one is never by itself a reason to call "full" on a setup \

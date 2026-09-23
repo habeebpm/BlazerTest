@@ -179,18 +179,24 @@ either input to `0`/`false` to opt back out; neither is required:
 - **Daily loss circuit breaker** (`InpMaxDailyLossPct`, default `10.0`,
   `0` = disabled): withholds new Telegram-sourced entries once the account
   is down this many percent on the UTC day, latched until the next day.
-  Existing open positions are never touched. Mirrors `ClaudeSMC_Trader`'s
-  own `max_daily_loss_pct` (Python side).
+  Existing open positions are never touched. It is also a real **budget**,
+  not just a trigger: a new Telegram entry is skipped if today's drawdown +
+  what every open position/pending order of *both* magics still risks to
+  its stop + the new trade's own risk would exceed the cap - so several
+  concurrent trades can't jointly stop out past it. Mirrors
+  `ClaudeSMC_Trader`'s own `max_daily_loss_pct` (Python side).
 - **Equity-scaled lot sizing** (`InpUseRiskPercent` default `true`,
   `InpRiskPercent` default `2.0`, `InpMaxLotSize`): sizes each
   Telegram-sourced trade from current equity instead of always
   `InpFixedLot`, holding risk a constant fraction of the account. `2.0`
   is `InpMaxDailyLossPct / 5`, so the daily breaker absorbs ~5 losing
   trades before halting, and sits inside the conventional 1-2%-per-trade
-  risk-management band. The reference price distance (`InpSlDollars` at
-  `InpFixedLot`) stays fixed either way - only the traded volume changes -
-  so `InpTp1Dollars`/`InpTrailDollars` keep meaning exactly what they say
-  regardless of lot size. If the risk-sized lot would round below the
+  risk-management band. `InpSlDollars`, `InpTp1Dollars` and
+  `InpTrailDollars` are all dollar amounts *at the reference lot*
+  `InpFixedLot`, i.e. fixed price distances - only the traded volume
+  changes, so a risk-sized lot risks and locks proportionally more money
+  with the same SL : TP1 : trail shape (e.g. at 0.33 lots: ~$200 risked,
+  ~$200 locked at TP1). If the risk-sized lot would round below the
   broker's minimum, it's clamped up to that minimum with a logged warning
   (there's no smaller order to place) rather than silently over-risking a
   small account with no signal that it happened. When `InpMaxDailyLossPct`

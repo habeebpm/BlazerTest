@@ -73,15 +73,15 @@
 //| opens.                                                              |
 //|                                                                    |
 //| DOLLAR -> PRICE CONVERSION: InpTp1Dollars/InpTrailDollars are      |
-//| USD amounts, not raw price units - this EA converts them to a      |
-//| price distance itself, per position, using that position's own     |
-//| volume and the symbol's live tick value/size:                      |
-//|   price_distance = dollars * tick_size / (tick_value * volume)     |
-//| the exact inverse of the formula python/mt5_gateway.py's            |
-//| price_distance_for_dollars() uses to size Python's own initial SL  |
-//| - so "$6" means $6 of account risk regardless of contract size,     |
-//| broker, or (if ever changed) lot size, not an assumed 100oz         |
-//| contract.                                                           |
+//| USD amounts AT InpReferenceLot (= Python's fixed_lot), converted   |
+//| to a price distance with the symbol's live tick value/size:        |
+//|   price_distance = dollars * tick_size / (tick_value * ref_lot)    |
+//| the exact inverse of python/mt5_gateway.py's                        |
+//| price_distance_for_dollars(), which sizes Python's initial SL the  |
+//| same way (sl_dollars at fixed_lot). SL, TP1 and trail are therefore |
+//| all FIXED price distances; with risk-% sizing a bigger lot risks   |
+//| and locks proportionally more dollars, keeping the same shape. No  |
+//| contract size is ever assumed.                                     |
 //|                                                                    |
 //| SETUP: attach to an XAUUSD chart alongside (or instead of) running |
 //| python main.py on the same or a different machine - this EA only   |
@@ -96,9 +96,10 @@ input group "=== Identification ==="
 input long   InpMagicNumber   = 20260921;   // Must match the Python advisor's AdvisorConfig.magic
 input bool   InpDryRun        = true;        // Log what would happen; do not modify real positions
 
-input group "=== Exit rule - USD amounts, converted to price per position's own volume ==="
-input double InpTp1Dollars    = 6.0;         // Floating profit (USD) that locks the stop-loss in here
-input double InpTrailDollars  = 3.0;         // Trailing distance (USD) once locked/armed
+input group "=== Exit rule - USD amounts at InpReferenceLot, i.e. fixed PRICE distances ==="
+input double InpTp1Dollars    = 6.0;         // Profit (USD at InpReferenceLot) that locks the stop-loss in here
+input double InpTrailDollars  = 3.0;         // Trailing distance (USD at InpReferenceLot) once locked/armed
+input double InpReferenceLot  = 0.01;        // MUST match python/config.py AdvisorConfig.fixed_lot (the SL's reference lot too)
 
 enum ENUM_EXIT_STYLE
 {
@@ -121,9 +122,9 @@ int g_atrHandle = INVALID_HANDLE;
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   if(InpTp1Dollars <= 0.0 || InpTrailDollars <= 0.0)
+   if(InpTp1Dollars <= 0.0 || InpTrailDollars <= 0.0 || InpReferenceLot <= 0.0)
    {
-      Print("ClaudeSMC_TradeManager: InpTp1Dollars and InpTrailDollars must both be positive.");
+      Print("ClaudeSMC_TradeManager: InpTp1Dollars, InpTrailDollars and InpReferenceLot must all be positive.");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
@@ -151,18 +152,16 @@ int OnInit()
    double stopsLevelPrice = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
    if(tickValue > 0.0 && tickSize > 0.0)
    {
-      // Illustrative only, at the Python default of 0.01 lots - OnTick()
-      // always recomputes per position using that position's real volume,
-      // since a wider lot size converts the same dollar amount to a
-      // proportionally SMALLER price distance (see DollarsToPrice below).
-      double sampleTrailDist = InpTrailDollars * tickSize / (tickValue * 0.01);
-      if(sampleTrailDist < stopsLevelPrice)
-         PrintFormat("ClaudeSMC_TradeManager: WARNING - at 0.01 lots, InpTrailDollars=%.2f converts to "
+      // Exact for every position, whatever its volume: the trail is a
+      // fixed price distance (InpTrailDollars at InpReferenceLot).
+      double trailDistCheck = DollarsToPrice(InpTrailDollars, InpReferenceLot);
+      if(trailDistCheck < stopsLevelPrice)
+         PrintFormat("ClaudeSMC_TradeManager: WARNING - InpTrailDollars=%.2f at InpReferenceLot=%.2f is "
                      "a %.5f price distance, tighter than this symbol's broker minimum stop distance "
-                     "(%.5f). Once locked, the trailing stop may never be able to move for that "
-                     "position size - it will just sit at the InpTp1Dollars lock level instead, which "
-                     "is still a valid, protected exit, just not a trailing one. Widen InpTrailDollars "
-                     "if you want trailing to actually activate.", InpTrailDollars, sampleTrailDist,
+                     "(%.5f). Once locked, the trailing stop may never be able to move - it will just "
+                     "sit at the InpTp1Dollars lock level instead, which is still a valid, protected "
+                     "exit, just not a trailing one. Widen InpTrailDollars if you want trailing to "
+                     "actually activate.", InpTrailDollars, InpReferenceLot, trailDistCheck,
                      stopsLevelPrice);
    }
    return(INIT_SUCCEEDED);
@@ -242,9 +241,14 @@ void ManagePosition(ulong ticket)
    if(PositionGetString(POSITION_SYMBOL) != _Symbol)
       return;
 
-   double volume = PositionGetDouble(POSITION_VOLUME);
-   double tp1Dist = DollarsToPrice(InpTp1Dollars, volume);
-   double trailDist = DollarsToPrice(InpTrailDollars, volume);
+   // At the REFERENCE lot, not this position's own volume: Python sizes
+   // the stop as sl_dollars at fixed_lot (a fixed price distance) and then
+   // scales the lot to risk a % of equity. Converting TP1/trail at the
+   // position's real volume would shrink them as the lot grows - risking
+   // e.g. $200 at the stop to lock only $6. Fixed price distances keep the
+   // SL : TP1 : trail shape identical at every lot size.
+   double tp1Dist = DollarsToPrice(InpTp1Dollars, InpReferenceLot);
+   double trailDist = DollarsToPrice(InpTrailDollars, InpReferenceLot);
    if(tp1Dist <= 0.0 || trailDist <= 0.0)
       return;
 
