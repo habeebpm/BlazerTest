@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 import claude_advisor
 import executor
+import first_run
 import market_intel
 import ml_advisor
 import mt5_gateway as gw
@@ -642,6 +643,11 @@ def log_settings_report(args, full: bool = True) -> None:
                   "Prompt.", ", ".join(missing))
 
 
+def _send_setup_test(token: str, chat_id: str) -> bool:
+    return telegram_alert.send_alert(token, chat_id, "ClaudeSMC_Trader: settings saved - Telegram "
+                                     "alerts from the Claude program work.")
+
+
 def start_companions(cfg: AdvisorConfig, preset_path: str, force_relay: bool = False, **kw) -> list:
     """The optional companion programs switched on in main_preset.ini (relay
     bridge, Python Drive export, weekly ML retrain / calibration report -
@@ -784,6 +790,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "as a supervised background process - restarted after a crash or "
                              "disconnect, stopped with this program; needs TELEGRAM_API_ID/HASH, "
                              "TELEGRAM_SOURCE_CHANNELS, TELEGRAM_RELAY_GROUP and a one-time --relay-login")
+    parser.add_argument("--setup", action="store_true",
+                        help="enter / change every setting (API key, Telegram ids, relay) in one go - "
+                             "saved permanently; also runs by itself on the first start")
     parser.add_argument("--relay-login", action="store_true", dest="relay_login",
                         help="log the relay bridge in to Telegram once (asks for your phone number and "
                              "code) and print the source/relay chat ids, then exit")
@@ -800,6 +809,12 @@ def main(argv: list | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     setup_logging(args.verbose)
+    # First start (or ANTHROPIC_API_KEY missing) with someone at the keyboard:
+    # ask for every setting in one go, save them permanently, carry on.
+    if args.setup or first_run.should_run():
+        first_run.run_wizard(args.preset, send_test=_send_setup_test)
+        if args.setup:
+            return 0
     cfg = build_config(args)
     if cfg.shared_cap_magic_numbers:
         log.warning(

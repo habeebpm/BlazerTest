@@ -28,3 +28,4 @@ MT_Py_Claude_Telegram_Solution/XTR_Export/python/*.json
 # ClaudeSMC_Trader runtime state (day anchor/breaker, ML snapshots)
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.json
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.jsonl
+MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/.setup_done

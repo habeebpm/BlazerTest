@@ -46,6 +46,7 @@ import backtest
 import calibration_report
 import claude_advisor
 import econ_calendar
+import first_run
 import executor
 import main as main_mod
 import market_intel
@@ -3461,6 +3462,86 @@ def test_relay_supervisor() -> bool:
     return ok
 
 
+def test_first_run_wizard() -> bool:
+    print("\n=== first_run: every setting asked in one go on the first start ===")
+    import tempfile
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = os.path.join(tmp, ".setup_done")
+        ok &= check("never prompts without someone at the keyboard",
+                    not first_run.should_run({}, marker, interactive=False))
+        ok &= check("first interactive start -> wizard", first_run.should_run({"ANTHROPIC_API_KEY": "x"},
+                                                                              marker, interactive=True))
+        open(marker, "w").close()
+        ok &= check("after setup: not again while the API key is there",
+                    not first_run.should_run({"ANTHROPIC_API_KEY": "x"}, marker, interactive=True))
+        ok &= check("API key missing again -> wizard again",
+                    first_run.should_run({}, marker, interactive=True))
+        os.remove(marker)
+
+        ini = os.path.join(tmp, "preset.ini")
+        with open(ini, "w") as f:
+            f.write("; my comment\n[relay_bridge]\n; keep me\nenabled = false\nargs =\n"
+                    "[xtr_export]\nenabled = false\n")
+        answers = iter([
+            "abc",                     # chat id typo -> questioned
+            "n",                       # ...don't use it
+            "123456789",               # chat id again
+            "y",                       # relay bridge: yes
+            "12345",                   # api_id
+            "@goldsignals,-100123",    # source channels
+            "-1001234567890",          # relay group
+            "y",                       # send test message
+        ])
+        secrets = iter(["",                                               # API key: keep
+                        "1234567:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",      # bot token
+                        "0123456789abcdef0123456789abcdef"])               # api_hash
+        env = {"ANTHROPIC_API_KEY": "sk-ant-existing-key-9999"}
+        saved, sent, lines = {}, [], []
+        prompts = []
+
+        def ask(prompt):
+            prompts.append(prompt)
+            return next(answers)
+
+        def ask_secret(prompt):
+            prompts.append(prompt)
+            return next(secrets)
+
+        rc = first_run.run_wizard(ini, env=env, ask=ask, ask_secret=ask_secret,
+                                  out=lines.append, saver=lambda n, v: saved.__setitem__(n, v),
+                                  send_test=lambda t, c: sent.append((t, c)) or True, marker=marker)
+        ok &= check("the current API key is shown masked and kept on Enter",
+                    rc == 0 and "ANTHROPIC_API_KEY" not in saved and any("ends ...9999" in p for p in prompts)
+                    and not any("sk-ant-existing" in p for p in prompts), prompts[:1])
+        ok &= check("every other setting saved in the same run (relay ones because relay = yes)",
+                    saved == {"TELEGRAM_ALERT_BOT_TOKEN": "1234567:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+                              "TELEGRAM_ALERT_CHAT_ID": "123456789", "TELEGRAM_API_ID": "12345",
+                              "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
+                              "TELEGRAM_SOURCE_CHANNELS": "@goldsignals,-100123",
+                              "TELEGRAM_RELAY_GROUP": "-1001234567890"}, saved)
+        ok &= check("a value in the wrong format is questioned, then asked again",
+                    any("usual format" in p for p in prompts))
+        with open(ini) as f:
+            text = f.read()
+        ok &= check("relay switched on in main_preset.ini, comments and other sections untouched",
+                    "[relay_bridge]\n; keep me\nenabled = true\n" in text and text.startswith("; my comment")
+                    and "[xtr_export]\nenabled = false" in text, text)
+        ok &= check("test Telegram message sent with the new token/chat id, marker written",
+                    sent == [("1234567:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "123456789")]
+                    and os.path.exists(marker))
+
+        env2, saved2 = {}, {}
+        seq = iter(["-", "n"])      # chat id: skip; relay bridge: no
+        first_run.run_wizard(ini, env=env2, ask=lambda p: next(seq), ask_secret=lambda p: "-",
+                             out=lines.append, saver=lambda n, v: saved2.__setitem__(n, v), marker=marker)
+        ok &= check("skipping everything saves nothing and reports the API key as still missing",
+                    saved2 == {} and any("Still missing: ANTHROPIC_API_KEY" in x for x in lines))
+    args = main_mod.build_parser().parse_args(["--setup"])
+    ok &= check("main.py --setup parses", args.setup)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3496,6 +3577,7 @@ def main() -> int:
         test_entry_levels_and_alert(),
         test_xtr_logic(),
         test_relay_supervisor(),
+        test_first_run_wizard(),
     ]
     print()
     if all(results):

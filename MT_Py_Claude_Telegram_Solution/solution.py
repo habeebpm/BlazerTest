@@ -5,7 +5,8 @@ cd-ing into sub-folders, no hand-copying files into MT5:
 
     python solution.py setup          install every Python package + run every self-test
     python solution.py install-mt5    copy the EAs/includes/presets into MT5 and compile them
-    python solution.py keys           enter API key / bot token / ... once (saved permanently)
+    python solution.py keys           enter / change every setting in one go (= main.py --setup;
+                                      also asked automatically on the first start)
     python solution.py check          MT5 connection + saved-settings report
     python solution.py test-alert     send a sample Telegram alert
     python solution.py test-feeds     check the free news feeds
@@ -57,18 +58,6 @@ MT5_FILES = [
     ("MQL5/Presets/TelegramSMC_TradeLogger_Default.set", "Presets/TelegramSMC_TradeLogger_Default.set"),
 ]
 MT5_COMPILE = ["Experts/UnifiedTrader_EA.mq5", "Experts/TelegramSMC_TradeLogger.mq5"]
-
-# name, secret, prompt
-KEYS = [
-    ("ANTHROPIC_API_KEY", True, "Anthropic API key (sk-ant-...)"),
-    ("TELEGRAM_ALERT_BOT_TOKEN", True, "Telegram bot token (from @BotFather)"),
-    ("TELEGRAM_ALERT_CHAT_ID", False, "Your Telegram chat id"),
-    ("TELEGRAM_API_ID", False, "Relay bridge only - api_id from my.telegram.org"),
-    ("TELEGRAM_API_HASH", True, "Relay bridge only - api_hash from my.telegram.org"),
-    ("TELEGRAM_SOURCE_CHANNELS", False, "Relay bridge only - @channel1,@channel2,@channel3"),
-    ("TELEGRAM_RELAY_GROUP", False, "Relay bridge only - relay group id"),
-]
-
 
 def run(cmd, cwd) -> int:
     print(f"\n> ({os.path.relpath(cwd, ROOT)}) {' '.join(cmd)}", flush=True)
@@ -229,35 +218,6 @@ def cmd_install_mt5(args) -> int:
     return rc
 
 
-# --------------------------------------------------------------- keys
-
-def save_user_env(name: str, value: str) -> bool:
-    """Permanent (Windows user account, survives a restart) - same as setx."""
-    if os.name != "nt":
-        print(f"  {name}: not Windows - add  export {name}=...  to your shell profile instead.")
-        return False
-    rc = subprocess.call(["setx", name, value], stdout=subprocess.DEVNULL)
-    return rc == 0
-
-
-def cmd_keys(_args) -> int:
-    import getpass
-    print("Enter each value (Enter = keep the current one, '-' = skip). Saved permanently.\n")
-    changed = 0
-    for name, secret, prompt in KEYS:
-        current = os.environ.get(name, "")
-        shown = ("set, ends ..." + current[-4:]) if (current and secret) else (current or "not set")
-        ask = f"{prompt}\n  {name} [{shown}]: "
-        value = (getpass.getpass(ask) if secret else input(ask)).strip()
-        if not value or value == "-":
-            continue
-        if save_user_env(name, value):
-            changed += 1
-            print(f"  saved {name}")
-    print(f"\n{changed} value(s) saved. Close this window and open a new one before starting.")
-    return 0
-
-
 # --------------------------------------------------------------- main.py wrappers
 
 PASSTHROUGH = {"start": (CLAUDE_DIR, "main.py"), "backtest": (CLAUDE_DIR, "backtest.py"),
@@ -296,7 +256,7 @@ def main(argv=None) -> int:
     if args.cmd == "install-mt5":
         return cmd_install_mt5(args)
     if args.cmd == "keys":
-        return cmd_keys(args)
+        return py(CLAUDE_DIR, "main.py", "--setup")
     if args.cmd == "test-news":
         return py(CLAUDE_DIR, "main.py", "--test-news-check", args.direction)
     if args.cmd == "start":

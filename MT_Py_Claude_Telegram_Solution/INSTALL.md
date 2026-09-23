@@ -34,11 +34,15 @@ Required: steps 1-6. Optional: steps 7-13, any order, any time.
      `python solution.py install-mt5 --choice N`.
    - "MetaEditor not found": open `UnifiedTrader_EA` in MetaEditor -> **F7**.
 
-## 4. Keys (saved permanently)
+## 4. Settings (asked once, in one go)
 
-1. Double-click **`keys.bat`** -> enter the API key, bot token, chat id
-   (Enter skips a line; relay lines only for step 7).
-2. Close the window.
+1. Double-click **`check.bat`**. The first start asks for every setting in
+   one go - Anthropic API key, bot token, your chat id, and (only if you
+   answer "yes" to the relay bridge) the relay settings. Secrets are typed
+   hidden; Enter keeps a value, `-` skips it.
+2. Say **Y** to the test message -> it must arrive in Telegram.
+3. Saved permanently (also after a restart). Change anything later:
+   **`keys.bat`**.
 
 ## 5. MetaTrader 5
 
@@ -61,8 +65,8 @@ Required: steps 1-6. Optional: steps 7-13, any order, any time.
    for your signal channel -> copy that id.
 6. EA **Inputs** -> `InpChannelId1` = that id (2nd/3rd channel:
    `InpChannelId2`, `InpChannelId3`) -> **OK**.
-7. Double-click **`check.bat`** -> every required line under
-   **Saved settings** says `OK`.
+7. Double-click **`check.bat`** -> connected to MT5, and every required
+   line under **Saved settings** says `OK`.
 8. ```bat
    python solution.py test-alert
    python solution.py test-feeds
@@ -89,15 +93,14 @@ Runs inside `start.bat` - no extra window.
 
 1. Create a private Telegram group -> add your bot as admin.
 2. <https://my.telegram.org> -> API development tools -> copy `api_id`, `api_hash`.
-3. `keys.bat` -> enter `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` -> close.
+3. `keys.bat` -> answer **y** to the relay bridge -> enter api_id,
+   api_hash, the signal channel(s) and the relay group id (this also
+   switches the bridge on in `main_preset.ini`). Unsure of an id? `-` skips.
 4. Double-click **`relay_login.bat`** -> phone number + login code ->
-   copy the source channel and relay group ids it prints.
-5. `keys.bat` -> enter `TELEGRAM_SOURCE_CHANNELS` (`@channel1,@channel2`)
-   and `TELEGRAM_RELAY_GROUP` -> close.
-6. `relay_login.bat` again -> both chats must resolve.
-7. `ClaudeSMC_Trader\python\main_preset.ini` -> `[relay_bridge]` ->
-   `enabled = true` -> save -> close and restart `start.bat`.
-8. EA `InpChannelId1` = the relay group id.
+   it prints every chat id (copy any you skipped, then `keys.bat` again).
+5. `relay_login.bat` again -> both chats must resolve.
+6. Close and restart `start.bat`.
+7. EA `InpChannelId1` = the relay group id.
 
 ## 8. Optional - Price export to Google Drive
 
