@@ -31,3 +31,6 @@ InpBreakevenAtrMult=0.5
 InpAtrTimeframe=5
 InpAtrPeriod=14
 InpDecayWindowMinutes=15.0
+InpCalendarExportFile=econ_calendar.csv
+InpNewsCurrencies=USD
+InpCalendarRefreshMin=5

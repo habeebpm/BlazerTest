@@ -31,18 +31,23 @@ What's fed to Claude, all computed here:
   - Price action: last closed candle's body/wick ratios, engulfing/pin-bar
   - Session:    active session(s), day of week, hour (UTC)
   - Raw data:   last 20 closed candles' OHLC, current bid/ask/spread
+  - Optional:   DXY (dxy_symbol), other systems' positions (consensus),
+                MT5's economic calendar (econ_calendar.py - upcoming events
+                and recent releases with their usual impact on gold), the
+                local ML win-probability estimate, recent performance
 
-Honest limitation: no fundamentals/news, no order-flow/DOM, no cross-asset
-correlation (DXY, yields, ...) - see the top-level README's "Honest
-limitations" section for why and how to extend this.
+Honest limitation: no headline news, no order-flow/DOM, no yields - see the
+README's "Honest limitations" section.
 """
 from __future__ import annotations
 
 import logging
+from datetime import timezone
 
 import numpy as np
 import pandas as pd
 
+import econ_calendar
 import ml_advisor
 import mt5_gateway as gw
 from config import AdvisorConfig
@@ -421,6 +426,30 @@ def consensus_context(gateway, cfg: AdvisorConfig) -> dict | None:
         return None
 
 
+def economic_calendar_context(gateway, cfg: AdvisorConfig) -> dict | None:
+    """Recent releases and upcoming events from MT5's own calendar (see
+    econ_calendar.py) - context for Claude, never a gate here (executor.
+    gate() owns the blackout). None when there's no exported calendar, or
+    anything goes wrong reading it - never aborts the snapshot."""
+    try:
+        calendar = econ_calendar.load_events(gateway, cfg)
+        if calendar is None:
+            return None
+        events, exported_at = calendar
+        now_fn = getattr(gateway, "now", None)
+        now = now_fn() if now_fn else pd.Timestamp.utcnow()
+        if hasattr(now, "to_pydatetime"):
+            now = now.to_pydatetime()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return econ_calendar.calendar_context(events, exported_at, now, cfg)
+    except ValueError:
+        raise   # a misconfigured news_min_importance must be seen, not swallowed
+    except Exception as exc:
+        log.warning("economic_calendar_context: unavailable (%s) - continuing without it.", exc)
+        return None
+
+
 def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10,
                                lookback_days: int = 365) -> dict:
     """Win/loss context from this system's own last `count` closed trades -
@@ -570,6 +599,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
     performance = recent_performance_summary(gateway, cfg)
     dxy = dxy_context(gateway, cfg)
     consensus = consensus_context(gateway, cfg)
+    economic_calendar = economic_calendar_context(gateway, cfg)
 
     recent_candles = primary_closed.tail(20)[["time", "open", "high", "low", "close", "volume"]].copy()
     recent_candles["time"] = recent_candles["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -601,6 +631,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
         "daily_weekly_levels": levels,
         "dxy": dxy,
         "consensus": consensus,
+        "economic_calendar": economic_calendar,
         "recent_performance": performance,
         "last_closed_candle": candle_features(primary_closed),
         "recent_candles": recent_candles.to_dict(orient="records"),

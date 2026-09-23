@@ -125,6 +125,8 @@ Telegram client (including ones where reply keyboards render oddly).
 | `ResumeTelHab` | Re-enables new Telegram entries only. |
 | `PauseClaudeHab` | Closes this symbol's Claude-sourced (`InpClaudeMagicNumber`) positions and blocks new Claude entries until `ResumeClaudeHab`/`ResumeHab`. Telegram untouched. |
 | `ResumeClaudeHab` | Re-enables new Claude entries only. |
+| `Stats` | Equity, balance, open P/L, and closed P/L with win rate for today / 7 days / 30 days (total and per source), plus how much of the daily loss budget is used and whether each source is paused. |
+| `News` | The economic calendar (MT5's own): releases from the last 12 hours with actual vs forecast and what that usually means for gold, and upcoming events in the next 24 hours. |
 | `Why` | Echoes the latest Claude verdict's reasoning, read from the shared `Common\Files` text file `python/main.py` writes it to after every evaluation cycle (`InpLastVerdictFilename` - MUST match `config.py`'s `last_verdict_filename`, both default `claudesmc_last_verdict.txt`). Read-only - never touches a position or the pause state. Reports "No Claude verdict on file yet" if `main.py` hasn't run a cycle, or the filenames don't match. |
 
 **Scope: this chart's symbol only**, like every other position-management
@@ -179,6 +181,25 @@ entry forever with no `ResumeHab` reachable to clear it - setting
 `InpControlChatId` back to a real chat restores whatever pause was last
 actually set, unchanged.
 
+**Trade-closed notices** (`InpNotifyTradeClosed`, default on, needs
+`InpControlChatId`): every closed Telegram or Claude trade sends a short
+message - the trade's net P/L (commissions included), current equity, and
+today's closed P/L with win rate.
+
+## Economic calendar (news filter)
+
+Uses MT5's own built-in economic calendar (Calendar tab - MetaQuotes data,
+no API key or extra download). With `InpNewsFilter` (default on), a new
+Telegram entry is skipped from `InpNewsBlockBeforeMin` (15) minutes before
+to `InpNewsBlockAfterMin` (15) after any `InpNewsMinImportance` (high)
+event for `InpNewsCurrencies` (USD). The EA also writes the calendar every
+`InpCalendarRefreshMin` (5) minutes to `InpCalendarExportFile` in the shared
+`Common\Files` folder; ClaudeSMC_Trader's `python/econ_calendar.py` reads it
+to apply the same blackout to Claude's entries and to show Claude the
+events and their impact on gold. The calendar isn't available in the
+Strategy Tester, and can be empty for a few minutes after the terminal
+starts - then nothing is blocked. Needs `MQL5/Include/EconCalendar.mqh`.
+
 ## Optional risk features (Telegram-sourced entries only)
 
 On by default (recommended values - see `ClaudeSMC_Trader/README.md`'s
@@ -218,10 +239,11 @@ either input to `0`/`false` to opt back out; neither is required:
 ## Setup
 
 1. Copy `MQL5/Experts/UnifiedTrader_EA.mq5` into your terminal's
-   `MQL5/Experts/` folder. It needs `TelegramSMC_Common.mqh` too (for CSV
-   logging) - copy `../MQL5/Include/TelegramSMC_Common.mqh` into your
-   terminal's `MQL5/Include/` folder if it isn't there already (needed at
-   compile time regardless of which source(s) you enable). Compile.
+   `MQL5/Experts/` folder. It needs two includes too - copy
+   `../MQL5/Include/TelegramSMC_Common.mqh` (CSV logging) and
+   `../MQL5/Include/EconCalendar.mqh` (economic calendar) into your
+   terminal's `MQL5/Include/` folder (needed at compile time regardless of
+   which source(s) you enable). Compile.
 2. Load `MQL5/Presets/UnifiedTrader_EA_Default.set` from the Inputs tab.
    Both sources ship **disabled** - enable at least one:
    - **Telegram**: set `InpEnableTelegramSignals=true`, follow

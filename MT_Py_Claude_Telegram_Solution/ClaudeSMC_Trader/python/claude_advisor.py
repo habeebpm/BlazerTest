@@ -138,6 +138,22 @@ number of positions the OPPOSITE direction) is worth a mention and a reason \
 for extra caution, but never an automatic veto - it may simply be trading a \
 different, unrelated strategy.
 
+`economic_calendar` (null when no calendar is available - ignore it then) \
+comes from MT5's built-in economic calendar for the watched currencies \
+(USD by default). `upcoming_24h` lists scheduled moderate/high-impact \
+releases with `minutes_until`; `minutes_to_next_blackout_event` is how long \
+until the next event that blocks new entries (entries inside the blackout \
+window are refused mechanically, so you never need to veto for that). A \
+trade opened shortly before a high-impact release can be stopped out by the \
+release spike before the setup plays out - if one is due within the next \
+hour or so, say so and lean toward "partial" unless the setup is \
+exceptional. `recent_releases` shows actual vs forecast (`surprise`) with \
+`gold_impact`: a USD-positive surprise usually pressures gold, a \
+USD-negative one usually supports it. Treat a fresh, large surprise that \
+agrees with your direction as corroboration, and one against it as a \
+reason for caution - the market may already have priced it in, so it is \
+context, not a rule.
+
 `recent_performance` summarizes this system's own last several closed trades \
 (win/loss count, win rate, net P&L) - context only, never a mechanical gate: \
 it does not change what counts as a valid setup. Use it the way a disciplined \

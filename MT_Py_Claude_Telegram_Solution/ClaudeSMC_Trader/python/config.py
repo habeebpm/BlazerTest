@@ -71,6 +71,27 @@ class AdvisorConfig:
     #     blocks anything.
     news_blackout_windows: list = field(default_factory=list)
 
+    # --- Economic calendar (on by default) - MT5's own built-in calendar,
+    #     exported every few minutes by UnifiedTrader_EA.mq5 /
+    #     ClaudeSMC_TradeManager.mq5 (EconCalendar.mqh) to this file in the
+    #     shared Common\Files folder; see econ_calendar.py. MUST match the
+    #     EA's InpCalendarExportFile. Two uses:
+    #       - automatic blackout: executor.gate() refuses a new entry from
+    #         news_block_before_minutes before to news_block_after_minutes
+    #         after any news_min_importance+ event for news_currencies
+    #         (news_auto_blackout; the manual windows above still apply too);
+    #       - context: upcoming events and recent releases (actual vs
+    #         forecast, and what the surprise usually means for gold) are
+    #         added to the snapshot Claude reads.
+    #     No file yet (EA not running, calendar not synced, or a backtest)
+    #     simply means no calendar - nothing is blocked.
+    econ_calendar_filename: str = "econ_calendar.csv"
+    news_auto_blackout: bool = True
+    news_currencies: list = field(default_factory=lambda: ["USD"])
+    news_min_importance: str = "high"      # "low", "moderate" or "high"
+    news_block_before_minutes: int = 15
+    news_block_after_minutes: int = 15
+
     # --- Execution rules (requested, fixed) ---
     fixed_lot: float = 0.01
     max_open_positions_per_direction: int = 5

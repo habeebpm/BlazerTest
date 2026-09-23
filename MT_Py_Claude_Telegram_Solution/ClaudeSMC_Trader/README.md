@@ -133,15 +133,15 @@ chase entries all had momentum still accelerating.
 Not included, and worth knowing about before treating this as more complete
 than it is:
 
-- **No fundamentals or news.** No economic calendar, no headline feed. A
-  scheduled NFP release or a surprise Fed statement is invisible to this
-  system entirely.
+- **Economic calendar, but no headline news.** Scheduled releases (NFP,
+  CPI, FOMC, ...) come from MT5's own calendar via the MQL5 EA's export
+  (see "Economic calendar" in the features table) - but an unscheduled
+  headline or a surprise speech is still invisible to this system.
 - **No order flow / DOM / real volume.** MT5 only exposes tick volume (trade
   count, not traded size), which is what's used here - there's no Level 2
   data.
-- **No cross-asset correlation.** DXY, real yields, and other gold drivers
-  aren't fed in. This would be a natural extension (pull a DXY series
-  alongside XAUUSD's and hand Claude both).
+- **Limited cross-asset data.** DXY is available (`dxy_symbol`), but real
+  yields and other gold drivers aren't fed in.
 - **SMC detection is a simplified proxy, not a full ICT toolkit.** Structure,
   order blocks and FVGs are real, mechanically-defined detections now (see
   above) - but still missing: **kill zones** (precise ICT session-timing
@@ -385,6 +385,7 @@ Two things make these numbers mean what they say:
 | Cross-system consensus context | `consensus_magic_numbers` | Read-only buy/sell position count from another trading system on this account (e.g. `UnifiedTrader_EA.mq5`'s Telegram side) fed to Claude - purely informational, `executor.gate()` never touches it. |
 | Daily/weekly performance digest | `send_performance_digest` (on by default once alert creds are set) | A Telegram message on every UTC day roll (and, on the Sunday->Monday roll, a weekly one too) summarizing that period's closed trades - win rate, net P&L. |
 | "Why" button | `last_verdict_filename` | Writes every evaluation cycle's Claude verdict (any conviction level) to MT5's shared `Common\Files` folder, so `UnifiedTrader_EA.mq5`'s new **Why** Telegram button (alongside the Pause/Resume buttons) can echo the latest reasoning on demand. `InpLastVerdictFilename` on the EA side MUST match this filename. |
+| Economic calendar (on by default) | `econ_calendar_filename`, `news_auto_blackout`, `news_currencies`, `news_min_importance`, `news_block_before_minutes`, `news_block_after_minutes` | MT5's built-in economic calendar, exported every 5 minutes by `UnifiedTrader_EA.mq5` or `ClaudeSMC_TradeManager.mq5` (`MQL5/Include/EconCalendar.mqh`) to a shared `Common\Files` CSV that `econ_calendar.py` reads. `executor.gate()` refuses new entries from 15 minutes before to 15 minutes after any high-impact USD event, and the snapshot's `economic_calendar` shows Claude upcoming events plus recent releases with actual vs forecast and their usual gold impact (a USD-positive surprise is usually bearish for gold). No export yet (EA not running, calendar not synced, or a backtest) = no calendar, nothing blocked. `--no-news-blackout` keeps the context but drops the blackout. |
 | Pause/Resume Claude from Telegram | `claude_pause_filename` | The reverse hand-off: `UnifiedTrader_EA.mq5`'s **PauseClaudeHab**/**PauseHab** buttons write `paused` to this shared `Common\Files` file and **ResumeClaudeHab**/**ResumeHab** write `running`. `main.py` checks it at the start of every cycle and skips the whole evaluation while paused (no Claude call, no order). No file = running, so it's harmless without that EA. `InpClaudePauseFilename` MUST match. |
 | Conviction calibration report | `python calibration_report.py` (standalone script) | Offline report joining `logs/decisions.csv` against `logs/trades.csv` and MT5's real closed-trade P&L, bucketed by conviction/confluence_count. Honestly scoped: with `require_full_conviction=True` (the default), only `conviction="full"` trades ever have outcome data - "partial"/"none" calls only show up in the frequency count. |
 | Heartbeat / stale-cycle alert | `heartbeat_interval_hours` (off by default), `stale_cycle_alert_minutes` (on by default at 60 once alert creds are set) | A periodic "still alive" Telegram ping, and a one-time warning if too long passes without a successful evaluation cycle (the poll loop may be stuck on a repeating error, e.g. a dropped MT5 connection) - independent of trading activity. |

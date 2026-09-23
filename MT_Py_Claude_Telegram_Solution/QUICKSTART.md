@@ -70,6 +70,7 @@ keys - it just proves the program works on your PC.
 1. In MT5: **File -> Open Data Folder**. Copy:
    - `UnifiedTrader/MQL5/Experts/UnifiedTrader_EA.mq5` -> `MQL5/Experts/`
    - `MQL5/Include/TelegramSMC_Common.mqh` -> `MQL5/Include/`
+   - `MQL5/Include/EconCalendar.mqh` -> `MQL5/Include/`
    - `UnifiedTrader/MQL5/Presets/UnifiedTrader_EA_Default.set` -> `MQL5/Presets/`
 2. **Tools -> Options -> Expert Advisors**: tick *Allow WebRequest* and add
    `https://api.telegram.org`.
@@ -161,7 +162,12 @@ account, starting small.
 | `ResumeTelHab` | Allow new Telegram trades again |
 | `PauseClaudeHab` | Close only Claude's trades and stop new ones |
 | `ResumeClaudeHab` | Allow new Claude trades again |
+| `Stats` | Equity, balance, open P/L, and closed P/L + win % for today / 7 / 30 days |
+| `News` | Economic calendar: recent releases and what they mean for gold, and what's coming up |
 | `Why` | Show Claude's latest reasoning |
+
+You also get a message every time a trade closes: its profit/loss, your
+equity, and today's P/L and win %.
 
 While Claude is paused, the Python program keeps running but skips each
 check (no Claude cost, no trades); the EA keeps managing any open trades.
@@ -173,6 +179,7 @@ check (no Claude cost, no trades); the EA keeps managing any open trades.
 | Risk per trade | 2% of account |
 | Max loss per day | 10% of account - no new trade is opened if it could push the day past 10%, counting trades already open |
 | Max open trades | 5 per direction (Telegram + Claude together) |
+| News filter | No new trades from 15 minutes before to 15 minutes after a high-impact USD event (NFP, CPI, FOMC...), from MT5's own economic calendar |
 | Exit | Stop at $6, lock profit at $6, then trail $3 (per 0.01 lot, scaled with lot size) |
 
 To change them: `--risk-percent 1` / `--max-daily-loss 5` on the Python

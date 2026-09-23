@@ -21,6 +21,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import econ_calendar
 import market_intel
 from claude_advisor import ConfluenceVerdict
 from config import AdvisorConfig
@@ -126,8 +127,9 @@ def log_trade(cfg: AdvisorConfig, direction: str, lots: float, entry_price: floa
 def in_news_blackout(cfg: AdvisorConfig, now: datetime | None = None) -> str:
     """Returns a description of the matching window if `now` (UTC, defaults
     to the current time) falls inside one of cfg.news_blackout_windows, else
-    "". This solution has no economic-calendar data source of its own -
-    these windows are maintained by hand (see config.py's own comment) - a
+    "". These are hand-maintained windows on top of the automatic
+    calendar blackout (econ_calendar.blackout_reason(), also checked in
+    gate()) - useful for events the calendar lacks - and a
     malformed entry raises ValueError at gate() time rather than silently
     never matching, so a typo'd date is noticed immediately rather than
     quietly leaving a blackout window unenforced.
@@ -141,6 +143,16 @@ def in_news_blackout(cfg: AdvisorConfig, now: datetime | None = None) -> str:
     return ""
 
 
+def _as_utc_datetime(value) -> datetime:
+    """gateway.now() is a datetime live but a pandas Timestamp in a
+    backtest - normalize to an aware UTC datetime for comparisons."""
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: int,
          daily_block_reason: str = "") -> str:
     """Returns "" if the verdict clears every gate, else the reason it didn't."""
@@ -151,9 +163,15 @@ def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: 
     # HistoricalGateway.now() is the simulated replay clock, so a backtest
     # judges news_blackout_windows against the bar being evaluated, not
     # whatever real date the backtest happens to be run on.
-    blackout = in_news_blackout(cfg, now=gateway.now())
+    now = gateway.now()
+    blackout = in_news_blackout(cfg, now=now)
     if blackout:
         return blackout
+    calendar = econ_calendar.load_events(gateway, cfg)
+    if calendar is not None:
+        blackout = econ_calendar.blackout_reason(calendar[0], _as_utc_datetime(now), cfg)
+        if blackout:
+            return blackout
     if verdict.direction not in ("buy", "sell"):
         return "no actionable direction"
     if verdict.confluence_count < cfg.min_confluence_count:

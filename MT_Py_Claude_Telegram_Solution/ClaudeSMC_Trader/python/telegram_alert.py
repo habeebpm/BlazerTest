@@ -57,19 +57,35 @@ def format_full_conviction_message(symbol: str, verdict, executed: bool,
     )
 
 
-def format_performance_digest(symbol: str, period_label: str, trades: list[dict]) -> str:
+def format_account_line(equity: float | None, day_start_equity: float | None = None) -> str:
+    """"Equity $10,245.30 (today $+32.10, +0.31%)" - "" when equity is
+    unknown (an MT5 read failed), so callers can append it unconditionally."""
+    if equity is None or equity <= 0:
+        return ""
+    line = f"Equity ${equity:,.2f}"
+    if day_start_equity and day_start_equity > 0:
+        change = equity - day_start_equity
+        line += f" (today ${change:+,.2f}, {change / day_start_equity * 100.0:+.2f}%)"
+    return line
+
+
+def format_performance_digest(symbol: str, period_label: str, trades: list[dict],
+                              equity: float | None = None) -> str:
     """trades: mt5_gateway.recent_closed_trades()'s own shape, already
     filtered to the period being reported on - see main.py's
     send_performance_digests(). period_label is e.g. "Daily" or "Weekly".
+    `equity`, when known, is appended as the current account equity.
     """
+    account = format_account_line(equity)
+    suffix = f"\n{account}" if account else ""
     if not trades:
-        return f"{period_label} digest for {symbol}: no closed trades."
+        return f"{period_label} digest for {symbol}: no closed trades.{suffix}"
     wins = [t for t in trades if t["pnl_dollars"] > 0]
     losses = [t for t in trades if t["pnl_dollars"] < 0]
     net = sum(t["pnl_dollars"] for t in trades)
     win_rate = len(wins) / len(trades) * 100.0
     return (f"{period_label} digest for {symbol}: {len(trades)} trades, "
-            f"{len(wins)}W/{len(losses)}L ({win_rate:.0f}% win rate), net P&L ${net:+.2f}")
+            f"{len(wins)}W/{len(losses)}L ({win_rate:.0f}% win rate), net P&L ${net:+.2f}{suffix}")
 
 
 def format_verdict_digest(symbol: str, verdict, executed: bool, reject_reason: str = "") -> str:
@@ -90,9 +106,11 @@ def format_verdict_digest(symbol: str, verdict, executed: bool, reject_reason: s
     )
 
 
-def format_heartbeat_message(symbol: str, minutes_since_last_success: float) -> str:
+def format_heartbeat_message(symbol: str, minutes_since_last_success: float,
+                             equity: float | None = None, day_start_equity: float | None = None) -> str:
+    account = format_account_line(equity, day_start_equity)
     return (f"Heartbeat: ClaudeSMC_Trader ({symbol}) is running - last successful evaluation "
-            f"cycle {minutes_since_last_success:.0f} min ago.")
+            f"cycle {minutes_since_last_success:.0f} min ago." + (f"\n{account}" if account else ""))
 
 
 def format_stale_cycle_alert(symbol: str, minutes_since_last_success: float) -> str:

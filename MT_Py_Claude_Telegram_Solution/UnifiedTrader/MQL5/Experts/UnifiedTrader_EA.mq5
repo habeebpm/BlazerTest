@@ -106,7 +106,7 @@
 //| InpTelegramMagicNumber positions/pending orders only - never on    |
 //| InpClaudeMagicNumber ones, which are Python's to manage.            |
 //|                                                                    |
-//| REMOTE CONTROL (InpControlChatId, optional): seven plain-text       |
+//| REMOTE CONTROL (InpControlChatId, optional): nine plain-text        |
 //| commands, DM'd to this bot from InpControlChatId ONLY (a private    |
 //| 1:1 chat, never the signal channel/group) - a completely separate   |
 //| command path from trading-signal parsing, matched by EXACT text     |
@@ -135,6 +135,14 @@
 //|                      (InpClaudeMagicNumber) positions and blocks new |
 //|                      Claude entries until ResumeClaudeHab/ResumeHab. |
 //|   ResumeClaudeHab  - re-enables new Claude entries only.             |
+//|   Stats            - equity, balance, open P/L, closed P/L and win%  |
+//|                      for today / 7 / 30 days (per source), and how   |
+//|                      much of the daily loss budget is used.          |
+//|   News             - economic calendar: recent releases (actual vs   |
+//|                      forecast, what it means for gold) and upcoming  |
+//|                      events (see ECONOMIC CALENDAR below).           |
+//|  InpNotifyTradeClosed also sends a message to InpControlChatId for    |
+//|  every closed trade: its net P/L, current equity and today's win%.   |
 //|  Claude pause mechanics: this EA can't place or refuse Python's       |
 //|  orders directly, so it writes "paused"/"running" to the shared       |
 //|  Common\Files text file InpClaudePauseFilename (MUST match config.py's|
@@ -178,6 +186,15 @@
 //| to clear it. Setting InpControlChatId back to a real chat restores   |
 //| whatever pause was last actually set, unchanged.                     |
 //|                                                                    |
+//| ECONOMIC CALENDAR (EconCalendar.mqh - MT5's own calendar, no API   |
+//| key): with InpNewsFilter (default on) a new Telegram entry is       |
+//| skipped from InpNewsBlockBeforeMin before to InpNewsBlockAfterMin   |
+//| after any InpNewsMinImportance+ event for InpNewsCurrencies (USD by |
+//| default). The calendar is also exported every InpCalendarRefreshMin |
+//| to InpCalendarExportFile in the shared Common\Files folder, where   |
+//| ClaudeSMC_Trader's python/econ_calendar.py applies the same blackout|
+//| to Claude's entries and shows the events to Claude.                 |
+//|                                                                    |
 //| TELEGRAM SETUP (only if InpEnableTelegramSignals): identical to    |
 //| TelegramSMC_Copier.mq5's - @BotFather /newbot for InpBotToken, add  |
 //| that bot to the channel as admin, Tools > Options > Expert Advisors|
@@ -202,6 +219,7 @@
 
 #include <Trade\Trade.mqh>
 #include <TelegramSMC_Common.mqh>
+#include <EconCalendar.mqh>
 
 //================================= CONSTANTS ====================================
 #define DIR_NONE        (-1)
@@ -281,6 +299,16 @@ input group "=== Remote control (optional) - see file header's REMOTE CONTROL se
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
 input string  InpLastVerdictFilename = "claudesmc_last_verdict.txt"; // Why button: MUST match python/config.py's AdvisorConfig.last_verdict_filename
 input string  InpClaudePauseFilename = "claudesmc_pause.txt";        // PauseClaudeHab/ResumeClaudeHab: MUST match python/config.py's AdvisorConfig.claude_pause_filename
+input bool    InpNotifyTradeClosed   = true;                         // Message InpControlChatId on every closed trade (P/L, equity, today's win%)
+
+input group "=== Economic calendar (MT5 built-in, no API key) - see EconCalendar.mqh ==="
+input bool                 InpNewsFilter         = true;                  // Skip new Telegram entries near important news
+input string               InpNewsCurrencies     = "USD";                 // Currencies to watch, comma-separated (gold is priced in USD)
+input ENUM_ECON_IMPORTANCE InpNewsMinImportance  = ECON_IMPORTANCE_HIGH;  // Which events block entries (and are listed by the News button)
+input int                  InpNewsBlockBeforeMin = 15;                    // Block new entries this many minutes before the event...
+input int                  InpNewsBlockAfterMin  = 15;                    // ...and this many minutes after it
+input string               InpCalendarExportFile = "econ_calendar.csv";   // Shared file ClaudeSMC_Trader reads - MUST match python config.econ_calendar_filename ("" = no export)
+input int                  InpCalendarRefreshMin = 5;                     // Re-export the calendar every N minutes
 
 //================================= TYPES ====================================
 
@@ -320,6 +348,15 @@ bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab/R
 bool     g_claudePaused   = false;           // PauseHab/PauseClaudeHab/ResumeHab/ResumeClaudeHab - see file header
 bool     g_sentControlStartupMsg = false;    // one-shot: the buttons/keyboard intro, sent from TelegramPoll()
 long     g_lastControlChatSentTo = 0;        // which chat it was last actually sent to, this session
+string   g_notifyQueue[];                     // trade-closed messages, queued in OnTradeTransaction, sent from OnTimer
+
+struct ClosedStatsT
+{
+   int    trades;
+   int    wins;
+   int    losses;
+   double pnl;
+};
 
 // Forward declarations
 double   BreakevenAtrDistance();
@@ -354,6 +391,10 @@ void     SetClaudePaused(bool paused);
 void     WriteClaudePauseFile();
 void     SendControlReply(const string &summary);
 string   ReadLastVerdictFile();
+void     ClosedStats(datetime fromServer, long magic, ClosedStatsT &st);
+string   StatsLine(const string label, const ClosedStatsT &st);
+string   BuildStatsText();
+void     FlushNotifyQueue();
 void     ProcessControlCommand(const string &rawText);
 bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                            string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode,
@@ -386,6 +427,12 @@ int OnInit()
             "under InpTelegramMagicNumber/InpClaudeMagicNumber from before - see ManageAllPositions, "
             "which is never gated by these flags), but if that's not what you intended, enable at "
             "least one.");
+   if(InpNewsBlockBeforeMin < 0 || InpNewsBlockAfterMin < 0 || InpCalendarRefreshMin < 1)
+   {
+      Print("UnifiedTrader_EA: InpNewsBlockBeforeMin/InpNewsBlockAfterMin must be >= 0 and "
+            "InpCalendarRefreshMin >= 1.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
    if(InpSlDollars <= 0.0 || InpTp1Dollars <= 0.0 || InpTrailDollars <= 0.0 || InpFixedLot <= 0.0)
    {
       Print("UnifiedTrader_EA: InpFixedLot, InpSlDollars, InpTp1Dollars and InpTrailDollars must all be positive.");
@@ -1325,6 +1372,164 @@ string ReadLastVerdictFile()
 }
 
 //+------------------------------------------------------------------+
+//| Closed-trade stats for positions of `magic` on this symbol whose  |
+//| exit deal is at or after `fromServer` (trade-server time). Net    |
+//| P/L per position = profit + swap + commission + fee over ALL its  |
+//| deals, so an entry-side commission is counted too. Positions are |
+//| identified by their ENTRY deal's magic (exit deals triggered by   |
+//| SL/TP are not relied on to carry it), from a history window that  |
+//| starts 30 days earlier so entries opened before `fromServer` are  |
+//| still found.                                                       |
+//+------------------------------------------------------------------+
+void ClosedStats(datetime fromServer, long magic, ClosedStatsT &st)
+{
+   st.trades = 0;
+   st.wins   = 0;
+   st.losses = 0;
+   st.pnl    = 0.0;
+   if(!HistorySelect(fromServer - 30 * 86400, TimeCurrent() + 3600))
+      return;
+
+   int total = HistoryDealsTotal();
+   ulong ourPositions[];
+   for(int i = 0; i < total; i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0 || HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol)
+         continue;
+      if(HistoryDealGetInteger(deal, DEAL_ENTRY) != DEAL_ENTRY_IN
+         || HistoryDealGetInteger(deal, DEAL_MAGIC) != magic)
+         continue;
+      int k = ArraySize(ourPositions);
+      ArrayResize(ourPositions, k + 1);
+      ourPositions[k] = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+   }
+
+   int n = ArraySize(ourPositions);
+   double pnl[];
+   bool   closedInWindow[];
+   ArrayResize(pnl, n);
+   ArrayResize(closedInWindow, n);
+   for(int k = 0; k < n; k++)
+   {
+      pnl[k] = 0.0;
+      closedInWindow[k] = false;
+   }
+   for(int i = 0; i < total; i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0)
+         continue;
+      ulong pos = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      int idx = -1;
+      for(int k = 0; k < n; k++)
+         if(ourPositions[k] == pos) { idx = k; break; }
+      if(idx < 0)
+         continue;
+      pnl[idx] += HistoryDealGetDouble(deal, DEAL_PROFIT) + HistoryDealGetDouble(deal, DEAL_SWAP)
+                  + HistoryDealGetDouble(deal, DEAL_COMMISSION) + HistoryDealGetDouble(deal, DEAL_FEE);
+      long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if((entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY || entry == DEAL_ENTRY_INOUT)
+         && (datetime)HistoryDealGetInteger(deal, DEAL_TIME) >= fromServer)
+         closedInWindow[idx] = true;
+   }
+   for(int k = 0; k < n; k++)
+   {
+      if(!closedInWindow[k])
+         continue;
+      st.trades++;
+      st.pnl += pnl[k];
+      if(pnl[k] > 0.0)      st.wins++;
+      else if(pnl[k] < 0.0) st.losses++;
+   }
+}
+
+string StatsLine(const string label, const ClosedStatsT &st)
+{
+   if(st.trades == 0)
+      return(label + ": no closed trades");
+   return(StringFormat("%s: %+.2f over %d trade(s), %dW/%dL, win %.0f%%", label, st.pnl, st.trades,
+                       st.wins, st.losses, 100.0 * st.wins / st.trades));
+}
+
+//+------------------------------------------------------------------+
+//| Stats button: equity, balance, open P/L, closed P/L and win rate  |
+//| for today (trade-server day), 7 and 30 days, per source, plus how |
+//| much of the daily loss budget is used.                             |
+//+------------------------------------------------------------------+
+string BuildStatsText()
+{
+   UpdateDailyTracking();
+   string ccy     = AccountInfoString(ACCOUNT_CURRENCY);
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   int    openTel = 0, openClaude = 0;
+   double floatTel = 0.0, floatClaude = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      double fl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(magic == InpTelegramMagicNumber)    { openTel++;    floatTel += fl; }
+      else if(magic == InpClaudeMagicNumber) { openClaude++; floatClaude += fl; }
+   }
+
+   ClosedStatsT tel, cla, all;
+   datetime periods[3];
+   string   labels[3] = {"Today", "Last 7 days", "Last 30 days"};
+   periods[0] = g_currentDay;
+   periods[1] = TimeCurrent() - 7 * 86400;
+   periods[2] = TimeCurrent() - 30 * 86400;
+
+   string text = StringFormat("%s account - %s UTC%s\nEquity %.2f %s | Balance %.2f | "
+                              "Open P/L %+.2f (%d Telegram, %d Claude)",
+                              _Symbol, EconTimeText(TimeGMT()), InpDryRun ? " (EA in DRY-RUN)" : "",
+                              equity, ccy, balance, floatTel + floatClaude, openTel, openClaude);
+   for(int p = 0; p < 3; p++)
+   {
+      ClosedStats(periods[p], InpTelegramMagicNumber, tel);
+      ClosedStats(periods[p], InpClaudeMagicNumber, cla);
+      all.trades = tel.trades + cla.trades;
+      all.wins   = tel.wins + cla.wins;
+      all.losses = tel.losses + cla.losses;
+      all.pnl    = tel.pnl + cla.pnl;
+      text += "\n\n" + StatsLine(labels[p], all);
+      if(all.trades > 0)
+         text += "\n  " + StatsLine("Telegram", tel) + "\n  " + StatsLine("Claude", cla);
+   }
+
+   if(InpMaxDailyLossPct > 0.0 && g_dayStartEquity > 0.0)
+   {
+      double lostPct = 100.0 * MathMax(0.0, g_dayStartEquity - equity) / g_dayStartEquity;
+      double riskPct = 100.0 * OpenRiskMoney() / g_dayStartEquity;
+      text += StringFormat("\n\nDaily loss budget: %.1f%% lost + %.1f%% at risk of the %.1f%% cap%s",
+                           lostPct, riskPct, InpMaxDailyLossPct,
+                           g_dailyLossHit ? " (breaker TRIGGERED)" : "");
+   }
+   text += StringFormat("\nNew entries: Telegram %s, Claude %s",
+                        g_telegramPaused ? "PAUSED" : "running", g_claudePaused ? "PAUSED" : "running");
+   return(text);
+}
+
+//+------------------------------------------------------------------+
+//| Sends any queued trade-closed messages (see OnTradeTransaction).  |
+//| Called from OnTimer, never from OnTradeTransaction itself, so a    |
+//| slow WebRequest never runs inside the trade event.                 |
+//+------------------------------------------------------------------+
+void FlushNotifyQueue()
+{
+   int n = ArraySize(g_notifyQueue);
+   if(n == 0)
+      return;
+   for(int i = 0; i < n; i++)
+      TelegramSendMessage(InpControlChatId, g_notifyQueue[i]);
+   ArrayResize(g_notifyQueue, 0);
+}
+
+//+------------------------------------------------------------------+
 //| Remote control commands from InpControlChatId - see file header's |
 //| REMOTE CONTROL section for the full semantics of each. Matched by  |
 //| EXACT text (trimmed, case-insensitive), not substring - unlike     |
@@ -1405,6 +1610,16 @@ void ProcessControlCommand(const string &rawText)
                   claudeClosed));
       return;
    }
+   if(cmd == "STATS")
+   {
+      SendControlReply(BuildStatsText());
+      return;
+   }
+   if(cmd == "NEWS")
+   {
+      SendControlReply(EconSummary(InpNewsCurrencies, (int)InpNewsMinImportance, 12, 24));
+      return;
+   }
    if(cmd == "WHY")
    {
       string verdictText = ReadLastVerdictFile();
@@ -1419,7 +1634,7 @@ void ProcessControlCommand(const string &rawText)
    SendControlReply(StringFormat(
                "Unrecognized control command: '%s' - tap a button below, or send exactly one of "
                "PauseHab / ResumeHab / PauseTelHab / ResumeTelHab / PauseClaudeHab / "
-               "ResumeClaudeHab / Why.", rawText));
+               "ResumeClaudeHab / Stats / News / Why.", rawText));
 }
 
 //+------------------------------------------------------------------+
@@ -1871,6 +2086,16 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
                    true, budgetReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
+   string newsDesc;
+   if(InpNewsFilter && EconNewsBlock(InpNewsCurrencies, (int)InpNewsMinImportance,
+                                     InpNewsBlockBeforeMin, InpNewsBlockAfterMin, newsDesc))
+   {
+      string r = "news blackout: " + newsDesc;
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
    int sameDir = CountSameDirection(msg.direction);
    if(sameDir >= InpMaxPositionsPerDirection)
    {
@@ -1987,13 +2212,13 @@ string JsonEscape(const string &s)
 }
 
 //+------------------------------------------------------------------+
-//| Sends `text` to `chatId` with the PauseHab/ResumeHab/PauseTelHab/  |
-//| PauseClaudeHab/Why reply keyboard attached, so the buttons stay    |
+//| Sends `text` to `chatId` with the Pause/Resume/Stats/News/Why      |
+//| reply keyboard attached, so the buttons stay                       |
 //| visible in Telegram - a reply keyboard persists client-side once   |
 //| shown, so re-attaching it on every message (rather than once at    |
 //| startup only) is redundant but harmless, and simplest to reason    |
-//| about. Never called for anything except InpControlChatId - this    |
-//| EA sends no other outbound messages. A failure here (bad token,    |
+//| about. Never called for anything except InpControlChatId (command  |
+//| replies and trade-closed notices). A failure here (bad token,      |
 //| network down, rate limited) is logged and never raised - it must   |
 //| never affect whether a pause/close actually happened, only whether |
 //| the operator sees a Telegram confirmation of it.                   |
@@ -2017,7 +2242,7 @@ bool TelegramSendMessage(long chatId, const string &text)
    int sendTimeoutMs = (int)MathMin(InpHttpTimeoutMs, 3000);
    string keyboardJson =
       "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"ResumeTelHab\"],"
-      "[\"PauseClaudeHab\",\"ResumeClaudeHab\"],[\"Why\"]],"
+      "[\"PauseClaudeHab\",\"ResumeClaudeHab\"],[\"Stats\",\"News\",\"Why\"]],"
       "\"resize_keyboard\":true,\"is_persistent\":true}";
    string body = StringFormat("{\"chat_id\":%I64d,\"text\":\"%s\",\"reply_markup\":%s}",
                                chatId, JsonEscape(text), keyboardJson);
@@ -2266,6 +2491,7 @@ void TelegramPoll()
 void OnTick()
 {
    ManageAllPositions();
+   EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
 }
 
 //+------------------------------------------------------------------+
@@ -2279,6 +2505,79 @@ void OnTimer()
 {
    UpdateDailyTracking();
    ExpirePendingOrders();
+   EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
    TelegramPoll();
+   FlushNotifyQueue();
+}
+
+//+------------------------------------------------------------------+
+//| InpNotifyTradeClosed: queues a message for every closing deal of   |
+//| either magic on this symbol - the trade's own net P/L (all of its  |
+//| deals, commissions included), current equity, and today's totals. |
+//| Only queued here; FlushNotifyQueue() sends from OnTimer.           |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+   if(!InpNotifyTradeClosed || InpControlChatId == 0 || StringLen(InpBotToken) == 0)
+      return;
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION))
+      return;
+   if(!HistoryDealSelect(trans.deal))
+      return;
+   long entry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY)
+      return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
+      return;
+   ulong  posId  = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   long   dealType = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   double volume = HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
+   double price  = HistoryDealGetDouble(trans.deal, DEAL_PRICE);
+
+   // Source = the position's ENTRY deal magic (an SL/TP-triggered exit
+   // deal isn't relied on to carry it).
+   if(!HistorySelectByPosition(posId))
+      return;
+   long   magic = -1;
+   double net   = 0.0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0)
+         continue;
+      if(HistoryDealGetInteger(d, DEAL_ENTRY) == DEAL_ENTRY_IN)
+         magic = HistoryDealGetInteger(d, DEAL_MAGIC);
+      net += HistoryDealGetDouble(d, DEAL_PROFIT) + HistoryDealGetDouble(d, DEAL_SWAP)
+             + HistoryDealGetDouble(d, DEAL_COMMISSION) + HistoryDealGetDouble(d, DEAL_FEE);
+   }
+   string source;
+   if(magic == InpTelegramMagicNumber)    source = "Telegram";
+   else if(magic == InpClaudeMagicNumber) source = "Claude";
+   else return;
+
+   UpdateDailyTracking();
+   ClosedStatsT tel, cla, all;
+   ClosedStats(g_currentDay, InpTelegramMagicNumber, tel);
+   ClosedStats(g_currentDay, InpClaudeMagicNumber, cla);
+   all.trades = tel.trades + cla.trades;
+   all.wins   = tel.wins + cla.wins;
+   all.losses = tel.losses + cla.losses;
+   all.pnl    = tel.pnl + cla.pnl;
+
+   // A closing SELL deal closes a BUY position, and vice versa.
+   string msgText = StringFormat("Closed %s %s %.2f lot @ %.2f: %+.2f %s
+Equity %.2f
+%s",
+                                 source, dealType == DEAL_TYPE_SELL ? "BUY" : "SELL", volume, price,
+                                 net, AccountInfoString(ACCOUNT_CURRENCY),
+                                 AccountInfoDouble(ACCOUNT_EQUITY), StatsLine("Today", all));
+   int n = ArraySize(g_notifyQueue);
+   if(n >= 20)
+      return;   // a burst (e.g. PauseHab closing everything) - Stats has the totals
+   ArrayResize(g_notifyQueue, n + 1);
+   g_notifyQueue[n] = msgText;
 }
 //+------------------------------------------------------------------+

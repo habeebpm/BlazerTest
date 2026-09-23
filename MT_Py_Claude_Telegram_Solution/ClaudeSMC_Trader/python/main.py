@@ -96,6 +96,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.claude_model = args.model
     if args.poll_seconds is not None:
         cfg.poll_seconds = args.poll_seconds
+    if args.no_news_blackout:
+        cfg.news_auto_blackout = False
     if args.min_confluence is not None:
         cfg.min_confluence_count = args.min_confluence
     if args.allow_partial_conviction:
@@ -228,7 +230,8 @@ def sundays_in_range(gap_start, gap_end) -> list:
             if (gap_start + timedelta(days=i)).weekday() == 6]
 
 
-def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end) -> None:
+def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end,
+                             equity: float | None = None) -> None:
     """Fires once per UTC day roll (see DayRoll.roll()) with a digest of
     every day in the inclusive [gap_start, gap_end] range - ordinarily a
     single day (yesterday), but after a multi-day process outage this can
@@ -285,13 +288,14 @@ def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end) -> None:
 
     gap_trades = [t for t in all_trades if gap_start <= t["time"].date() <= gap_end]
     period_label = "Daily" if gap_start == gap_end else f"{gap_start} to {gap_end}"
-    daily_msg = telegram_alert.format_performance_digest(cfg.symbol, period_label, gap_trades)
+    daily_msg = telegram_alert.format_performance_digest(cfg.symbol, period_label, gap_trades, equity)
 
     weekly_msgs = []
     for week_end in sundays:
         week_start = week_end - timedelta(days=6)
         weekly_trades = [t for t in all_trades if week_start <= t["time"].date() <= week_end]
-        weekly_msgs.append(telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades))
+        weekly_msgs.append(telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades,
+                                                                    equity))
 
     def _send():
         telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, daily_msg)
@@ -326,7 +330,7 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     gap = day.roll(equity)
     if gap is not None and cfg.send_performance_digest and cfg.telegram_alert_bot_token \
             and cfg.telegram_alert_chat_id:
-        send_performance_digests(cfg, gap[0], gap[1])
+        send_performance_digests(cfg, gap[0], gap[1], equity)
     day.check_daily_limits(cfg, equity)
     if claude_paused(cfg):
         # Checked before building the snapshot or calling Claude - a pause
@@ -463,6 +467,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="alert once if no successful evaluation cycle completes in this many "
                              "minutes - the poll loop may be stuck (default 60; pass 0 to disable)")
     parser.add_argument("--model", help="Claude model id (default claude-opus-5)")
+    parser.add_argument("--no-news-blackout", action="store_true", dest="no_news_blackout",
+                        help="don't block entries around high-impact economic-calendar events "
+                             "(on by default; needs the MQL5 EA's calendar export - see "
+                             "econ_calendar.py). The calendar is still shown to Claude.")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
     parser.add_argument("--allow-partial-conviction", action="store_true",
@@ -580,8 +588,13 @@ def main(argv: list | None = None) -> int:
 
         if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
             if heartbeat.due_heartbeat(cfg):
+                try:
+                    equity_now = gw.account_equity()
+                except Exception:
+                    equity_now = None   # the ping itself matters more than the equity line
                 msg = telegram_alert.format_heartbeat_message(
-                    cfg.symbol, heartbeat.minutes_since_last_success())
+                    cfg.symbol, heartbeat.minutes_since_last_success(), equity_now,
+                    day.day_start_equity)
                 threading.Thread(target=telegram_alert.send_alert,
                                  args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, msg),
                                  daemon=True).start()

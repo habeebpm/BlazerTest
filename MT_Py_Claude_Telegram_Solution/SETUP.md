@@ -247,7 +247,9 @@ Python decides *whether and when* to enter; this EA manages each open
 position's exit tick-by-tick.
 
 1. Copy `ClaudeSMC_Trader/MQL5/Experts/ClaudeSMC_TradeManager.mq5` into
-   `Experts/`, compile.
+   `Experts/` and `MQL5/Include/EconCalendar.mqh` into `Include/` (it
+   exports MT5's economic calendar for the Python side's news blackout),
+   compile.
 2. Drag onto an XAUUSD chart. Confirm `InpMagicNumber` (default
    `20260921`) matches `config.py`'s `AdvisorConfig.magic`, and
    `InpReferenceLot` (default `0.01`) matches `fixed_lot`. Tick "Allow
@@ -328,8 +330,8 @@ Trades off System B's SMC filter and SL checks for a single combined risk
 model - read `UnifiedTrader/README.md` before choosing this over B+C.
 
 1. Copy `UnifiedTrader/MQL5/Experts/UnifiedTrader_EA.mq5` into `Experts/`
-   and `MQL5/Include/TelegramSMC_Common.mqh` (from System B) into
-   `Include/`. Compile.
+   and `MQL5/Include/TelegramSMC_Common.mqh` (from System B) plus
+   `MQL5/Include/EconCalendar.mqh` into `Include/`. Compile.
 2. Load `UnifiedTrader/MQL5/Presets/UnifiedTrader_EA_Default.set`. Both
    sources ship disabled - set `InpEnableTelegramSignals=true` and/or
    `InpEnableClaudeManagement=true`.
@@ -348,7 +350,7 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
 
 **Optional remote control:** set `InpControlChatId` to your own DM chat id
 with the bot to enable `PauseHab`/`ResumeHab`/`PauseTelHab`/`ResumeTelHab`/
-`PauseClaudeHab`/`ResumeClaudeHab`/`Why` - shown as tappable buttons in that
+`PauseClaudeHab`/`ResumeClaudeHab`/`Stats`/`News`/`Why` - shown as tappable buttons in that
 chat (typing the exact text also works): closing positions, pausing and
 resuming new Telegram and/or Claude entries, and echoing Claude's latest
 reasoning on demand. The Claude pause reaches `python/main.py` through a

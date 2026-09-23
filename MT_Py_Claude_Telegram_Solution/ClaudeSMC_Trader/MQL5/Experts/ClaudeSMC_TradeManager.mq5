@@ -91,6 +91,7 @@
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
+#include <EconCalendar.mqh>
 
 input group "=== Identification ==="
 input long   InpMagicNumber   = 20260921;   // Must match the Python advisor's AdvisorConfig.magic
@@ -115,6 +116,11 @@ input double         InpBreakevenAtrMult   = 0.5;        // Move SL to breakeven
 input ENUM_TIMEFRAMES InpAtrTimeframe      = PERIOD_M5;  // Timeframe the ATR is read from
 input int             InpAtrPeriod         = 14;         // ATR period
 input double         InpDecayWindowMinutes = 15.0;       // Force breakeven after this long even short of the ATR trigger
+
+input group "=== Economic calendar export (MT5 built-in) - read by python/econ_calendar.py ==="
+input string InpCalendarExportFile = "econ_calendar.csv"; // MUST match python config.econ_calendar_filename ("" = no export)
+input string InpNewsCurrencies     = "USD";               // Currencies to export, comma-separated
+input int    InpCalendarRefreshMin = 5;                   // Re-export every N minutes
 
 CTrade trade;
 int g_atrHandle = INVALID_HANDLE;
@@ -365,5 +371,6 @@ void OnTick()
          continue;
       ManagePosition(ticket);
    }
+   EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
 }
 //+------------------------------------------------------------------+

@@ -43,6 +43,7 @@ import pandas as pd
 import backtest
 import calibration_report
 import claude_advisor
+import econ_calendar
 import executor
 import main as main_mod
 import market_intel
@@ -897,6 +898,8 @@ def test_full_snapshot_pipeline() -> bool:
                 snapshot["consensus"] is None, snapshot["consensus"])
     ok &= check("ml_win_probability is null before any local model has been trained",
                 snapshot["ml_win_probability"] is None, snapshot["ml_win_probability"])
+    ok &= check("economic_calendar is null when the gateway has no exported calendar to read",
+                snapshot["economic_calendar"] is None, snapshot["economic_calendar"])
 
     import json
     try:
@@ -1667,6 +1670,15 @@ def test_telegram_alert() -> bool:
     heartbeat_msg = telegram_alert.format_heartbeat_message("XAUUSD", 42.0)
     ok &= check("format_heartbeat_message() names the symbol and minutes since last success",
                 "XAUUSD" in heartbeat_msg and "42 min" in heartbeat_msg, heartbeat_msg)
+    ok &= check("...with no equity line when equity isn't known", "Equity" not in heartbeat_msg,
+                heartbeat_msg)
+    heartbeat_eq = telegram_alert.format_heartbeat_message("XAUUSD", 5.0, 10245.30, 10213.20)
+    ok &= check("heartbeat shows current equity and today's change in $ and %",
+                "Equity $10,245.30 (today $+32.10, +0.31%)" in heartbeat_eq, heartbeat_eq)
+    digest_eq = telegram_alert.format_performance_digest("XAUUSD", "Daily", [{"pnl_dollars": 4.0}],
+                                                         equity=10004.0)
+    ok &= check("the daily digest ends with the current equity",
+                digest_eq.endswith("\nEquity $10,004.00") and "100% win rate" in digest_eq, digest_eq)
 
     stale_msg = telegram_alert.format_stale_cycle_alert("XAUUSD", 90.0)
     ok &= check("format_stale_cycle_alert() names the symbol and minutes stuck",
@@ -2141,6 +2153,120 @@ def test_ml_advisor() -> bool:
 
     return ok
 
+# --------------------------------------------------------------------------- #
+# econ_calendar.py: MT5's calendar, exported by the MQL5 EA
+# --------------------------------------------------------------------------- #
+SAMPLE_CALENDAR = """# exported_at_utc=2026-10-02 12:25:00
+time_utc,currency,importance,event,actual,forecast,previous,impact
+2026-10-02 08:00:00,USD,moderate,"ISM Manufacturing PMI",49.1,50.2,48.7,negative
+2026-10-02 10:00:00,USD,high,"JOLTS, Job Openings",8.9,8.1,8.0,positive
+2026-10-02 11:00:00,EUR,high,"ECB Rate Decision",3.5,3.5,3.75,na
+2026-10-02 12:30:00,USD,high,"Nonfarm Payrolls",,180,150,na
+2026-10-02 14:00:00,USD,low,"Baker Hughes Rig Count",,,480,na
+not-a-date,USD,high,"broken row",,,,na
+"""
+
+
+class FakeCalendarGateway:
+    def __init__(self, text=None, fail=False, now=None):
+        self.text, self.fail, self._now = text, fail, now
+
+    def read_common_file(self, filename):
+        if self.fail:
+            raise RuntimeError("terminal_info() failed")
+        return self.text
+
+    def now(self):
+        return self._now
+
+
+def test_econ_calendar() -> bool:
+    print("\n=== 19. econ_calendar: MT5 calendar export -> blackout + Claude context ===")
+    ok = True
+    utc = timezone.utc
+    events, exported_at = econ_calendar.parse_calendar_csv(SAMPLE_CALENDAR)
+    ok &= check("the export parses, skipping the malformed row, oldest first",
+                len(events) == 5 and events[0].event == "ISM Manufacturing PMI"
+                and events[-1].event == "Baker Hughes Rig Count", [e.event for e in events])
+    ok &= check("exported_at_utc is read from the comment line",
+                exported_at == datetime(2026, 10, 2, 12, 25, tzinfo=utc), exported_at)
+    nfp = events[3]
+    ok &= check("an unreleased event has actual=None but keeps forecast/previous",
+                nfp.actual is None and nfp.forecast == 180.0 and nfp.previous == 150.0, nfp)
+    ok &= check("gold impact: a USD-positive surprise is bearish for gold, USD-negative bullish",
+                "bearish" in econ_calendar.gold_impact(events[1])
+                and "bullish" in econ_calendar.gold_impact(events[0])
+                and econ_calendar.gold_impact(events[2]) == "", None)
+
+    cfg = AdvisorConfig()
+    at = lambda h, m: datetime(2026, 10, 2, h, m, tzinfo=utc)
+    ok &= check("NFP at 12:30 blocks new entries from 12:15...",
+                "Nonfarm Payrolls" in econ_calendar.blackout_reason(events, at(12, 15), cfg),
+                econ_calendar.blackout_reason(events, at(12, 15), cfg))
+    ok &= check("...through 12:45 (15 minutes each side by default)",
+                econ_calendar.blackout_reason(events, at(12, 45), cfg) != ""
+                and econ_calendar.blackout_reason(events, at(12, 46), cfg) == ""
+                and econ_calendar.blackout_reason(events, at(12, 14), cfg) == "")
+    ok &= check("a high-impact EUR event doesn't block (only news_currencies=['USD'] is watched)",
+                econ_calendar.blackout_reason(events, at(11, 0), cfg) == "")
+    ok &= check("a moderate USD event doesn't block at the default 'high' threshold...",
+                econ_calendar.blackout_reason(events, at(8, 0), cfg) == "")
+    ok &= check("...but does at news_min_importance='moderate'",
+                econ_calendar.blackout_reason(events, at(8, 0),
+                                              AdvisorConfig(news_min_importance="moderate")) != "")
+    ok &= check("news_auto_blackout=False never blocks",
+                econ_calendar.blackout_reason(events, at(12, 30),
+                                              AdvisorConfig(news_auto_blackout=False)) == "")
+    raised = None
+    try:
+        econ_calendar.blackout_reason(events, at(12, 30), AdvisorConfig(news_min_importance="hihg"))
+    except ValueError as exc:
+        raised = exc
+    ok &= check("a typo in news_min_importance raises instead of silently meaning something else",
+                raised is not None, raised)
+
+    ctx = econ_calendar.calendar_context(events, exported_at, at(12, 25), cfg)
+    ok &= check("context lists recent USD releases (moderate+) with surprise and gold impact",
+                [r["event"] for r in ctx["recent_releases"]] == ["ISM Manufacturing PMI",
+                                                                 "JOLTS, Job Openings"]
+                and abs(ctx["recent_releases"][1]["surprise"] - 0.8) < 1e-9
+                and "bearish" in ctx["recent_releases"][1]["gold_impact"], ctx["recent_releases"])
+    ok &= check("upcoming: NFP in 5 minutes (the low-impact rig count and EUR event left out)",
+                [u["event"] for u in ctx["upcoming_24h"]] == ["Nonfarm Payrolls"]
+                and ctx["upcoming_24h"][0]["minutes_until"] == 5
+                and ctx["minutes_to_next_blackout_event"] == 5, ctx["upcoming_24h"])
+    ok &= check("data age is reported from exported_at", ctx["data_age_minutes"] == 0, ctx)
+
+    ok &= check("load_events: no read_common_file on the gateway (backtest) -> None",
+                econ_calendar.load_events(object(), cfg) is None)
+    ok &= check("load_events: file not exported yet -> None",
+                econ_calendar.load_events(FakeCalendarGateway(None), cfg) is None)
+    ok &= check("load_events: read error -> None, never raises",
+                econ_calendar.load_events(FakeCalendarGateway(fail=True), cfg) is None)
+    ok &= check("load_events: econ_calendar_filename='' disables it",
+                econ_calendar.load_events(FakeCalendarGateway(SAMPLE_CALENDAR),
+                                          AdvisorConfig(econ_calendar_filename="")) is None)
+
+    # Through the real gate: a full-conviction verdict inside the NFP window
+    # is refused; the same verdict outside it isn't.
+    class GateGateway(FakeGateway):
+        def __init__(self, now):
+            super().__init__(now=now)
+
+        def read_common_file(self, filename):
+            return SAMPLE_CALENDAR
+
+    reason_in = executor.gate(GateGateway(at(12, 20)), cfg, make_verdict("buy", 3, "full"), 0)
+    reason_out = executor.gate(GateGateway(at(13, 0)), cfg, make_verdict("buy", 3, "full"), 0)
+    ok &= check("executor.gate() refuses an entry inside the calendar blackout",
+                reason_in.startswith("news blackout") and "Nonfarm" in reason_in, reason_in)
+    ok &= check("...and allows the same entry outside it", reason_out == "", reason_out)
+
+    snap_ctx = market_intel.economic_calendar_context(GateGateway(at(12, 25)), cfg)
+    ok &= check("market_intel.economic_calendar_context() builds the same context from the gateway",
+                snap_ctx is not None and snap_ctx["minutes_to_next_blackout_event"] == 5, snap_ctx)
+    return ok
+
 
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
@@ -2171,6 +2297,7 @@ def main() -> int:
         test_digest_lookback_days(),
         test_heartbeat(),
         test_ml_advisor(),
+        test_econ_calendar(),
     ]
     print()
     if all(results):
