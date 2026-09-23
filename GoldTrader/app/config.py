@@ -97,32 +97,35 @@ class AdvisorConfig:
     news_block_after_minutes: int = 15
     econ_calendar_max_age_minutes: int = 30   # warn when the EA's export is older than this
 
-    # --- XTR alignment gate (on by default) - see xtr_logic.py. Mechanical
-    #     M5/M15/H1 rules from the XTR gold scalping specification, applied
-    #     on top of Claude's verdict:
+    # --- XTR alignment gate - see xtr_logic.py. Mechanical M5/M15/H1 rules
+    #     from the XTR gold scalping specification. The reading is always in
+    #     Claude's snapshot; the gate decides what is enforced on top:
+    #       "off" (default): nothing - context for Claude only. Over a year
+    #         of real prices (docs/BACKTEST_REPORT.md) the trading hours with
+    #         no gate were positive in all three periods and had the best
+    #         return per unit of drawdown; the gates removed winners too;
     #       "block_opposed": never enter against a CLEARLY opposed
     #         M15 or H1 (EMA9/21, RSI14 and MACD histogram all agreeing), an
     #         extended entry whose M5 MACD histogram stopped accelerating, a
     #         bounce-failure entry before the histogram crossed zero, or a
     #         setup type in its two-loss range stand-down;
-    #       "require_alignment" (default): also require the M5 trigger in
-    #         Claude's direction and at least one agreeing HTF (the spec's
-    #         full flow - far fewer trades; the lowest drawdown in every
-    #         backtest, see docs/BACKTEST_REPORT.md);
-    #       "off": context for Claude only.
+    #       "require_alignment": also require the M5 trigger in Claude's
+    #         direction and at least one agreeing HTF (the spec's full flow -
+    #         far fewer trades and the smallest drawdown, but no edge over the
+    #         year).
     #     It never changes lot size, SL or TP - only whether an entry is
     #     allowed. Needs M5, M15 and H1 bars; if they can't be read the gate
     #     is skipped (logged) rather than halting trading.
-    xtr_gate: str = "require_alignment"
+    xtr_gate: str = "off"
     xtr_bars: int = 200
 
     # --- Entry tactics (tactics.py) - WHEN an entry may be taken; entry
     #     filters only, never lot/SL/TP/trail/cap. Times are New York time
     #     (daylight saving followed automatically). "" / 0 switches one off.
-    #     Six-month test (docs/BACKTEST_REPORT.md): the trading hours below
-    #     improved both halves of the data under every XTR gate, halved the
-    #     drawdown and skip about half of the paid Claude calls. min_adx
-    #     helped the first half but not the second, so it ships off.
+    #     One-year test (docs/BACKTEST_REPORT.md): the trading hours below
+    #     improved the average trade in the untouched Sep-Mar period too,
+    #     halved the drawdown and skip about half of the paid Claude calls.
+    #     min_adx was not consistent across periods, so it ships off.
     trade_windows_ny: str = "08:00-16:45,18:15-20:00"   # US session + early evening; not Asia/London morning
     friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)

@@ -3,13 +3,13 @@ Entry tactics - WHEN a Claude entry may be taken. Entry filters only: they
 never touch the lot, the stop-loss, TP1, the trail or the position cap.
 
 Four checks, each switchable in config.py (see docs/BACKTEST_REPORT.md for
-the six-month test behind the defaults):
+the one-year test behind the defaults):
 
   * trading hours  - entries only inside trade_windows_ny (New York time, so
                      US/UK daylight-saving shifts are followed automatically).
                      Gold's Asian session is a range that turns momentum
                      entries into false breakouts, and the London morning
-                     sweeps tight stops; both lost in every test window.
+                     sweeps tight stops; both lost over the tested year.
   * Friday cutoff  - no new entry after friday_cutoff_ny: a $6 stop cannot
                      protect a position held over the weekend gap.
   * spread guard   - no entry while the spread is above max_spread_points
@@ -24,7 +24,7 @@ the snapshot, still before the Claude call - a blocked bar costs nothing.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -120,6 +120,18 @@ def validate(cfg) -> None:
     parse_windows(cfg.trade_windows_ny)
     if (cfg.friday_cutoff_ny or "").strip():
         _minutes(cfg.friday_cutoff_ny)
+
+
+def trading_day(now, server_offset_seconds: int | None = None):
+    """The trading day `now` (UTC) belongs to - the day the EA's daily cap
+    uses (broker server midnight). With the broker's offset known that is
+    exact; without it, gold's own day is used, which rolls at 17:00 New
+    York - the same moment as server midnight at the usual GMT+2/+3
+    (New York close) gold brokers."""
+    utc = _as_utc(now)
+    if server_offset_seconds is not None:
+        return (utc + timedelta(seconds=server_offset_seconds)).date()
+    return (utc.astimezone(NEW_YORK) + timedelta(hours=7)).date()
 
 
 def describe(cfg) -> str:

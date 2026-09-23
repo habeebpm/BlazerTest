@@ -12,7 +12,7 @@ do when something goes wrong.
 | **Trading program** (`app/main.py`, via `start.bat`) | Python | Each closed M15 bar inside the trading hours: builds a market snapshot, asks Claude for a verdict, applies the gates, sends Claude's entries |
 | Relay bridge (`relay/`) | Python, optional | Forwards trade messages from a channel you are not admin of into your own group |
 | Drive export (`drive_export/`) | Python, optional (VPS) | Price files to Google Drive without Drive for Desktop |
-| ML retrain, conviction report | Python, automatic | Daily / weekly, see `settings.ini` |
+| ML retrain, conviction report, **scorecard** | Python, automatic | Daily / weekly, see `settings.ini`; the scorecard goes to your Telegram |
 | TelegramSMC_TradeLogger | MT5 chart, optional | Trade journal CSV (both sources) |
 | Dashboard (`dashboard/`) | IIS, optional | Web page over the journal CSVs |
 
@@ -30,7 +30,7 @@ in the window cannot freeze it.
 | TP1 | at +$6 the SL is locked there (no broker TP) |
 | Trail | $3 behind price after TP1 |
 | Positions per direction | max 5, shared by both sources |
-| Daily loss cap | 10% of the day's starting equity - no new entries after it; each entry must also fit the remaining 10% budget including open risk |
+| Daily loss cap | 10% of the day's starting equity - no new entries after it; each entry must also fit the remaining 10% budget including open risk. The day is the broker's server day (17:00 New York at most gold brokers) for both the EA and Python |
 
 Python (`app/config.py`) and the EA preset already carry the same numbers,
 magic numbers and shared file names (checked by `goldtrader.py test`).
@@ -49,14 +49,15 @@ magic numbers and shared file names (checked by `goldtrader.py test`).
    and - once trained - the ML win probability.
 3. **Claude's verdict:** trend / momentum / strength legs, conviction
    (`full` / `partial` / `none`), reasoning. Only `full` trades.
-4. **XTR alignment gate** (`--xtr-gate`, default `require_alignment`):
-   each timeframe is bullish/bearish only when EMA9 vs EMA21, RSI14 vs 50 and
-   the MACD histogram all agree. `block_opposed` refuses entries against a
-   clear M15/H1 and the two failing momentum patterns;
-   `require_alignment` additionally needs the M5 trigger and one agreeing
-   HTF (the lowest-risk setting in the backtest). After 2 losses in a row on
-   the same setup and direction within 1 ATR, that setup stands down until a
-   decisive breakout or a higher timeframe turns. Never changes lot, SL or TP.
+4. **XTR alignment reading** (`--xtr-gate`, default `off`): each timeframe
+   is bullish/bearish only when EMA9 vs EMA21, RSI14 vs 50 and the MACD
+   histogram all agree. By default it is evidence for Claude only (the
+   best setting over a year of prices). Optional gates: `block_opposed`
+   refuses entries against a clear M15/H1 and the two failing momentum
+   patterns, and after 2 losses in a row on the same setup and direction
+   within 1 ATR stands that setup down; `require_alignment` additionally
+   needs the M5 trigger and one agreeing HTF (half the swings, but about one
+   trade a week and no edge in the backtest). Never changes lot, SL or TP.
 5. **Breaking-news check** (free RSS feeds, one short Claude call) right
    before the order - a surprise against the trade blocks it; feeds down =
    trades anyway and says so.
@@ -71,13 +72,14 @@ provider chooses their own timing.
 
 ## Entry tactics (when Claude may trade)
 
-Tested on six months of real prices ([`BACKTEST_REPORT.md`](BACKTEST_REPORT.md)).
+Tested on a year of real prices, including six months downloaded after the
+settings were chosen ([`BACKTEST_REPORT.md`](BACKTEST_REPORT.md)).
 They only decide *whether* an entry is allowed - lot, SL, TP1, trail and the
 position cap never change.
 
 | Tactic | Default | Why |
 |---|---|---|
-| Trading hours | 08:00-16:45 and 18:15-20:00 **New York time** | Asian-session and London-morning entries lost in every test; these hours halved the drawdown under every XTR setting and skip about half of the paid Claude calls |
+| Trading hours | 08:00-16:45 and 18:15-20:00 **New York time** | Asian-session and London-morning entries lost; these hours passed the fresh-data test, halved the drawdown under every XTR setting and skip about half of the paid Claude calls |
 | Friday cutoff | no new entry from 16:00 New York on Friday | A $6 stop cannot protect a position over the weekend gap |
 | Spread guard | no entry above 50 points | Reopen and news spikes; 50 points is already 8% of the $6 risk |
 | Trend filter | off (`--min-adx 25` to try it) | Helped Mar-Jul, not Aug-Sep |
@@ -112,13 +114,38 @@ instead of restarting.
 | `logs/decisions.csv` | Every Claude evaluation, executed or not |
 | `logs/trades.csv` | Every order sent |
 | `logs/ml_snapshots.csv`, `logs/ml_win_probability_model.joblib` | ML data + model (~0.3 KB per trade, ~50 KB model) |
-| `logs/ml_retrain.log`, `logs/calibration_report.log` | Output of the automatic jobs |
+| `logs/ml_retrain.log`, `logs/calibration_report.log`, `logs/scorecard.log` | Output of the automatic jobs |
 | `logs/day_state.json`, `logs/xtr_state.json`, `logs/services_state.json` | State kept across restarts |
 | MT5 `MQL5\Files\TelegramSMC_Signals.csv` / `..._Results.csv` | EA signal log / trade journal |
 | MT5 `Common\Files\XTR_Data\` | Price files (and your Drive folder if set) |
 | `relay/tg_relay_bridge.session` | The relay's Telegram login |
 
 Disk: about 400 MB of Python packages in total (170 MB of it for ML).
+
+## Weekly scorecard (is it working?)
+
+Every 7 days (and any time with `python goldtrader.py scorecard`) the real
+closed trades of the last 120 days are read from MT5 - Claude's, the
+Telegram signals' and both together - and sent to your Telegram: trades,
+win %, net, average result in **R** (1R = the $6 stop), profit factor,
+worst drawdown and the chance that there is no real edge. The verdict uses
+rules fixed before any demo trade:
+
+| Verdict | When | What to do |
+|---|---|---|
+| TOO EARLY | fewer than 30 trades | keep running |
+| NOT PROVEN YET | anything in between | keep running |
+| ON TRACK | average R above 0 and at most 20% chance of no edge | demo is working; go small on real money only after that |
+| STOP AND REVIEW | 80%+ chance of no edge, or a 10R drawdown (about 20% at 2% risk) | pause that source (`PauseClaudeHab` / `PauseTelHab`) and look at why |
+
+## Broker clock
+
+MT5 gives every bar, tick and deal time on the broker's server clock. The
+program converts them to real UTC: by default it assumes the usual gold
+broker clock (New York + 7 hours, i.e. UTC+2 in winter, UTC+3 in summer),
+and a live tick confirms it or switches to your broker's fixed offset (the
+log says `Broker server clock: ...`). The trading hours use your PC's UTC
+clock, so keep Windows time synced (Settings -> Time -> Sync now).
 
 ## Price files for XTR (Drive)
 
@@ -153,15 +180,15 @@ with the service account's email (Editor) -> test:
 (free; runs the live defaults; the mechanical stand-in votes the same three
 legs Claude is told to use - it tests the rules, not Claude's judgment).
 Add `--trade-hours any --friday-cutoff off --max-spread 0` to compare
-without the tactics. Results on six months of real prices:
+without the tactics. Results on a year of real prices:
 [`BACKTEST_REPORT.md`](BACKTEST_REPORT.md).
 
 ## Honest limitations
 
 - No backtest of Claude itself yet - the demo weeks are the real test.
-- On six months no setting showed a statistically reliable edge; the
-  defaults (`require_alignment` + trading hours) had the lowest drawdown
-  (9.5%) and were positive in both halves, on only 25 trades.
+- Over a year the defaults (no gate + trading hours) were positive in all
+  three periods with a 9% chance of luck - the best result, not proof. The
+  worst drawdown was 27% from the peak (32% at double spread).
 - Very cost-sensitive: the $6 stop is about one M15 ATR - use a broker with
   gold spread of 25 points or less.
 - The backtest is bar-level (not tick-level); spread is constant apart
@@ -175,7 +202,7 @@ without the tactics. Results on six months of real prices:
 |---|---|
 | "Python was not found" | Install Python 3.12+ 64-bit, tick "Add python.exe to PATH", reopen |
 | "Cannot reach MetaTrader 5" | Start MT5, log in, wait for prices, XAUUSD in Market Watch; `start.bat` retries by itself |
-| No Claude trades for hours | Normal outside 08:00-16:45 / 18:15-20:00 New York and on Friday evening; about one Claude trade a week is expected |
+| No Claude trades for hours | Normal outside 08:00-16:45 / 18:15-20:00 New York and on Friday evening; about 4 Claude trades a week is typical |
 | "Setting not understood" | A typo in `start.bat` `GT_ARGS` (times as HH:MM, e.g. `08:00-16:45`) |
 | `check.bat` shows `MISSING` | `settings.bat` |
 | No Telegram alert | `settings.bat` -> send the test message; you must have messaged the bot once |
@@ -190,4 +217,4 @@ without the tactics. Results on six months of real prices:
 
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
-once | start | backtest | xtr-export | test`.
+once | start | backtest | scorecard | xtr-export | test`.

@@ -66,9 +66,12 @@ Done. Machine learning and the weekly report run by themselves.
   12:00-20:45 and 22:15-24:00 in summer, one hour later in winter), never
   on Friday evening, never when the spread is wide. Outside those hours the
   log says `outside trading hours` - that is normal, and it costs nothing.
-- Claude is picky: about **one Claude trade a week** is expected.
+- About **4 Claude trades a week**, with losing weeks and months in between
+  (the one-year backtest's worst fall was 27% from the peak).
 - Every trade: a stop of $6 (at 0.01 lot), locked at +$6, then trailed $3.
-- Judge it after 2-4 weeks / 100+ trades, not after a day.
+- Every week a **scorecard** arrives in Telegram with a plain verdict:
+  TOO EARLY / NOT PROVEN YET / ON TRACK / STOP AND REVIEW (rules in
+  `docs/REFERENCE.md`). Judge it by that, not by a single day.
 
 ## Every day
 
@@ -113,5 +116,5 @@ the logs -> `InpDryRun` = `false`, put `--live` back, restart `start.bat`.
 ---
 
 How it decides, every limit, all options, troubleshooting:
-[`docs/REFERENCE.md`](docs/REFERENCE.md). Six-month backtest:
+[`docs/REFERENCE.md`](docs/REFERENCE.md). One-year backtest:
 [`docs/BACKTEST_REPORT.md`](docs/BACKTEST_REPORT.md).

@@ -632,7 +632,7 @@ class BacktestDayState:
         self.target_hit = False
 
     def block_reason(self, gateway: HistoricalGateway, cfg: AdvisorConfig) -> str:
-        day = gateway.current_time.date()
+        day = tactics.trading_day(gateway.current_time)   # the live trading day (17:00 New York)
         equity = gateway.account_equity()
         if day != self.date:
             self.date = day
@@ -695,7 +695,8 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
     # variant's own closed trades teach it, exactly like the live state file.
     xtr_states = {s: xtr_logic.XtrStanddown(None) for s in styles}
     xtr_blocks = {s: 0 for s in styles}
-    xtr_on = any(cfgs[s].xtr_gate != "off" for s in styles)
+    # The XTR reading is Claude's context whatever the gate (live does the same).
+    xtr_on = all(tf in primary_gw.bars for tf in ("M5", "H1"))
     evaluated = 0
     while True:
         for s in styles:
@@ -708,14 +709,14 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
             continue
 
         xtr_a = _xtr_reading(primary_gw, shared_cfg) if xtr_on else None
-        features["xtr"] = xtr_logic.snapshot_context(xtr_a)
+        features["xtr"] = xtr_logic.snapshot_context(xtr_a, shared_cfg.xtr_gate)
         verdict = mechanical_verdict(features) if mechanical else claude_advisor.get_verdict(
             client, shared_cfg, features)
         evaluated += 1
 
         for s in styles:
             g, cfg = gateways[s], cfgs[s]
-            day = g.current_time.date()
+            day = tactics.trading_day(g.current_time)
             trades_today = day_trades[s].get(day, 0)
             block_reason = (day_states[s].block_reason(g, cfg) or tactics.regime_block(cfg, features)
                             or ("market closed (daily break / weekend)" if g.market_closed_now() else ""))
@@ -767,10 +768,13 @@ def summarize(trades: list, starting_equity: float = 0.0) -> dict:
     gross_win = sum(t.pnl_dollars for t in wins)
     gross_loss = -sum(t.pnl_dollars for t in losses)
     equity, peak, max_dd = 0.0, 0.0, 0.0
+    max_dd_pct = 0.0          # from the running peak of the account, the usual definition
     for t in trades:
         equity += t.pnl_dollars
         peak = max(peak, equity)
         max_dd = max(max_dd, peak - equity)
+        if starting_equity > 0:
+            max_dd_pct = max(max_dd_pct, (peak - equity) / (starting_equity + peak) * 100.0)
     return {
         "total_trades": len(trades),
         "wins": len(wins), "losses": len(losses),
@@ -782,7 +786,7 @@ def summarize(trades: list, starting_equity: float = 0.0) -> dict:
         "profit_factor": (round(gross_win / gross_loss, 2) if gross_loss > 0 else None),
         "expectancy_dollars": round(net / len(trades), 2),
         **({"return_pct": round(100 * net / starting_equity, 2),
-            "max_drawdown_pct": round(100 * max_dd / starting_equity, 2)} if starting_equity > 0 else {}),
+            "max_drawdown_pct": round(max_dd_pct, 2)} if starting_equity > 0 else {}),
     }
 
 

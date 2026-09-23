@@ -168,13 +168,17 @@ a separately forward-tested gold scalping rulebook. Each timeframe is \
 "bullish"/"bearish" only when EMA9 vs EMA21, RSI14 vs 50 and the MACD \
 histogram ALL agree, else "mixed". `buy`/`sell` preview the conviction \
 (full = M15 and H1 both agree, reduced = one agrees, unaligned = both \
-mixed, opposed = one clearly against) and the setup type. An entry against \
-a clearly opposed M15 or H1 is refused mechanically after your verdict, as \
-are an extended chase whose M5 histogram has stopped accelerating and a \
-bounce-failure entry before the histogram crosses zero - so do not call \
-"full" for a direction whose preview says "opposed". Prefer full over \
-reduced alignment; in a ranging regime (M5 ADX < 25) an RSI-extreme bounce \
-at the Bollinger band is the rulebook's best-performing setup.
+mixed, opposed = one clearly against) and the setup type. `gate` says what \
+is enforced after your verdict: "off" = nothing, the reading is evidence for \
+you to weigh (an "opposed" preview is a reason for caution, not an automatic \
+no - pullbacks against a clear M15/H1 do sometimes work); "block_opposed" \
+= an entry against a clearly opposed M15 or H1 is refused, as are an \
+extended chase whose M5 histogram has stopped accelerating and a \
+bounce-failure entry before the histogram crosses zero; \
+"require_alignment" = additionally an M5 trigger and one agreeing HTF are \
+required. Do not call "full" for a direction the active gate would refuse. \
+In a ranging regime (M5 ADX < 25) an RSI-extreme bounce at the Bollinger \
+band is the rulebook's best-performing setup.
 
 `recent_performance` summarizes this system's own last several closed trades \
 (win/loss count, win rate, net P&L) - context only, never a mechanical gate: \
@@ -324,6 +328,10 @@ def _wrap_api_error(exc: Exception) -> ClaudeUnavailableError:
         if error_type == "permission_error" or status == 403:
             return ClaudeUnavailableError(
                 f"Claude API denied this request (HTTP 403): {exc}", retryable=False)
+        if error_type == "not_found_error" or status == 404:
+            return ClaudeUnavailableError(
+                f"Claude API does not know this model (HTTP 404) - set a current model with "
+                f"--model in start.bat: {exc}", retryable=False)
         if error_type == "rate_limit_error" or status == 429:
             return ClaudeUnavailableError(
                 f"Claude API rate-limited this request (HTTP 429) - will retry next poll: {exc}",

@@ -7,6 +7,7 @@ everything:
     [xtr_export]          drive_export/xtr_export.py              continuous
     [ml_retrain]          train_ml_model.py                        every N days
     [calibration_report]  calibration_report.py                    every N days
+    [scorecard]           scorecard.py (result sent to Telegram)   every N days
 
 Continuous ones run as supervised child processes (relay_supervisor.
 ChildSupervisor): restarted after a crash, stopped for good on a
@@ -58,6 +59,7 @@ class Preset:
     xtr_export: ServiceSettings = field(default_factory=ServiceSettings)
     ml_retrain: ServiceSettings = field(default_factory=ServiceSettings)
     calibration_report: ServiceSettings = field(default_factory=ServiceSettings)
+    scorecard: ServiceSettings = field(default_factory=ServiceSettings)
     path: str = ""
     errors: list = field(default_factory=list)
 
@@ -65,7 +67,7 @@ class Preset:
         return [n for n in SECTIONS if getattr(self, n).enabled]
 
 
-SECTIONS = ("relay_bridge", "xtr_export", "ml_retrain", "calibration_report")
+SECTIONS = ("relay_bridge", "xtr_export", "ml_retrain", "calibration_report", "scorecard")
 
 
 def split_args(text: str) -> list:
@@ -237,7 +239,11 @@ def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
             ("ml_retrain", "train_ml_model.py", ["--magic", str(cfg.magic), "--log-dir", logs]),
             ("calibration_report", "calibration_report.py",
              ["--magic", str(cfg.magic), "--decisions", os.path.join(logs, "decisions.csv"),
-              "--trades", os.path.join(logs, "trades.csv")])):
+              "--trades", os.path.join(logs, "trades.csv")]),
+            ("scorecard", "scorecard.py",
+             ["--magic", str(cfg.magic)]
+             + (["--telegram-magic", str(cfg.shared_cap_magic_numbers[0])]
+                if cfg.shared_cap_magic_numbers else []))):
         s = getattr(preset, name)
         if not s.enabled:
             continue

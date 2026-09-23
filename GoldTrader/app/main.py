@@ -141,27 +141,39 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
 
 
 class DayRoll:
-    """Tracks trades_today and resets it at UTC midnight, same convention as
-    the Telegram copier's Copier.roll_day(). Also tracks the day's starting
-    account equity so main.py can evaluate the daily loss circuit breaker
-    (see config.py's max_daily_loss_pct/use_daily_target/daily_target_pct)
-    without executor.py or mt5_gateway.py needing to know about calendar
-    days at all - same separation as the EA's own day roll.
+    """Tracks trades_today and the day's starting account equity (the daily
+    loss circuit breaker - see config.py's max_daily_loss_pct/
+    use_daily_target/daily_target_pct) per TRADING day: the broker server's
+    day, exactly like UnifiedTrader_EA's own daily cap, so both sources'
+    caps roll at the same moment (tactics.trading_day(); server midnight is
+    17:00 New York at the usual gold brokers). The server's UTC offset is
+    learned from live ticks (observe_server_offset) and kept across
+    restarts. The day only ever moves forward.
     """
     def __init__(self, state_path: str | None = None):
-        self.date = datetime.now(timezone.utc).date()
-        self.trades_today = 0
-        self.day_start_equity = 0.0
-        self.daily_loss_hit = False
-        self.daily_target_hit = False
-        # Persisted so a restart later the same UTC day keeps its anchor,
-        # latched breaker and trade count - re-anchoring on every restart
-        # would hand a down-9% day a fresh 10% budget.
-        self.state_path = state_path
+        self.server_offset = None
+        self._offset_candidate = None
+        saved = None
         if state_path and os.path.exists(state_path):
             try:
                 with open(state_path) as f:
                     saved = json.load(f)
+                offset = saved.get("server_offset")
+                self.server_offset = int(offset) if offset is not None else None
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
+                log.warning("Could not read %s (%s) - starting today's state fresh.", state_path, exc)
+                saved = None
+        self.date = self.today()
+        self.trades_today = 0
+        self.day_start_equity = 0.0
+        self.daily_loss_hit = False
+        self.daily_target_hit = False
+        # Persisted so a restart later the same trading day keeps its anchor,
+        # latched breaker and trade count - re-anchoring on every restart
+        # would hand a down-9% day a fresh 10% budget.
+        self.state_path = state_path
+        if saved is not None:
+            try:
                 if saved.get("date") == self.date.isoformat():
                     self.trades_today = int(saved.get("trades_today", 0))
                     self.day_start_equity = float(saved.get("day_start_equity", 0.0))
@@ -185,26 +197,45 @@ class DayRoll:
                 json.dump({"date": self.date.isoformat(), "trades_today": self.trades_today,
                            "day_start_equity": self.day_start_equity,
                            "daily_loss_hit": self.daily_loss_hit,
-                           "daily_target_hit": self.daily_target_hit}, f)
+                           "daily_target_hit": self.daily_target_hit,
+                           "server_offset": self.server_offset}, f)
             os.replace(tmp_path, self.state_path)
         except OSError as exc:
             log.warning("Could not save %s (%s) - a restart today would re-anchor the daily cap.",
                         self.state_path, exc)
 
+    def today(self):
+        return tactics.trading_day(datetime.now(timezone.utc), self.server_offset)
+
+    def observe_server_offset(self, offset: int | None) -> None:
+        """The broker's UTC offset from a live tick (mt5_gateway.
+        server_utc_offset_seconds). Adopted once two readings in a row agree,
+        so one stale tick can never move the day boundary."""
+        if offset is None or offset == self.server_offset:
+            self._offset_candidate = None
+            return
+        if offset != self._offset_candidate:
+            self._offset_candidate = offset
+            return
+        log.info("Broker server time is UTC%+.1fh - the daily cap rolls at server midnight, like the EA's.",
+                 offset / 3600)
+        self.server_offset, self._offset_candidate = offset, None
+        self.save()
+
     def roll(self, equity: float):
-        """Returns the (gap_start, gap_end) INCLUSIVE UTC date range that
-        needs a digest if today is a genuinely new UTC day, else None -
+        """Returns the (gap_start, gap_end) INCLUSIVE trading-day range that
+        needs a digest if today is a genuinely new trading day, else None -
         see main.py's send_performance_digests(). Ordinarily gap_start ==
         gap_end == yesterday, but if the poll loop was down across more
-        than one UTC midnight (self.date only advances while it's actually
+        than one day boundary (self.date only advances while it's actually
         running), gap_start is the last day it was tracking and gap_end is
         the day before today, so a caller can still account for every day
         in between rather than silently dropping all but one of them.
         Never returns a range on the very first call (process just
         started - there's no "previous day" to digest yet, only an anchor
         point)."""
-        today = datetime.now(timezone.utc).date()
-        if today != self.date:
+        today = self.today()
+        if today > self.date:
             gap_start = self.date
             gap_end = today - timedelta(days=1)
             self.date = today
@@ -215,7 +246,7 @@ class DayRoll:
             return (gap_start, gap_end)
         if self.day_start_equity <= 0:
             # First cycle ever (process just started mid-day) - anchor here
-            # rather than waiting for the next UTC midnight.
+            # rather than waiting for the next day boundary.
             self.day_start_equity = equity
         return None
 
@@ -227,12 +258,12 @@ class DayRoll:
                 and -move_pct >= cfg.max_daily_loss_pct):
             self.daily_loss_hit = True
             log.warning("Daily loss limit hit (%.2f%% <= -%.2f%%) - no new entries until the "
-                        "next UTC day.", move_pct, cfg.max_daily_loss_pct)
+                        "next trading day.", move_pct, cfg.max_daily_loss_pct)
         if (cfg.use_daily_target and not self.daily_target_hit
                 and move_pct >= cfg.daily_target_pct):
             self.daily_target_hit = True
             log.info("Daily profit target reached (+%.2f%% >= +%.2f%%) - no new entries until "
-                     "the next UTC day.", move_pct, cfg.daily_target_pct)
+                     "the next trading day.", move_pct, cfg.daily_target_pct)
 
     def block_reason(self) -> str:
         if self.daily_loss_hit:
@@ -301,8 +332,8 @@ def sundays_in_range(gap_start, gap_end) -> list:
 
 
 def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end,
-                             equity: float | None = None) -> None:
-    """Fires once per UTC day roll (see DayRoll.roll()) with a digest of
+                             equity: float | None = None, server_offset: int | None = None) -> None:
+    """Fires once per trading-day roll (see DayRoll.roll()) with a digest of
     every day in the inclusive [gap_start, gap_end] range - ordinarily a
     single day (yesterday), but after a multi-day process outage this can
     span several days, and every UTC Sunday found in that range gets its
@@ -356,14 +387,17 @@ def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end,
                     gap_start, gap_end, exc)
         return
 
-    gap_trades = [t for t in all_trades if gap_start <= t["time"].date() <= gap_end]
+    def day_of(t):
+        return tactics.trading_day(t["time"], server_offset)
+
+    gap_trades = [t for t in all_trades if gap_start <= day_of(t) <= gap_end]
     period_label = "Daily" if gap_start == gap_end else f"{gap_start} to {gap_end}"
     daily_msg = telegram_alert.format_performance_digest(cfg.symbol, period_label, gap_trades, equity)
 
     weekly_msgs = []
     for week_end in sundays:
         week_start = week_end - timedelta(days=6)
-        weekly_trades = [t for t in all_trades if week_start <= t["time"].date() <= week_end]
+        weekly_trades = [t for t in all_trades if week_start <= day_of(t) <= week_end]
         weekly_msgs.append(telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades,
                                                                     equity))
 
@@ -418,11 +452,9 @@ _xtr_warned = {"at": 0.0}
 
 
 def xtr_assessment(cfg: AdvisorConfig):
-    """The XTR M5/M15/H1 reading, or None (gate off, or bars unavailable -
-    logged at most every 30 minutes; the gate is then skipped, never
-    blocking trading on a data hiccup)."""
-    if cfg.xtr_gate == "off":
-        return None
+    """The XTR M5/M15/H1 reading (context for Claude whatever the gate), or
+    None when the bars are unavailable - logged at most every 30 minutes;
+    the gate is then skipped, never blocking trading on a data hiccup)."""
     try:
         return xtr_logic.assess(gw, cfg.symbol, cfg.xtr_bars)
     except Exception as exc:
@@ -459,10 +491,13 @@ def skip_cycle(cfg: AdvisorConfig, reason: str) -> None:
 
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> None:
     equity = gw.account_equity()
+    offset_fn = getattr(gw, "server_utc_offset_seconds", None)
+    if offset_fn is not None:
+        day.observe_server_offset(offset_fn(cfg.symbol))
     gap = day.roll(equity)
     if gap is not None and cfg.send_performance_digest and cfg.telegram_alert_bot_token \
             and cfg.telegram_alert_chat_id:
-        send_performance_digests(cfg, gap[0], gap[1], equity)
+        send_performance_digests(cfg, gap[0], gap[1], equity, server_offset=day.server_offset)
     day.check_daily_limits(cfg, equity)
     day.save()
     # Everything that doesn't depend on Claude's answer is checked BEFORE
@@ -483,13 +518,13 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> 
     if skip_reason:
         skip_cycle(cfg, skip_reason)
         return
-    features["xtr"] = xtr_logic.snapshot_context(xtr_a)
+    features["xtr"] = xtr_logic.snapshot_context(xtr_a, cfg.xtr_gate)
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
               verdict.direction, verdict.conviction, verdict.confluence_count, verdict.reasoning)
     xtr_decision = None
     if xtr_a is not None and verdict.direction in ("buy", "sell"):
-        if xtr_state is not None:
+        if xtr_state is not None and cfg.xtr_gate != "off":
             try:
                 xtr_state.update_from_closed(gw.recent_closed_trades(cfg.symbol, cfg.magic, count=50))
             except Exception:
@@ -755,10 +790,11 @@ def build_parser() -> argparse.ArgumentParser:
                         dest="news_check_no_web_search", help=argparse.SUPPRESS)  # the default now
     parser.add_argument("--xtr-gate", choices=["off", "block_opposed", "require_alignment"],
                         dest="xtr_gate",
-                        help="XTR M5/M15/H1 alignment gate on Claude's entries (default "
-                             "require_alignment: the M5 trigger plus one agreeing M15/H1; block_opposed: "
-                             "only never against a clearly opposed M15/H1, plus the momentum filters and "
-                             "the two-loss stand-down; off = context only) - see xtr_logic.py")
+                        help="XTR M5/M15/H1 alignment gate on Claude's entries (default off: the "
+                             "reading is context for Claude only; block_opposed: never against a clearly "
+                             "opposed M15/H1, plus the momentum filters and the two-loss stand-down; "
+                             "require_alignment: also the M5 trigger plus one agreeing M15/H1) - see "
+                             "xtr_logic.py")
     parser.add_argument("--news-check-fail-closed", action="store_true", dest="news_check_fail_closed",
                         help="refuse the entry when the breaking-news check cannot run at all "
                              "(default: trade anyway and say so in the log and alert)")
@@ -881,6 +917,7 @@ def main(argv: list | None = None) -> int:
         gw.connect(login=args.login, password=args.password or os.environ.get("MT5_PASSWORD") or None,
                    server=args.server, terminal_path=args.terminal_path)
         spec = gw.symbol_spec(cfg.symbol)
+        gw.server_utc_offset_seconds(cfg.symbol)   # learn the broker clock before reading any bar time
     except RuntimeError as exc:
         # The most common first-run problem - one clear line, not a traceback.
         log.error("Cannot reach MetaTrader 5: %s\n  Fix: start MT5, log in to your account, wait "
@@ -958,8 +995,10 @@ def main(argv: list | None = None) -> int:
     heartbeat = Heartbeat()
     failed_bar, failed_attempts = None, 0
     bar_time = None
+    claude_alerted = set()     # one Telegram alert per distinct "needs manual action" reason
     while True:
         try:
+            gw.server_utc_offset_seconds(cfg.symbol)   # keeps bar times on true UTC (see mt5_gateway)
             bar_time = market_intel.last_closed_time(gw, cfg.symbol, cfg.primary_timeframe)
             if bar_time != last_bar_time:
                 # last_bar_time only advances AFTER a successful cycle - if
@@ -985,6 +1024,16 @@ def main(argv: list | None = None) -> int:
                 log.warning("Claude temporarily unavailable this cycle - %s", exc)
                 sleep_seconds = cfg.poll_seconds
             else:
+                reason = str(exc)
+                if reason not in claude_alerted and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
+                    claude_alerted.add(reason)
+                    threading.Thread(
+                        target=telegram_alert.send_alert,
+                        args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
+                              f"GoldTrader: Claude entries STOPPED - {reason[:300]}\n"
+                              "Telegram signals are still copied and open trades still managed. "
+                              "Fix it, then restart start.bat."),
+                        daemon=True).start()
                 log.warning(
                     "Claude unavailable and this looks like it needs manual action (credits/API "
                     "key/permissions) rather than a retry - backing off to every %d minutes "

@@ -102,7 +102,7 @@ def get_bars(symbol: str, timeframe_name: str, count: int) -> pd.DataFrame:
     if rates is None or len(rates) == 0:
         raise RuntimeError(f"copy_rates_from_pos({symbol}, {timeframe_name}) failed: {m.last_error()}")
     df = pd.DataFrame(rates)
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    df["time"] = server_to_utc(df["time"]).values
     return df.rename(columns={"tick_volume": "volume"})
 
 
@@ -121,7 +121,7 @@ def get_bars_range(symbol: str, timeframe_name: str, start, end) -> pd.DataFrame
     df = pd.DataFrame(rates)
     if len(df) == 0:
         return df.assign(time=pd.Series(dtype="datetime64[ns, UTC]"))
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    df["time"] = server_to_utc(df["time"]).values
     return df.rename(columns={"tick_volume": "volume"})
 
 
@@ -145,6 +145,60 @@ def now() -> datetime:
     data into a simulated evaluation).
     """
     return datetime.now(timezone.utc)
+
+
+# --- Broker server clock ---------------------------------------------------
+# MT5 reports bar, tick and deal times as the broker SERVER's wall clock,
+# encoded as if it were UTC. Almost every gold broker runs its server at New
+# York + 7 hours (UTC+2 in winter, UTC+3 in summer), so its midnight is the
+# 17:00 New York close. That is the default model here - it gets daylight
+# saving right for any date, past or present. When a live tick shows a
+# different, fixed offset, that offset is used instead.
+_CLOCK = {"fixed_offset": None}
+
+
+def ny_close_offset_seconds(ts_utc) -> int:
+    """Server-ahead-of-UTC seconds of a New York + 7h broker at `ts_utc`."""
+    ts = pd.Timestamp(ts_utc)
+    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+    return int(ts.tz_convert("America/New_York").utcoffset().total_seconds()) + 7 * 3600
+
+
+def server_utc_offset_seconds(symbol: str) -> int | None:
+    """How far the broker server's clock runs ahead of UTC right now (seconds),
+    read from the latest tick; also updates the clock model used for every
+    bar and deal time. None when the tick is too old to tell (market
+    closed), the offset is not a whole or half hour, or MT5 does not answer."""
+    import time
+    try:
+        tick = mt5().symbol_info_tick(symbol)
+    except Exception:
+        return None
+    if tick is None or not getattr(tick, "time", 0):
+        return None
+    now = time.time()
+    raw = int(tick.time) - int(now)
+    rounded = round(raw / 1800) * 1800
+    if abs(raw - rounded) > 120 or abs(rounded) > 14 * 3600:
+        return None
+    expected = ny_close_offset_seconds(pd.Timestamp(now, unit="s", tz="UTC"))
+    fixed = None if rounded == expected else rounded
+    if fixed != _CLOCK["fixed_offset"]:
+        log.info("Broker server clock: %s", "New York + 7h (the usual gold broker clock)" if fixed is None
+                 else f"UTC{fixed / 3600:+g}h fixed")
+        _CLOCK["fixed_offset"] = fixed
+    return rounded
+
+
+def server_to_utc(epoch_seconds) -> pd.Series:
+    """MT5 server-clock epoch seconds (a Series or list) -> true UTC Timestamps."""
+    wall = pd.to_datetime(pd.Series(epoch_seconds), unit="s", utc=True)
+    fixed = _CLOCK["fixed_offset"]
+    if fixed is not None:
+        return wall - pd.Timedelta(seconds=fixed)
+    guess = wall - pd.Timedelta(hours=3)            # close enough to pick the right DST side
+    ny_offset = guess.dt.tz_convert("America/New_York").dt.tz_localize(None) - guess.dt.tz_localize(None)
+    return wall - (ny_offset + pd.Timedelta(hours=7))
 
 
 def account_equity() -> float:
@@ -280,37 +334,50 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
     return positions + pending
 
 
-def recent_closed_trades(symbol: str, magic: int, count: int = 10,
-                          lookback_days: int = 14) -> list[dict]:
-    """This system's own closed trades (filtered by magic number), newest
-    first - built from MT5's own deal history rather than logs/trades.csv,
-    so it reflects real broker fills (including anything the MQL5 trade
-    manager closed) whether or not this Python process was running at the
-    time. Each closed position produces one DEAL_ENTRY_OUT deal; its
-    profit+swap+commission is that trade's net P&L. Used by market_intel.
-    recent_performance_summary() to give Claude qualitative context on
-    recent performance - never touches trading decisions on its own.
-    """
+def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
+    """Closed trades under any of `magics`, oldest first, from MT5's own deal
+    history (real broker fills, whoever closed them). One DEAL_ENTRY_OUT deal
+    per close; profit+swap+commission is its net P&L; time is true UTC."""
     m = mt5()
     now = datetime.now(timezone.utc)
-    deals = m.history_deals_get(now - timedelta(days=lookback_days), now)
+    # The terminal reads these bounds on its SERVER clock (up to 14h ahead of
+    # UTC): ending the window at UTC "now" would miss the last few hours of
+    # closed trades, so the window runs a day past now.
+    deals = m.history_deals_get(now - timedelta(days=lookback_days + 1), now + timedelta(days=1))
     if deals is None:
         return []
+    wanted = {int(x) for x in magics}
+    rows = [d for d in deals
+            if d.symbol == symbol and d.magic in wanted and d.entry == m.DEAL_ENTRY_OUT]
+    if not rows:
+        return []
+    times = server_to_utc([d.time for d in rows])
     out = []
-    for d in deals:
-        if d.symbol != symbol or d.magic != magic or d.entry != m.DEAL_ENTRY_OUT:
-            continue
+    for d, t in zip(rows, times):
         out.append({
-            "time": datetime.fromtimestamp(d.time, tz=timezone.utc),
+            "time": t.to_pydatetime(),
+            "magic": int(d.magic),
             # The CLOSING deal's type is the opposite of the position's own
             # direction (closing a buy position is a sell deal, and vice
             # versa) - flipped here so the direction reported is the
             # position's, not the deal's.
             "direction": "buy" if d.type == m.DEAL_TYPE_SELL else "sell",
             "pnl_dollars": float(d.profit + d.swap + d.commission),
+            "volume": float(getattr(d, "volume", 0.0)),
             "ticket": d.position_id,
         })
-    out.sort(key=lambda r: r["time"], reverse=True)
+    out.sort(key=lambda r: r["time"])
+    return out
+
+
+def recent_closed_trades(symbol: str, magic: int, count: int = 10,
+                          lookback_days: int = 14) -> list[dict]:
+    """This system's own closed trades (one magic number), newest first -
+    see closed_trades(). Used for Claude's recent-performance context, the
+    XTR stand-down and the digests - never a trading decision on its own.
+    """
+    out = closed_trades(symbol, [magic], lookback_days)
+    out.reverse()
     return out[:count]
 
 

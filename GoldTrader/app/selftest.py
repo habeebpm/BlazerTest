@@ -52,6 +52,7 @@ import main as main_mod
 import market_intel
 import ml_advisor
 import news_check
+import paths
 import relay_supervisor
 import services
 import tactics
@@ -928,6 +929,7 @@ def test_claude_error_classification() -> bool:
          False, "out of credits"),
         (status_error(401, "authentication_error", "invalid x-api-key"), False, "API key"),
         (status_error(403, "permission_error", "not allowed"), False, "denied"),
+        (status_error(404, "not_found_error", "model: claude-old"), False, "--model"),
         (status_error(429, "rate_limit_error", "too many requests"), True, "rate-limited"),
         (status_error(529, "overloaded_error", "overloaded"), True, "service issue"),
         (anthropic.APIConnectionError(message="network down", request=req), True, "reach"),
@@ -1914,7 +1916,7 @@ def test_day_roll_daily_limits() -> bool:
 
     cfg = AdvisorConfig(max_daily_loss_pct=3.0)
     day = main_mod.DayRoll()
-    day.date = main_mod.datetime.now(main_mod.timezone.utc).date()
+    day.date = main_mod.DayRoll().today()
     day.roll(10000.0)
     ok &= check("roll() anchors day_start_equity on the first call of the day",
                 day.day_start_equity == 10000.0, day.day_start_equity)
@@ -1948,13 +1950,13 @@ def test_day_roll_daily_limits() -> bool:
     ok &= check("max_daily_loss_pct=0 disables the breaker even on a 50% drawdown",
                 day3.block_reason() == "", day3.block_reason())
 
-    yesterday = main_mod.datetime.now(main_mod.timezone.utc).date() - timedelta(days=1)
+    yesterday = main_mod.DayRoll().today() - timedelta(days=1)
     day4 = main_mod.DayRoll()
     day4.date = yesterday
     day4.roll(10000.0)
     day4.check_daily_limits(cfg, 9000.0)
     ok &= check("breaker latched before the day rolls over", day4.block_reason() != "")
-    day4.date = yesterday  # simulate the next UTC day boundary being reached
+    day4.date = yesterday  # simulate the next trading-day boundary being reached
     day4.roll(9000.0)
     ok &= check("roll() into a new UTC day resets the latch and re-anchors day_start_equity",
                 day4.block_reason() == "" and day4.day_start_equity == 9000.0,
@@ -1971,7 +1973,7 @@ def test_day_roll_daily_limits() -> bool:
                 "both ends are 'yesterday' for the ordinary, no-outage case",
                 gap == (yesterday, yesterday), gap)
 
-    today = main_mod.datetime.now(main_mod.timezone.utc).date()
+    today = main_mod.DayRoll().today()
     long_ago = today - timedelta(days=6)
     day6 = main_mod.DayRoll()
     day6.date = long_ago
@@ -3263,7 +3265,10 @@ def test_xtr_logic() -> bool:
     spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
                          volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
     cfg_risk = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=True,
-                             risk_percent=2.0)
+                             risk_percent=2.0, xtr_gate="block_opposed")
+    ok &= check("gate off (the default): the reading is graded but never blocks",
+                X.evaluate("buy", _assess(h1="bearish"), AdvisorConfig()).block_reason == ""
+                and X.evaluate("buy", _assess(h1="bearish"), AdvisorConfig()).conviction == X.OPPOSED)
     fg_block = FakeGateway()
     blocked = X.evaluate("buy", _assess(h1="bearish"), cfg_risk)
     d = executor.execute(fg_block, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=blocked)
@@ -3299,7 +3304,8 @@ def test_xtr_logic() -> bool:
         main_mod.xtr_logic.assess = lambda g, sym, bars=200, recent=6: _assess(m15="mixed", h1="bearish")
         cfg_run = AdvisorConfig(dry_run=True, use_risk_percent=False, log_dir="/tmp/claudesmc_selftest_logs",
                                 telegram_alert_bot_token="T", telegram_alert_chat_id="C",
-                                claude_pause_filename="", send_performance_digest=False)
+                                claude_pause_filename="", send_performance_digest=False,
+                                xtr_gate="block_opposed")
         day = main_mod.DayRoll()
         main_mod.run_once(object(), cfg_run, spec, day, X.XtrStanddown(None))
         for t in _threading.enumerate():
@@ -3317,7 +3323,7 @@ def test_xtr_logic() -> bool:
 
     ok &= check("--xtr-gate maps to config",
                 main_mod.build_config(main_mod.build_parser().parse_args(["--xtr-gate", "block_opposed"]))
-                .xtr_gate == "block_opposed" and AdvisorConfig().xtr_gate == "require_alignment")
+                .xtr_gate == "block_opposed" and AdvisorConfig().xtr_gate == "off")
     return ok
 
 def test_relay_supervisor() -> bool:
@@ -3450,9 +3456,10 @@ def test_relay_supervisor() -> bool:
         ok &= check("the last run survives a main.py restart (state file)", not again.due())
 
     real_preset = services.load_preset()
-    ok &= check("the shipped settings.ini parses: ML retrain (daily) + conviction report on by "
-                "default, relay + Drive export off (they need your own ids)",
-                not real_preset.errors and real_preset.enabled_names() == ["ml_retrain", "calibration_report"]
+    ok &= check("the shipped settings.ini parses: ML retrain (daily), conviction report and scorecard "
+                "on by default, relay + Drive export off (they need your own ids)",
+                not real_preset.errors
+                and real_preset.enabled_names() == ["ml_retrain", "calibration_report", "scorecard"]
                 and real_preset.ml_retrain.every_days == 1.0, (real_preset.errors, real_preset.enabled_names()))
     env = {"ANTHROPIC_API_KEY": "sk-ant-abcdefgh1234", "TELEGRAM_ALERT_CHAT_ID": "12345",
            "TELEGRAM_API_ID": "999"}
@@ -3727,6 +3734,120 @@ def test_ea_preset_python_consistency() -> bool:
     return ok
 
 
+def test_broker_clock_and_trading_day() -> bool:
+    print("\n=== 36. broker server clock -> UTC, trading day shared with the EA ===")
+    ok = True
+
+    def utc(s):
+        return pd.Timestamp(s, tz="UTC")
+
+    def server_epoch(s):
+        return int(utc(s).timestamp())     # MT5 encodes the server wall clock as if it were UTC
+    saved = gw._CLOCK["fixed_offset"]
+    try:
+        gw._CLOCK["fixed_offset"] = None
+        conv = gw.server_to_utc([server_epoch("2026-07-01 12:00"), server_epoch("2026-01-15 12:00")])
+        ok &= check("a New York + 7h broker: 12:00 server is 09:00 UTC in summer, 10:00 UTC in winter",
+                    conv.iloc[0] == utc("2026-07-01 09:00") and conv.iloc[1] == utc("2026-01-15 10:00"),
+                    conv.tolist())
+        reopen = gw.server_to_utc([server_epoch("2026-03-09 01:00")]).iloc[0]
+        ok &= check("the week US clocks change is handled (Monday 01:00 server = Sunday 18:00 New York)",
+                    reopen == utc("2026-03-08 22:00"), reopen)
+        gw._CLOCK["fixed_offset"] = 0
+        ok &= check("a broker on a fixed UTC clock is used as is",
+                    gw.server_to_utc([server_epoch("2026-07-01 12:00")]).iloc[0] == utc("2026-07-01 12:00"))
+    finally:
+        gw._CLOCK["fixed_offset"] = saved
+
+    class Tick:
+        def __init__(self, t):
+            self.time = t
+
+    class FakeMt5:
+        def __init__(self, t):
+            self.t = t
+
+        def symbol_info_tick(self, symbol):
+            return Tick(self.t)
+    import time as _time
+    real_mt5 = gw.mt5
+    try:
+        now = int(_time.time())
+        expected = gw.ny_close_offset_seconds(pd.Timestamp(now, unit="s", tz="UTC"))
+        gw.mt5 = lambda: FakeMt5(now + expected + 20)
+        ok &= check("a live tick reveals the broker offset (New York + 7h model kept)",
+                    gw.server_utc_offset_seconds("XAUUSD") == expected and gw._CLOCK["fixed_offset"] is None)
+        gw.mt5 = lambda: FakeMt5(now + 3600 + 5)
+        ok &= check("a different fixed offset switches the clock model",
+                    gw.server_utc_offset_seconds("XAUUSD") == 3600 and gw._CLOCK["fixed_offset"] == 3600)
+        gw.mt5 = lambda: FakeMt5(now + expected - 600)
+        ok &= check("a stale tick (market closed) tells nothing and changes nothing",
+                    gw.server_utc_offset_seconds("XAUUSD") is None and gw._CLOCK["fixed_offset"] == 3600)
+    finally:
+        gw.mt5 = real_mt5
+        gw._CLOCK["fixed_offset"] = saved
+
+    td = tactics.trading_day
+    ok &= check("trading day rolls at 17:00 New York (server midnight): 20:59 UTC in summer is still "
+                "today, 21:00 is tomorrow; in winter it rolls at 22:00 UTC",
+                td(utc("2026-09-23 20:59")).isoformat() == "2026-09-23"
+                and td(utc("2026-09-23 21:00")).isoformat() == "2026-09-24"
+                and td(utc("2026-01-15 21:30")).isoformat() == "2026-01-15"
+                and td(utc("2026-01-15 22:00")).isoformat() == "2026-01-16")
+    ok &= check("with a known server offset the server's own date is used",
+                td(utc("2026-09-23 22:30"), 0).isoformat() == "2026-09-23")
+
+    day = main_mod.DayRoll()
+    day.observe_server_offset(7200)
+    first = day.server_offset
+    day.observe_server_offset(7200)
+    ok &= check("DayRoll adopts a broker offset only after two agreeing ticks", first is None
+                and day.server_offset == 7200)
+    day.date = day.today() + timedelta(days=1)
+    before = day.date
+    ok &= check("the trading day never moves backwards (learning the offset can't reset a tripped breaker)",
+                day.roll(10000.0) is None and day.date == before)
+    return ok
+
+
+def test_scorecard() -> bool:
+    print("\n=== 37. demo scorecard: real results per source + fixed verdict rules ===")
+    import scorecard as S
+    ok = True
+    per_price, sl = 100.0, 6.0            # XAUUSD: $100 per 1.0 move per lot, $6 stop at 0.01 lot
+
+    def trade(r, magic=20260921, vol=0.10):
+        return {"pnl_dollars": r * vol * per_price * sl, "volume": vol, "magic": magic}
+    s = S.summarize([trade(1.0), trade(-1.0), trade(2.0, vol=0.3)], per_price, sl)
+    ok &= check("R is the result in multiples of the $6 stop, whatever the lot",
+                s["trades"] == 3 and abs(s["avg_r"] - (2.0 / 3)) < 1e-3 and s["win_pct"] == 66.7, s)
+    ok &= check("fewer than 30 trades: TOO EARLY, whatever the numbers",
+                S.verdict(s)[0] == "TOO EARLY" and "3/30" in S.verdict(s)[1])
+    good = S.summarize([trade(1.5), trade(-1.0)] * 20, per_price, sl)
+    bad = S.summarize([trade(-1.0), trade(-1.0), trade(0.5)] * 12, per_price, sl)
+    flat = S.summarize([trade(1.0), trade(-1.0)] * 20, per_price, sl)
+    ok &= check("40 trades at +0.25R each on average: ON TRACK", S.verdict(good)[0] == "ON TRACK", good)
+    ok &= check("a losing record: STOP AND REVIEW (with the pause buttons named)",
+                S.verdict(bad)[0] == "STOP AND REVIEW" and "Pause" in S.verdict(bad)[1], bad)
+    ok &= check("break-even: NOT PROVEN YET", S.verdict(flat)[0] == "NOT PROVEN YET", flat)
+    streak = S.summarize([trade(1.0)] * 20 + [trade(-1.0)] * 11 + [trade(1.0)] * 20, per_price, sl)
+    ok &= check("an 11R drawdown stops it even when the total is positive",
+                S.verdict(streak)[0] == "STOP AND REVIEW" and "drawdown" in S.verdict(streak)[1], streak)
+    book = [trade(1.0), trade(-1.0, magic=20260922), trade(0.5, magic=99)]
+    out = S.build(book, {"Claude": 20260921, "Telegram signals": 20260922}, per_price, sl)
+    ok &= check("split per source; the combined book ignores other magics (manual/other EAs)",
+                out["Claude"]["trades"] == 1 and out["Telegram signals"]["trades"] == 1
+                and out["Combined"]["trades"] == 2, out)
+    text = S.format_report("XAUUSD", out | {"Empty": {"trades": 0}}, 120)
+    ok &= check("the report names every source, its verdict and the no-edge chance",
+                "Claude: TOO EARLY" in text and "Telegram signals" in text and "chance of no real edge" in text
+                and "Empty: no closed trades yet" in text, text)
+    p = services.load_preset(paths.SETTINGS_INI)
+    ok &= check("settings.ini runs the scorecard weekly by default",
+                p.scorecard.enabled and p.scorecard.every_days == 7.0 and not p.errors, p)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3765,6 +3886,8 @@ def main() -> int:
         test_first_run_wizard(),
         test_tactics(),
         test_ea_preset_python_consistency(),
+        test_broker_clock_and_trading_day(),
+        test_scorecard(),
     ]
     print()
     if all(results):

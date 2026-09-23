@@ -14,6 +14,7 @@ GoldTrader launcher - everything runs from this folder.
     python goldtrader.py once           one evaluation cycle (dry-run)
     python goldtrader.py start [options]      the trading program (+ settings.ini companions)
     python goldtrader.py backtest [options]
+    python goldtrader.py scorecard      real demo/live results of both sources + verdict
     python goldtrader.py xtr-export [options] e.g. --check (VPS Drive upload test)
     python goldtrader.py test           every self-test
 
@@ -261,7 +262,7 @@ def run_forever(cwd: str, script: str, args, sleep=None, max_runs=None) -> int:
 
 
 PASSTHROUGH = {"start": (APP_DIR, "main.py"), "backtest": (APP_DIR, "backtest.py"),
-               "xtr-export": (DRIVE_DIR, "xtr_export.py")}
+               "scorecard": (APP_DIR, "scorecard.py"), "xtr-export": (DRIVE_DIR, "xtr_export.py")}
 
 
 def main(argv=None) -> int:
@@ -288,7 +289,7 @@ def main(argv=None) -> int:
         sub.add_parser(name)
     p = sub.add_parser("test-news")
     p.add_argument("direction", choices=["buy", "sell"])
-    for name in ("start", "backtest", "xtr-export"):
+    for name in ("start", "backtest", "scorecard", "xtr-export"):
         p = sub.add_parser(name)
         p.add_argument("rest", nargs=argparse.REMAINDER)
     args = ap.parse_args(argv)
@@ -307,6 +308,8 @@ def main(argv=None) -> int:
         return py(APP_DIR, "main.py", *args.rest)
     if args.cmd == "backtest":
         return py(APP_DIR, "backtest.py", *args.rest)
+    if args.cmd == "scorecard":
+        return py(APP_DIR, "scorecard.py", *args.rest)
     if args.cmd == "xtr-export":
         return py(DRIVE_DIR, "xtr_export.py", *args.rest)
     flag = {"check": "--check", "test-alert": "--test-alert", "test-feeds": "--test-feeds",

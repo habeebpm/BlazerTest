@@ -213,8 +213,9 @@ def assess(gateway, symbol: str, bars: int = 200, recent: int = 6) -> XtrAssessm
 
 def evaluate(direction: str, a: XtrAssessment, cfg, standdown: "XtrStanddown | None" = None) -> XtrDecision:
     """Grades `direction` (Claude's call) against the XTR rules. cfg.xtr_gate:
-    "block_opposed" blocks an opposed HTF, a failed momentum filter
-    and an active stand-down; "require_alignment" (default) additionally requires the
+    "off" (default) grades only - never blocks (the reading is context for
+    Claude); "block_opposed" blocks an opposed HTF, a failed momentum filter
+    and an active stand-down; "require_alignment" additionally requires the
     M5 trigger (or an RSI-extreme bounce) in the same direction and at least
     one agreeing HTF, exactly as the spec's own decision flow."""
     conviction = grade_conviction(direction, a.m15_class, a.h1_class)
@@ -241,16 +242,19 @@ def evaluate(direction: str, a: XtrAssessment, cfg, standdown: "XtrStanddown | N
             block = "XTR: no clean M5 trigger (EMA9/21, RSI, MACD histogram) in this direction"
         elif conviction == UNALIGNED:
             block = "XTR: neither M15 nor H1 agrees (both mixed)"
+    if cfg.xtr_gate == "off":
+        block = ""
     return XtrDecision(direction=direction, conviction=conviction, setup_type=setup, regime=a.regime,
                        block_reason=block, caution=caution)
 
 
-def snapshot_context(a: XtrAssessment | None) -> dict | None:
+def snapshot_context(a: XtrAssessment | None, gate: str = "off") -> dict | None:
     """What Claude sees under "xtr" in the market snapshot."""
     if a is None:
         return None
     m5 = a.m5
     return {
+        "gate": gate,
         "m5": {"class": m5.cls, "ema9": round(m5.ema9, 2), "ema21": round(m5.ema21, 2),
                "rsi14": round(m5.rsi14, 1), "macd_hist": round(m5.macd_hist, 4),
                "macd_hist_prev": round(m5.macd_hist_prev, 4), "adx14": round(m5.adx14, 1),
