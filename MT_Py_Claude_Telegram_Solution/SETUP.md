@@ -306,7 +306,7 @@ Read-only - never places, modifies, or closes an order.
 cd XTR_Export/python
 pip install -r requirements.txt
 python xtr_export.py --check    # connect, export once, exit
-python xtr_export.py            # loop: export on every new M5 close
+python xtr_export.py            # loop: export on every new M1 close
 ```
 Writes `XAUUSD_M5.csv`/`_M15.csv`/`_H1.csv` (true UTC) and
 `XAUUSD_manifest.json` to `--out-dir` (default `xtr_data/`).

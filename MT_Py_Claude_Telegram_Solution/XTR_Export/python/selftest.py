@@ -12,8 +12,8 @@ Covers:
     only the latest N closed bars, sorts/dedupes
   * export_once - the full pipeline against a fake gateway: three CSVs +
     a manifest, all with the right shape/content
-  * xtr_export.last_closed_m5_time - the new-bar-closed detection the
-    poll loop relies on
+  * xtr_export.last_closed_bar_time - the new-bar-closed detection the
+    poll loop relies on (M1 by default)
   * drive_uploader - creates a Drive file once, updates the SAME file
     (same id/link) on every call after, via a fake Drive service and a
     fake media factory (so this needs no google-api-python-client install)
@@ -186,27 +186,36 @@ def test_export_once() -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# xtr_export.last_closed_m5_time
+# xtr_export.last_closed_bar_time
 # --------------------------------------------------------------------------- #
 class FakeBarTimesGateway:
     def __init__(self, times: list):
         self.times = times
+        self.requested_tf = None
 
     def get_bars(self, symbol, tf, count):
+        self.requested_tf = tf
         return pd.DataFrame({"time": self.times[-count:]})
 
 
-def test_last_closed_m5_time() -> bool:
-    print("\n=== 4. xtr_export.last_closed_m5_time ===")
+def test_last_closed_bar_time() -> bool:
+    print("\n=== 4. xtr_export.last_closed_bar_time ===")
     ok = True
     original_gw = xtr_export.gw
     try:
         xtr_export.gw = FakeBarTimesGateway([100, 200, 300, 400])  # 400 is still forming
-        t = xtr_export.last_closed_m5_time("XAUUSD")
+        t = xtr_export.last_closed_bar_time("XAUUSD")
         ok &= check("returns the last CLOSED bar's time, not the still-forming one", t == 300, t)
+        ok &= check("the export trigger defaults to M1 closes (a fresh export every minute)",
+                    xtr_export.gw.requested_tf == "M1", xtr_export.gw.requested_tf)
+
+        xtr_export.gw = FakeBarTimesGateway([100, 200, 300])
+        xtr_export.last_closed_bar_time("XAUUSD", "M5")
+        ok &= check("--trigger-timeframe M5 still watches M5 (the old pace) when asked",
+                    xtr_export.gw.requested_tf == "M5", xtr_export.gw.requested_tf)
 
         xtr_export.gw = FakeBarTimesGateway([500])  # only the forming bar exists
-        t2 = xtr_export.last_closed_m5_time("XAUUSD")
+        t2 = xtr_export.last_closed_bar_time("XAUUSD")
         ok &= check("with no closed bar yet, returns None rather than the forming bar's time",
                     t2 is None, t2)
 
@@ -318,7 +327,7 @@ def main() -> int:
         test_offset_detection(),
         test_format_bars(),
         test_export_once(),
-        test_last_closed_m5_time(),
+        test_last_closed_bar_time(),
         test_drive_uploader(),
     ]
     print()

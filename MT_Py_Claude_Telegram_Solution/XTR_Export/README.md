@@ -2,7 +2,7 @@
 
 Exports XAUUSD M5/M15/H1 bars from a running MT5 terminal into the exact
 CSV shape XTR (an external Claude-chat trade-analysis workflow, run
-outside this repo) asked for, refreshed on every new M5 candle close, and
+outside this repo) asked for, refreshed on every new **M1** candle close, and
 optionally pushed straight to a Google Drive folder so XTR can read it
 there instead of pulling from Twelve Data.
 
@@ -70,12 +70,25 @@ or leave MT5 already logged in:
 ```bash
 python xtr_export.py --check     # connect, print quote precision, export once, exit
 python xtr_export.py --once      # one export cycle, exit
-python xtr_export.py             # loop: export on every new M5 candle close
+python xtr_export.py             # loop: export on every new M1 candle close
 ```
+
+**Export pace:** every file (M5, M15, H1 and the manifest) is rewritten
+each time an **M1** bar closes, so a newly closed M5/M15/H1 bar shows up in
+its file within about a minute (plus the poll interval) rather than up to
+5 minutes later. Nothing else about the files changes - they still hold
+closed bars only. `--trigger-timeframe M5` restores the old
+once-per-5-minutes pace. Want the M1 bars themselves too? Add them with
+`--timeframes M1,M5,M15,H1` (writes an extra `XAUUSD_M1.csv`).
+
+With `--upload-drive` that's 4 small file updates a minute - far inside
+the Drive API's free per-minute quota; Google Drive for Desktop (Option A
+below) simply syncs whatever changed.
 
 Useful flags: `--symbol` (default XAUUSD), `--timeframes M5,M15,H1`
 (default, all three required - XTR's HTF-alignment grading needs all of
-them), `--bars 200`, `--out-dir xtr_data`, `--poll-seconds 15`, `--login`/
+them), `--trigger-timeframe M1` (default), `--bars 200`, `--out-dir xtr_data`,
+`--poll-seconds 5`, `--login`/
 `--password`/`--server`/`--terminal-path`, `-v`.
 
 ### Test without a live account
@@ -141,8 +154,8 @@ goes stale, and the folder doesn't fill with thousands of near-duplicates.
 
 ## Honest limitations
 
-- **Freshness is tied to M5 candle closes**, checked every `--poll-seconds`
-  (default 15s) - not truly tick-by-tick. A candle that closes right after
+- **Freshness is tied to M1 candle closes** (`--trigger-timeframe`),
+  checked every `--poll-seconds` (default 5s) - not truly tick-by-tick. A candle that closes right after
   a poll is picked up on the next one, so worst-case staleness is about
   one poll interval past the actual close, not zero.
 - **The broker-UTC-offset detection assumes this machine's own clock is
