@@ -113,6 +113,25 @@ def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: 
     return ""
 
 
+def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> float:
+    """cfg.fixed_lot, or a size derived from current equity when
+    use_risk_percent is set - see config.py's own comment on those fields.
+    Falls back to fixed_lot on any degenerate input (no equity, no tick
+    data, zero sl_dist) rather than risking a divide-by-zero or a wild lot.
+    """
+    if not cfg.use_risk_percent:
+        return cfg.fixed_lot
+    equity = gateway.account_equity()
+    if equity <= 0 or spec.tick_size <= 0 or spec.tick_value <= 0 or sl_dist <= 0:
+        return cfg.fixed_lot
+    loss_per_lot = (sl_dist / spec.tick_size) * spec.tick_value
+    lots = (equity * cfg.risk_percent / 100.0) / loss_per_lot
+    step = spec.volume_step or 0.01
+    lots = (lots // step) * step
+    lots = max(spec.volume_min, min(lots, spec.volume_max, cfg.max_lot_size))
+    return round(lots, 2)
+
+
 def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
             trades_today: int, daily_block_reason: str = "") -> Decision:
     reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
@@ -123,7 +142,11 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
 
     tick = gateway.get_tick(cfg.symbol)
     entry_price = tick.ask if verdict.direction == "buy" else tick.bid
+    # sl_dist is always solved at fixed_lot - a fixed REFERENCE price distance,
+    # independent of what lot actually ends up trading (see position_size()
+    # and config.py's use_risk_percent comment).
     sl_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.fixed_lot)
+    lots = position_size(gateway, cfg, spec, sl_dist)
     if verdict.direction == "buy":
         sl_price = entry_price - sl_dist
     else:
@@ -150,7 +173,7 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
             f"'sl_to_tp1', 'breakeven_r_decay', 'fixed_tp'.")
 
     result = gateway.place_market_order(
-        spec, verdict.direction, cfg.fixed_lot, sl_price, tp_price,
+        spec, verdict.direction, lots, sl_price, tp_price,
         cfg.magic, cfg.comment, cfg.deviation_points, cfg.dry_run,
     )
     retcode = getattr(result, "retcode", "")
@@ -158,9 +181,9 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     fill_price = getattr(result, "price", entry_price)
     tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at ${cfg.tp1_dollars:g} via SL)"
     log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
-              verdict.direction.upper(), cfg.fixed_lot, fill_price, sl_price, tp_desc,
+              verdict.direction.upper(), lots, fill_price, sl_price, tp_desc,
               verdict.conviction, verdict.confluence_count)
     log_decision(cfg, verdict, executed=True)
-    log_trade(cfg, verdict.direction, cfg.fixed_lot, fill_price, sl_price, tp_price,
+    log_trade(cfg, verdict.direction, lots, fill_price, sl_price, tp_price,
               "dry-run" if cfg.dry_run else "live", retcode, ticket)
     return Decision(executed=True)

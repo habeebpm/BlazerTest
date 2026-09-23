@@ -218,7 +218,10 @@ input bool    InpEnableTelegramSignals = false;   // Poll Telegram and execute s
 input bool    InpEnableClaudeManagement = false;  // Manage exits for ClaudeSMC_Trader's Python-opened positions
 
 input group "=== Shared business rules - apply to BOTH sources ==="
-input double  InpFixedLot               = 0.01;   // Lot size for every Telegram-sourced entry
+input double  InpFixedLot               = 0.01;   // Lot size for every Telegram-sourced entry (or the reference lot for InpSlDollars' price distance when InpUseRiskPercent is true - see below)
+input bool    InpUseRiskPercent         = false;   // Size Telegram-sourced entries from equity instead of always InpFixedLot
+input double  InpRiskPercent            = 0.2;     // InpUseRiskPercent only: risk this % of equity per trade
+input double  InpMaxLotSize             = 5.0;     // InpUseRiskPercent only: hard cap on a risk-sized lot
 input int     InpMaxPositionsPerDirection = 5;     // SHARED cap, counted across BOTH magics together
 input double  InpSlDollars              = 6.0;     // Initial stop-loss (USD-equivalent price distance)
 input double  InpTp1Dollars             = 6.0;     // Floating profit that locks the SL in here (exact, no buffer)
@@ -317,6 +320,7 @@ bool     ExtractNumberAt(const string &text, int fromPos, int limitPos, int maxS
 bool     MentionsGold(const string &upperText);
 void     ParseSignalText(const string &rawText, SignalMsg &msg);
 double   DollarsToPrice(double dollars, double volume);
+double   PositionSizeLots();
 int      CountSameDirection(int direction);
 void     ExpirePendingOrders();
 int      ClosePositionsByMagic(long magic, const string &label);
@@ -327,7 +331,8 @@ void     SetTelegramPaused(bool paused);
 void     SendControlReply(const string &summary);
 void     ProcessControlCommand(const string &rawText);
 bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
-                           string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode);
+                           string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode,
+                           double &outLots);
 void     ManagePositionExit(ulong ticket, long magic);
 void     ManageAllPositions();
 void     ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText);
@@ -463,6 +468,33 @@ int OnInit()
                      "position size - it will sit at the InpTp1Dollars lock level instead, which is "
                      "still a valid, protected exit, just not a trailing one.",
                      InpFixedLot, InpTrailDollars, sampleTrailDist, stopsLevelPrice);
+
+      // Risk audit: how many losing Telegram-sourced trades does
+      // InpMaxDailyLossPct actually absorb at the lot size that will really
+      // be traded (InpFixedLot, or today's risk-sized lot if
+      // InpUseRiskPercent)? Sizing up without checking this is how the
+      // daily loss breaker quietly becomes the strategy - it halts the day
+      // on ordinary variance rather than on a genuinely bad one. Purely
+      // informational: never blocks trading on its own.
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(equity > 0.0 && InpMaxDailyLossPct > 0.0)
+      {
+         double auditLots = PositionSizeLots();
+         double slDistAudit = DollarsToPrice(InpSlDollars, InpFixedLot);
+         double riskMoney = auditLots * (slDistAudit / tickSize) * tickValue;
+         double riskPct   = 100.0 * riskMoney / equity;
+         double capMoney  = equity * InpMaxDailyLossPct / 100.0;
+         double losses    = (riskMoney > 0.0) ? capMoney / riskMoney : 0.0;
+         PrintFormat("UnifiedTrader_EA: risk audit - %.2f lots (%s) risks $%.2f (%.2f%% of $%.2f "
+                     "equity); the %.1f%% daily loss breaker absorbs %.1f losing trades.",
+                     auditLots, InpUseRiskPercent ? "risk-sized" : "fixed", riskMoney, riskPct, equity,
+                     InpMaxDailyLossPct, losses);
+         if(losses > 0.0 && losses < 3.0)
+            PrintFormat("UnifiedTrader_EA: WARNING - the daily loss breaker stops new entries after "
+                        "only %.1f losses. At several trades a day that can halt on ordinary variance "
+                        "rather than a genuinely bad day. Reduce the lot size (or InpRiskPercent), "
+                        "raise InpMaxDailyLossPct, or fund the account further.", losses);
+      }
    }
 
    double gv;
@@ -852,6 +884,42 @@ double DollarsToPrice(double dollars, double volume)
 }
 
 //+------------------------------------------------------------------+
+//| InpFixedLot, or a size derived from current equity when            |
+//| InpUseRiskPercent is set - mirrors ClaudeSMC_Trader/python/         |
+//| executor.py's position_size(). The price distance InpSlDollars      |
+//| implies at the REFERENCE lot InpFixedLot is held fixed (same value  |
+//| PlaceCopiedOrder() already computes via DollarsToPrice(InpSlDollars,|
+//| InpFixedLot)), and the lot is solved for so that distance times     |
+//| that lot risks exactly InpRiskPercent% of current equity, then      |
+//| clamped to [SYMBOL_VOLUME_MIN, SYMBOL_VOLUME_MAX, InpMaxLotSize]    |
+//| and rounded down to the broker's own volume step.                   |
+//+------------------------------------------------------------------+
+double PositionSizeLots()
+{
+   if(!InpUseRiskPercent)
+      return(InpFixedLot);
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double slDist = DollarsToPrice(InpSlDollars, InpFixedLot);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(equity <= 0.0 || slDist <= 0.0 || tickValue <= 0.0 || tickSize <= 0.0)
+      return(InpFixedLot);
+
+   double lossPerLot = (slDist / tickSize) * tickValue;
+   double lots = (equity * InpRiskPercent / 100.0) / lossPerLot;
+
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0) step = 0.01;
+   lots = MathFloor(lots / step) * step;
+
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   lots = MathMax(minLot, MathMin(lots, MathMin(maxLot, InpMaxLotSize)));
+   return(NormalizeDouble(lots, 2));
+}
+
+//+------------------------------------------------------------------+
 //| Open positions PLUS pending limit orders on this symbol/direction |
 //| across BOTH magic numbers together - the shared cap - regardless  |
 //| of which mode(s) are currently enabled (see file header's         |
@@ -1129,12 +1197,14 @@ void ProcessControlCommand(const string &rawText)
 //| broker TP (tp=0.0, sl_to_tp1 exit design - see file header).      |
 //+------------------------------------------------------------------+
 bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
-                       string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode)
+                       string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode,
+                       double &outLots)
 {
    outOrderType  = "";
    outOrderPrice = 0.0;
    outTicket     = 0;
    outRetcode    = 0;
+   outLots       = PositionSizeLots();
 
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick))
@@ -1205,7 +1275,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    {
       PrintFormat("UnifiedTrader_EA: [DRY-RUN] would place %s %s %.2f lots @ %.2f sl=%.2f "
                   "(no broker TP - locks at $%.2f via SL)",
-                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", InpFixedLot, orderPrice, sl,
+                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", outLots, orderPrice, sl,
                   InpTp1Dollars);
       return(true);
    }
@@ -1213,11 +1283,11 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    trade.SetExpertMagicNumber(InpTelegramMagicNumber);
    bool ok;
    if(isPending)
-      ok = isBuy ? trade.BuyLimit(InpFixedLot, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)
-                 : trade.SellLimit(InpFixedLot, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
+      ok = isBuy ? trade.BuyLimit(outLots, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)
+                 : trade.SellLimit(outLots, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
    else
-      ok = isBuy ? trade.Buy(InpFixedLot, _Symbol, orderPrice, sl, tp, comment)
-                 : trade.Sell(InpFixedLot, _Symbol, orderPrice, sl, tp, comment);
+      ok = isBuy ? trade.Buy(outLots, _Symbol, orderPrice, sl, tp, comment)
+                 : trade.Sell(outLots, _Symbol, orderPrice, sl, tp, comment);
 
    outRetcode = (int)trade.ResultRetcode();
    outTicket  = (long)trade.ResultOrder();
@@ -1226,7 +1296,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    {
       g_tradesToday++;
       PrintFormat("UnifiedTrader_EA: %s %s placed - %.2f lots @ %.2f sl=%.2f ticket=%I64u",
-                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", InpFixedLot, orderPrice, sl,
+                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", outLots, orderPrice, sl,
                   outTicket);
    }
    else
@@ -1612,11 +1682,12 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    double outOrderPrice = 0.0;
    long   outTicket     = 0;
    int    outRetcode    = 0;
+   double outLots       = 0.0;
    bool   placed = PlaceCopiedOrder(isBuy, lowerBound, upperBound,
-                                     outOrderType, outOrderPrice, outTicket, outRetcode);
+                                     outOrderType, outOrderPrice, outTicket, outRetcode, outLots);
 
    LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
-                true, "", placed, outOrderType, outOrderPrice, InpFixedLot, InpDryRun,
+                true, "", placed, outOrderType, outOrderPrice, outLots, InpDryRun,
                 outTicket, outRetcode, rawText);
 }
 

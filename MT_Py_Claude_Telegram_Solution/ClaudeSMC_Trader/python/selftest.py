@@ -325,15 +325,20 @@ class FakeGateway:
     """Implements exactly the mt5_gateway functions executor.py calls."""
     SymbolSpec = gw.SymbolSpec
 
-    def __init__(self, same_dir_open: int = 0, bid: float = 2350.0, ask: float = 2350.2):
+    def __init__(self, same_dir_open: int = 0, bid: float = 2350.0, ask: float = 2350.2,
+                 equity: float = 10000.0):
         self.same_dir_open = same_dir_open
         self.bid, self.ask = bid, ask
         self.orders_sent = []
         self.last_additional_magics = None
+        self.equity = equity
 
     def count_same_direction(self, symbol, magic, direction, additional_magics=()):
         self.last_additional_magics = additional_magics
         return self.same_dir_open
+
+    def account_equity(self):
+        return self.equity
 
     def get_tick(self, symbol):
         return FakeTick(self.bid, self.ask)
@@ -452,6 +457,42 @@ def test_executor() -> bool:
                 d7.reject_reason)
     ok &= check("daily_block_reason short-circuits before the gateway is ever asked for "
                 "same-direction positions", fg7.last_additional_magics is None)
+
+    # --- equity-scaled lot sizing (position_size()) ---
+    cfg_fixed = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
+    ok &= check("use_risk_percent=False (the default) always returns fixed_lot",
+                executor.position_size(FakeGateway(equity=50000.0), cfg_fixed, spec, sl_dist=1.0)
+                == cfg_fixed.fixed_lot)
+
+    cfg_risk = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                             use_risk_percent=True, risk_percent=0.2, sl_dollars=6.0, fixed_lot=0.01)
+    # sl_dist for $6 at 0.01 lots, tick_value=1.0/tick_size=0.01 -> sl_dist = 6*0.01/(1.0*0.01) = 6.0
+    sl_dist = gw.price_distance_for_dollars(spec, cfg_risk.sl_dollars, cfg_risk.fixed_lot)
+    # loss_per_lot = sl_dist/tick_size*tick_value = 6.0/0.01*1.0 = 600; at equity=6000,
+    # target=6000*0.2%=12 -> exactly 0.02 lots (a clean step multiple, so flooring to
+    # volume_step doesn't obscure the equity->lot relationship being checked below).
+    lots_6k = executor.position_size(FakeGateway(equity=6000.0), cfg_risk, spec, sl_dist)
+    ok &= check("risk_percent sizes up from a small reference lot at a realistic equity",
+                abs(lots_6k - 0.02) < 1e-9, lots_6k)
+
+    lots_60k = executor.position_size(FakeGateway(equity=60000.0), cfg_risk, spec, sl_dist)
+    ok &= check("10x the equity produces 10x the lot (risk stays a constant pct of equity)",
+                abs(lots_60k - lots_6k * 10) < 1e-9, (lots_60k, lots_6k))
+
+    cfg_risk_capped = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                    use_risk_percent=True, risk_percent=5.0, max_lot_size=1.0)
+    lots_capped = executor.position_size(FakeGateway(equity=1000000.0), cfg_risk_capped, spec, sl_dist)
+    ok &= check("max_lot_size caps a risk-sized lot even at a huge equity",
+                lots_capped == 1.0, lots_capped)
+
+    lots_degenerate = executor.position_size(FakeGateway(equity=0.0), cfg_risk, spec, sl_dist)
+    ok &= check("zero/invalid equity falls back to fixed_lot rather than raising",
+                lots_degenerate == cfg_risk.fixed_lot, lots_degenerate)
+
+    fg8 = FakeGateway(same_dir_open=0, equity=6000.0)
+    executor.execute(fg8, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("execute() actually sends the risk-sized lot, not fixed_lot",
+                fg8.orders_sent and abs(fg8.orders_sent[0][1] - lots_6k) < 1e-9, fg8.orders_sent)
 
     return ok
 

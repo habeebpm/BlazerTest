@@ -52,6 +52,24 @@ class AdvisorConfig:
     fixed_lot: float = 0.01
     max_open_positions_per_direction: int = 5
 
+    # --- Equity-scaled lot sizing (opt-in; ports ../../python/mt5_client.py's
+    #     position_size()/TradeConfig.use_risk_percent pattern) - when
+    #     use_risk_percent is set, executor.execute() sizes each trade from
+    #     current equity instead of always using fixed_lot: the SAME price
+    #     distance sl_dollars/fixed_lot implies (see sl_dollars' own comment)
+    #     is held fixed, and the lot is solved for so that price distance
+    #     times that lot risks exactly risk_percent% of equity, then clamped
+    #     to [volume_min, volume_max, max_lot_size] and rounded down to the
+    #     broker's volume_step. ClaudeSMC_TradeManager.mq5 needs no change
+    #     either way - it already recomputes InpTp1Dollars/InpTrailDollars'
+    #     price distance from each position's own live volume (see its
+    #     DollarsToPrice()), so a bigger lot still locks/trails at the same
+    #     dollar amounts. Off by default: fixed_lot keeps its old meaning
+    #     (the ONLY lot ever traded) until this is turned on.
+    use_risk_percent: bool = False
+    risk_percent: float = 0.2       # 0.2% = a 1.0% max_daily_loss_pct / 5 - see config.py's daily-loss fields
+    max_lot_size: float = 5.0       # hard cap on a risk-sized lot, regardless of how large equity grows
+
     # --- Daily loss circuit breaker (mirrors ../../python/trader.py's
     #     Bot.roll_day()/entry_blocked() daily-loss pattern) - main.py's
     #     DayRoll tracks account equity from the first cycle of each UTC day

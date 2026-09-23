@@ -28,6 +28,9 @@
 InpEnableTelegramSignals=false
 InpEnableClaudeManagement=false
 InpFixedLot=0.01
+InpUseRiskPercent=false
+InpRiskPercent=0.2
+InpMaxLotSize=5.0
 InpMaxPositionsPerDirection=5
 InpSlDollars=6.0
 InpTp1Dollars=6.0

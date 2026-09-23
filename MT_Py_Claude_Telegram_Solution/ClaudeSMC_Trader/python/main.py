@@ -50,6 +50,9 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.fixed_lot = args.lots
     if args.max_positions is not None:
         cfg.max_open_positions_per_direction = args.max_positions
+    if args.risk_percent is not None:
+        cfg.risk_percent = args.risk_percent
+        cfg.use_risk_percent = args.risk_percent > 0
     if args.max_daily_loss is not None:
         cfg.max_daily_loss_pct = args.max_daily_loss
     if args.daily_target is not None:
@@ -183,6 +186,10 @@ def main(argv: list | None = None) -> int:
                              "this to the UnifiedTrader EA's InpTelegramMagicNumber if you want the two "
                              "sources to share one combined per-direction cap instead of 5 each; see "
                              "config.py's AdvisorConfig.shared_cap_magic_numbers")
+    parser.add_argument("--risk-percent", type=float, dest="risk_percent",
+                        help="size each trade from equity instead of a fixed lot, risking this pct "
+                             "of equity per trade (default: unset = always trade --lots); pass 0 to "
+                             "explicitly disable; see config.py's use_risk_percent")
     parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
                         help="stop new entries after the account is down this many pct on the "
                              "UTC day (default 0 = disabled) - existing positions are left alone, "
@@ -258,11 +265,13 @@ def main(argv: list | None = None) -> int:
 
     if args.check:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
-        log.info("Config: lot=%.2f max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
+        log.info("Config: lot=%s max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
                   "min_confluence=%d/3 require_full=%s max_daily_loss=%s daily_target=%s model=%s "
                   "dry_run=%s telegram_alerts=%s",
-                  cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
+                  f"risk {cfg.risk_percent:g}% of equity (max {cfg.max_lot_size:g})"
+                  if cfg.use_risk_percent else f"fixed {cfg.fixed_lot:g}",
+                  cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
                   cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
                   cfg.breakeven_atr_mult, cfg.breakeven_atr_period, cfg.decay_window_minutes,
                   cfg.min_confluence_count, cfg.require_full_conviction,
