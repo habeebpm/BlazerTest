@@ -564,6 +564,14 @@ def test_executor() -> bool:
     ok &= check("zero/invalid equity falls back to fixed_lot rather than raising",
                 lots_degenerate == cfg_risk.fixed_lot, lots_degenerate)
 
+    # A tiny account: the risk-sized lot would round to less than the
+    # broker's 0.01 minimum - clamped UP to volume_min (a warning is
+    # logged, but the return value is still the safe, placeable minimum,
+    # never zero and never an exception).
+    lots_tiny_account = executor.position_size(FakeGateway(equity=100.0), cfg_risk, spec, sl_dist)
+    ok &= check("a risk-sized lot below volume_min is clamped up to volume_min, not left at 0",
+                lots_tiny_account == spec.volume_min, lots_tiny_account)
+
     fg8 = FakeGateway(same_dir_open=0, equity=6000.0)
     executor.execute(fg8, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("execute() actually sends the risk-sized lot, not fixed_lot",
@@ -1032,6 +1040,19 @@ def test_backtest_no_lookahead_and_reset() -> bool:
     h4 = pd.DataFrame({"time": pd.date_range("2026-01-01", periods=10, freq="4h", tz="UTC"),
                        "open": range(10), "high": range(10), "low": range(10), "close": range(10)})
     gateway = backtest.HistoricalGateway("XAUUSD", {"M15": m15, "H4": h4}, _flat_spec())
+
+    ok &= check("account_equity() starts at starting_equity (default 10000) with no closed trades",
+                gateway.account_equity() == 10000.0, gateway.account_equity())
+    gateway.closed_trades.append(backtest.ClosedTrade(
+        entry_time=m15["time"].iloc[0], exit_time=m15["time"].iloc[1], direction="buy", lots=0.01,
+        entry_price=2350.0, exit_price=2355.0, sl=2344.0, tp=None, exit_reason="tp", pnl_dollars=5.0))
+    gateway.closed_trades.append(backtest.ClosedTrade(
+        entry_time=m15["time"].iloc[1], exit_time=m15["time"].iloc[2], direction="sell", lots=0.01,
+        entry_price=2355.0, exit_price=2358.0, sl=2361.0, tp=None, exit_reason="sl", pnl_dollars=-3.0))
+    ok &= check("account_equity() reflects starting_equity plus every realized closed-trade P&L "
+                "so far - needed so executor.position_size() (use_risk_percent) works against this "
+                "gateway instead of raising AttributeError",
+                gateway.account_equity() == 10002.0, gateway.account_equity())
 
     reset_ok = gateway.reset("M15", warmup_bars=3)
     ok &= check("reset() succeeds with enough history on every timeframe", reset_ok)

@@ -128,15 +128,20 @@ class HistoricalGateway:
     it, since live trading's equivalent is ClaudeSMC_TradeManager.mq5
     running inside MT5, not Python).
     """
-    def __init__(self, symbol: str, bars: dict, spec, spread_points: int = 25):
+    def __init__(self, symbol: str, bars: dict, spec, spread_points: int = 25,
+                 starting_equity: float = 10000.0):
         """bars: {"M15": df, "H4": df, "D1": df, "W1": df, ...} - each a
         DataFrame of time(tz-aware ascending)/open/high/low/close/volume,
-        every row a genuinely CLOSED historical bar.
+        every row a genuinely CLOSED historical bar. starting_equity backs
+        account_equity() below - only used if a config passed through here
+        sets use_risk_percent (see executor.position_size()); ignored
+        otherwise, same as the real gateway's own equity call.
         """
         self.symbol = symbol
         self.bars = {tf: df.sort_values("time").reset_index(drop=True) for tf, df in bars.items()}
         self.spec = spec
         self.spread_points = spread_points
+        self.starting_equity = starting_equity
         self.primary_timeframe = None
         self.cursor = 0
         self.open_positions: list = []
@@ -239,6 +244,18 @@ class HistoricalGateway:
         out = [{"direction": t.direction, "pnl_dollars": t.pnl_dollars} for t in self.closed_trades]
         out.reverse()  # closed_trades is oldest-first; recent_closed_trades() is newest-first
         return out[:count]
+
+    def account_equity(self) -> float:
+        """starting_equity plus every realized P&L so far - same no-lookahead
+        property as recent_closed_trades() above, since self.closed_trades
+        only ever contains trades that closed strictly before "now" in the
+        simulation. Needed so executor.position_size() (use_risk_percent)
+        works against this gateway instead of raising AttributeError - not
+        reachable via backtest.py's own CLI today, but this keeps the
+        interface complete for anyone building a risk-percent/ATR-SL config
+        through here directly.
+        """
+        return self.starting_equity + sum(t.pnl_dollars for t in self.closed_trades)
 
     def place_market_order(self, spec, direction: str, lots: float, sl_price: float, tp_price: float,
                             magic: int, comment: str, deviation_points: int, dry_run: bool):

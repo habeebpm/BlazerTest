@@ -150,6 +150,18 @@ def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> float:
     lots = (equity * cfg.risk_percent / 100.0) / loss_per_lot
     step = spec.volume_step or 0.01
     lots = (lots // step) * step
+    if lots < spec.volume_min:
+        # The broker's minimum lot is a hard floor - there is no smaller
+        # order to place - so this clamps UP rather than skipping the
+        # trade, but that silently risks more than risk_percent% of equity
+        # on a small account. Warn loudly rather than let that pass quietly.
+        actual_risk = spec.volume_min * loss_per_lot
+        log.warning("Risk-sized lot (%.4f) is below the broker minimum (%.2f) - using the minimum "
+                    "instead, which risks $%.2f (%.2f%% of equity) rather than the intended "
+                    "risk_percent=%.2f%% ($%.2f). Raise risk_percent or fund the account further "
+                    "to bring this back in line.",
+                    lots, spec.volume_min, actual_risk, actual_risk / equity * 100.0,
+                    cfg.risk_percent, equity * cfg.risk_percent / 100.0)
     lots = max(spec.volume_min, min(lots, spec.volume_max, cfg.max_lot_size))
     return round(lots, 2)
 

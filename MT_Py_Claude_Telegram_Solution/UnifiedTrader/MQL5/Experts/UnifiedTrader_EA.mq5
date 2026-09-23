@@ -926,6 +926,21 @@ double PositionSizeLots()
 
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   if(lots < minLot)
+   {
+      // The broker's minimum lot is a hard floor - there is no smaller
+      // order to place - so this clamps UP rather than skipping the
+      // trade, but that silently risks more than InpRiskPercent% of
+      // equity on a small account. Warn loudly rather than let that pass
+      // quietly (mirrors executor.position_size()'s own warning).
+      double actualRisk = minLot * lossPerLot;
+      PrintFormat("UnifiedTrader_EA: WARNING - risk-sized lot (%.4f) is below the broker minimum "
+                  "(%.2f) - using the minimum instead, which risks %.2f (%.2f%% of equity) rather "
+                  "than the intended InpRiskPercent=%.2f%% (%.2f). Raise InpRiskPercent or fund "
+                  "the account further to bring this back in line.",
+                  lots, minLot, actualRisk, actualRisk / equity * 100.0, InpRiskPercent,
+                  equity * InpRiskPercent / 100.0);
+   }
    lots = MathMax(minLot, MathMin(lots, MathMin(maxLot, InpMaxLotSize)));
    return(NormalizeDouble(lots, 2));
 }

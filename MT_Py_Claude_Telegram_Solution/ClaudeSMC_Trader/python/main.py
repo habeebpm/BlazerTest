@@ -201,28 +201,39 @@ def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
     day that just ended, plus a weekly digest too on the Sunday->Monday
     roll. Reuses mt5_gateway.recent_closed_trades() (see #69's own comment)
     rather than logs/trades.csv, so it reflects real broker fills whether
-    or not this process was running the whole time. Runs in a daemon
-    thread, same reasoning as the full-conviction alert just above -
-    a slow/unreachable Telegram API must never delay the next poll cycle.
-    """
-    def _send():
-        # count=500/2000 are generous ceilings, not real limits - a manual
-        # trading system won't produce anywhere near that many trades in a
-        # day or week; lookback_days pads a couple of days past the window
-        # being reported on purely to tolerate clock/timezone edge cases,
-        # the exact date filter below does the real work.
-        daily_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=500,
-                                                            lookback_days=2)
-                        if t["time"].date() == ended_date]
-        daily_msg = telegram_alert.format_performance_digest(cfg.symbol, "Daily", daily_trades)
-        telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, daily_msg)
+    or not this process was running the whole time.
 
-        if ended_date.weekday() == 6:  # Sunday just ended - the UTC week (Mon-Sun) just completed
-            week_start = ended_date - timedelta(days=6)
-            weekly_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=2000,
-                                                                 lookback_days=9)
-                            if week_start <= t["time"].date() <= ended_date]
-            weekly_msg = telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades)
+    The MT5 query itself runs INLINE, on the caller's thread (run_once()'s,
+    i.e. the main loop's) - the MetaTrader5 package's IPC connection to the
+    terminal is not safe for concurrent calls from multiple threads, and
+    the main loop is making its own MT5 calls (build_feature_snapshot(),
+    executor.execute()) in this same cycle, right after this returns.
+    Only the actual Telegram network send is threaded, same reasoning as
+    the full-conviction alert just above - a slow/unreachable Telegram API
+    must never delay the next poll cycle, but the local MT5 IPC call is
+    fast and must never race with the rest of this cycle's own MT5 calls.
+    """
+    # count=500/2000 are generous ceilings, not real limits - a manual
+    # trading system won't produce anywhere near that many trades in a day
+    # or week; lookback_days pads a couple of days past the window being
+    # reported on purely to tolerate clock/timezone edge cases, the exact
+    # date filter below does the real work.
+    daily_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=500,
+                                                        lookback_days=2)
+                    if t["time"].date() == ended_date]
+    daily_msg = telegram_alert.format_performance_digest(cfg.symbol, "Daily", daily_trades)
+
+    weekly_msg = None
+    if ended_date.weekday() == 6:  # Sunday just ended - the UTC week (Mon-Sun) just completed
+        week_start = ended_date - timedelta(days=6)
+        weekly_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=2000,
+                                                             lookback_days=9)
+                        if week_start <= t["time"].date() <= ended_date]
+        weekly_msg = telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades)
+
+    def _send():
+        telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, daily_msg)
+        if weekly_msg is not None:
             telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
                                       weekly_msg)
 
