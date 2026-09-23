@@ -91,11 +91,32 @@ def log_trade(cfg: AdvisorConfig, direction: str, lots: float, entry_price: floa
     _append_row(_csv_path(cfg, "trades.csv"), TRADE_FIELDS, row)
 
 
+def in_news_blackout(cfg: AdvisorConfig, now: datetime | None = None) -> str:
+    """Returns a description of the matching window if `now` (UTC, defaults
+    to the current time) falls inside one of cfg.news_blackout_windows, else
+    "". This solution has no economic-calendar data source of its own -
+    these windows are maintained by hand (see config.py's own comment) - a
+    malformed entry raises ValueError at gate() time rather than silently
+    never matching, so a typo'd date is noticed immediately rather than
+    quietly leaving a blackout window unenforced.
+    """
+    now = now or datetime.now(timezone.utc)
+    for start_iso, end_iso in cfg.news_blackout_windows:
+        start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        if start <= now <= end:
+            return f"inside news blackout window {start_iso} - {end_iso}"
+    return ""
+
+
 def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: int,
          daily_block_reason: str = "") -> str:
     """Returns "" if the verdict clears every gate, else the reason it didn't."""
     if daily_block_reason:
         return daily_block_reason
+    blackout = in_news_blackout(cfg)
+    if blackout:
+        return blackout
     if verdict.direction not in ("buy", "sell"):
         return "no actionable direction"
     if verdict.confluence_count < cfg.min_confluence_count:

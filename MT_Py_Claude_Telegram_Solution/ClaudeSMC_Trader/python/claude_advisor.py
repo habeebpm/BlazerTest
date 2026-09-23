@@ -118,6 +118,17 @@ levels where stops cluster and reversals often start - an entry priced right \
 through one of these, or a stop placed just beyond one where a lot of other \
 stops likely sit too, is worth a mention in your reasoning either way.
 
+`dxy` (US Dollar Index context, null if not configured for this account - \
+ignore it entirely when null) gives `vs_ema20` (above/below) and \
+`change_pct_last_10_bars` for the dollar index. XAUUSD is usually (not \
+always) inversely correlated with dollar strength: DXY below its EMA20 and/\
+or falling corroborates a gold BUY (and argues against a SELL); DXY above \
+its EMA20 and/or rising corroborates a SELL (and argues against a BUY). \
+Treat a contradiction (e.g. DXY rising hard while you're evaluating a gold \
+BUY) as a reason to lean toward "partial" rather than "full", not an \
+automatic veto - the correlation breaks down often enough (risk-off moves, \
+central bank divergence) that it's context, not a rule.
+
 `recent_performance` summarizes this system's own last several closed trades \
 (win/loss count, win rate, net P&L) - context only, never a mechanical gate: \
 it does not change what counts as a valid setup. Use it the way a disciplined \

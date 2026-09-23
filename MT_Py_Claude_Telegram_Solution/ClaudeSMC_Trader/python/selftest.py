@@ -33,7 +33,7 @@ Covers:
 from __future__ import annotations
 
 import csv
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -458,6 +458,29 @@ def test_executor() -> bool:
     ok &= check("daily_block_reason short-circuits before the gateway is ever asked for "
                 "same-direction positions", fg7.last_additional_magics is None)
 
+    # --- news/calendar blackout windows (in_news_blackout()) ---
+    cfg_blackout = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                 news_blackout_windows=[("2026-10-03T12:25:00Z", "2026-10-03T12:40:00Z")])
+    inside = executor.in_news_blackout(
+        cfg_blackout, now=datetime(2026, 10, 3, 12, 30, tzinfo=timezone.utc))
+    ok &= check("a time inside the configured window is reported as a blackout",
+                "news blackout" in inside and "2026-10-03T12:25:00Z" in inside, inside)
+    before = executor.in_news_blackout(
+        cfg_blackout, now=datetime(2026, 10, 3, 12, 24, 59, tzinfo=timezone.utc))
+    ok &= check("one second before the window starts is NOT a blackout", before == "", before)
+    after = executor.in_news_blackout(
+        cfg_blackout, now=datetime(2026, 10, 3, 12, 40, 1, tzinfo=timezone.utc))
+    ok &= check("one second after the window ends is NOT a blackout", after == "", after)
+    ok &= check("empty news_blackout_windows (the default) never blocks anything",
+                executor.in_news_blackout(AdvisorConfig()) == "")
+
+    cfg_blackout_now = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                     news_blackout_windows=[("2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z")])
+    fg9 = FakeGateway(same_dir_open=0)
+    d9 = executor.execute(fg9, cfg_blackout_now, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("gate() actually rejects a trade evaluated inside a currently-active blackout window",
+                not d9.executed and "news blackout" in d9.reject_reason, d9.reject_reason)
+
     # --- equity-scaled lot sizing (position_size()) ---
     cfg_fixed = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
     ok &= check("use_risk_percent=False (the default) always returns fixed_lot",
@@ -658,6 +681,8 @@ def test_full_snapshot_pipeline() -> bool:
                 snapshot["recent_performance"] == {"trade_count": 0,
                                                      "note": "no closed trades yet under this magic number"},
                 snapshot["recent_performance"])
+    ok &= check("dxy is null when dxy_symbol is unset (the default)",
+                snapshot["dxy"] is None, snapshot["dxy"])
 
     import json
     try:
@@ -672,6 +697,46 @@ def test_full_snapshot_pipeline() -> bool:
         print(f"    json.dumps failed: {exc}")
     ok &= check("the whole snapshot is natively JSON-serializable (no numpy leaks)",
                 serializes)
+
+    return ok
+
+
+class FakeDxyGateway:
+    """Only implements get_bars() - enough to test market_intel.dxy_context()
+    in isolation. raise_on_get_bars simulates the DXY symbol not being
+    available on this broker/account (wrong name, not in Market Watch).
+    """
+    def __init__(self, df=None, raise_on_get_bars=False):
+        self.df = df
+        self.raise_on_get_bars = raise_on_get_bars
+
+    def get_bars(self, symbol, timeframe_name, count):
+        if self.raise_on_get_bars:
+            raise RuntimeError(f"symbol_info({symbol}) returned None: unknown symbol")
+        return self.df.tail(count).reset_index(drop=True)
+
+
+def test_dxy_context() -> bool:
+    print("\n=== 8d. market_intel.dxy_context() ===")
+    ok = True
+
+    cfg_off = AdvisorConfig()
+    ok &= check("dxy_symbol unset (the default) returns None without ever calling the gateway",
+                market_intel.dxy_context(FakeDxyGateway(raise_on_get_bars=True), cfg_off) is None)
+
+    cfg_on = AdvisorConfig(dxy_symbol="USDX")
+    rising_df = make_trending_df(n=80, start=100.0, drift=0.05, noise=0.01, seed=11)
+    result = market_intel.dxy_context(FakeDxyGateway(rising_df), cfg_on)
+    ok &= check("a configured, available DXY symbol returns a populated context dict",
+                result is not None and result["symbol"] == "USDX" and result["vs_ema20"] == "above",
+                result)
+
+    ok &= check("an unavailable DXY symbol (gateway raises) is a safe no-op, not a crash",
+                market_intel.dxy_context(FakeDxyGateway(raise_on_get_bars=True), cfg_on) is None)
+
+    too_short_df = make_trending_df(n=10)
+    ok &= check("not enough history yet returns None rather than a garbage EMA",
+                market_intel.dxy_context(FakeDxyGateway(too_short_df), cfg_on) is None)
 
     return ok
 
@@ -1140,6 +1205,7 @@ def main() -> int:
         test_claude_error_classification(),
         test_full_snapshot_pipeline(),
         test_recent_performance_summary(),
+        test_dxy_context(),
         test_mt5_gateway_recent_closed_trades(),
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),

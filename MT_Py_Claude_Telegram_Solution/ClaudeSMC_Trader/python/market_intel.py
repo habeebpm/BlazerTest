@@ -38,11 +38,15 @@ limitations" section for why and how to extend this.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
 import mt5_gateway as gw
 from config import AdvisorConfig
+
+log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -356,6 +360,40 @@ def daily_weekly_levels(gateway, symbol: str) -> dict:
     }
 
 
+def dxy_context(gateway, cfg: AdvisorConfig, timeframe: str = "H1", bars: int = 60) -> dict | None:
+    """Optional US Dollar Index context (see config.py's dxy_symbol) - XAUUSD
+    is usually (not always) inversely correlated with dollar strength, so a
+    fresh DXY move price hasn't caught up with yet is useful corroborating/
+    contradicting context for Claude (see claude_advisor.SYSTEM_PROMPT),
+    never a hard gate. Returns None when dxy_symbol is blank (the default,
+    disables this section entirely) or when the symbol isn't available on
+    this broker/account (not in Market Watch, wrong name, not enough
+    history yet) - never raises, never blocks the rest of the snapshot.
+    """
+    if not cfg.dxy_symbol:
+        return None
+    try:
+        df = gateway.get_bars(cfg.dxy_symbol, timeframe, bars)
+        closed = df.iloc[:-1]
+        if len(closed) < 21:
+            return None
+        last_close = float(closed["close"].iloc[-1])
+        ema20 = float(ema(closed["close"], 20).iloc[-1])
+        ref_close = float(closed["close"].iloc[-11])
+        change_pct = (last_close - ref_close) / ref_close * 100.0 if ref_close else 0.0
+        return {
+            "symbol": cfg.dxy_symbol,
+            "timeframe": timeframe,
+            "last_close": round(last_close, 3),
+            "vs_ema20": "above" if last_close > ema20 else "below",
+            "change_pct_last_10_bars": round(change_pct, 3),
+        }
+    except Exception as exc:
+        log.warning("dxy_context: %r unavailable (%s) - continuing without DXY context.",
+                    cfg.dxy_symbol, exc)
+        return None
+
+
 def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> dict:
     """Win/loss context from this system's own last `count` closed trades -
     qualitative input for Claude's reasoning (see claude_advisor.SYSTEM_PROMPT),
@@ -485,6 +523,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
     fvgs = detect_fair_value_gaps(primary_closed, cfg.fvg_lookback_bars)
     levels = daily_weekly_levels(gateway, cfg.symbol)
     performance = recent_performance_summary(gateway, cfg)
+    dxy = dxy_context(gateway, cfg)
 
     recent_candles = primary_closed.tail(20)[["time", "open", "high", "low", "close", "volume"]].copy()
     recent_candles["time"] = recent_candles["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -514,6 +553,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
             "fair_value_gaps": fvgs,
         },
         "daily_weekly_levels": levels,
+        "dxy": dxy,
         "recent_performance": performance,
         "last_closed_candle": candle_features(primary_closed),
         "recent_candles": recent_candles.to_dict(orient="records"),

@@ -48,6 +48,29 @@ class AdvisorConfig:
     # --- Instrument ---
     symbol: str = "XAUUSD"
 
+    # --- DXY correlation context (optional; off by default) - XAUUSD is
+    #     usually (not always) inversely correlated with US dollar strength,
+    #     so a fresh DXY move that price hasn't caught up with yet is useful
+    #     corroborating/contradicting context for Claude - see market_intel.
+    #     dxy_context() and claude_advisor.SYSTEM_PROMPT. There is no fixed
+    #     broker symbol for the dollar index - set this to whatever your
+    #     broker calls it (e.g. "USDX", "DXY", "USDollar") by checking Market
+    #     Watch; leave blank (the default) to disable this section entirely.
+    #     Sourced from MT5 like everything else here, not a new dependency -
+    #     if the symbol isn't available, dxy_context() no-ops rather than
+    #     failing the whole snapshot.
+    dxy_symbol: str = ""
+
+    # --- News/calendar blackout windows (optional; off by default) - this
+    #     solution has no economic-calendar data source of its own, so these
+    #     are maintained by hand: a list of (start_iso, end_iso) UTC pairs,
+    #     e.g. [("2026-10-03T12:25:00Z", "2026-10-03T12:40:00Z")] to skip a
+    #     15-minute window around an NFP release. executor.gate() rejects
+    #     any new entry whose evaluation time falls inside one of these -
+    #     see executor.in_news_blackout(). Empty list (the default) never
+    #     blocks anything.
+    news_blackout_windows: list = field(default_factory=list)
+
     # --- Execution rules (requested, fixed) ---
     fixed_lot: float = 0.01
     max_open_positions_per_direction: int = 5
