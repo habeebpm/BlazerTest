@@ -374,7 +374,8 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
 
 1. Copy `UnifiedTrader/MQL5/Experts/UnifiedTrader_EA.mq5` into `Experts/`
    and `MQL5/Include/TelegramSMC_Common.mqh` (from System B) plus
-   `MQL5/Include/EconCalendar.mqh` into `Include/`. Compile.
+   `MQL5/Include/EconCalendar.mqh` and `MQL5/Include/XtrBarExport.mqh`
+   into `Include/`. Compile.
 2. Load `UnifiedTrader/MQL5/Presets/UnifiedTrader_EA_Default.set`. Both
    sources ship disabled - set `InpEnableTelegramSignals=true` and/or
    `InpEnableClaudeManagement=true`.

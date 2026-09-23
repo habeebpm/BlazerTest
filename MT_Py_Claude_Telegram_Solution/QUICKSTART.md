@@ -73,6 +73,7 @@ keys - it just proves the program works on your PC.
    - `UnifiedTrader/MQL5/Experts/UnifiedTrader_EA.mq5` -> `MQL5/Experts/`
    - `MQL5/Include/TelegramSMC_Common.mqh` -> `MQL5/Include/`
    - `MQL5/Include/EconCalendar.mqh` -> `MQL5/Include/`
+   - `MQL5/Include/XtrBarExport.mqh` -> `MQL5/Include/`
    - `UnifiedTrader/MQL5/Presets/UnifiedTrader_EA_Default.set` -> `MQL5/Presets/`
 2. **Tools -> Options -> Expert Advisors**: tick *Allow WebRequest* and add
    `https://api.telegram.org`.

@@ -17,3 +17,5 @@ InpSymbol=XAUUSD
 InpMagicNumber=20260918
 InpSourceLabel=Telegram_Sig
 InpUseCommonFolder=false
+InpMagicNumber2=0
+InpSourceLabel2=Claude_Sig

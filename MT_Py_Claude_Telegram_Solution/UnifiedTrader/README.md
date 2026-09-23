@@ -221,7 +221,10 @@ straight into a Drive folder instead (e.g. `G:\My Drive\MyMQChartDrive`),
 set `InpXtrExportCopyTo` to it and tick **Allow DLL imports** (Common tab):
 MQL5 can't write outside its sandbox, so each file is copied there with
 Windows' own `CopyFileW`/`MoveFileExW` (kernel32 only). Without DLL
-imports the copy is skipped with a warning; the local export still runs. For a
+imports the copy is skipped with a warning; the local export still runs. A copy that fails
+(G: not mounted yet after a reboot) is retried every minute. For a build
+with no DLL import at all (e.g. MQL5 Market), delete the
+`#define XTR_EXPORT_COPY_DLL` line in the EA; the local export still works. For a
 VPS without Drive for Desktop, use `xtr_export.py --upload-drive` instead
 and set `InpXtrExport=false`.
 

@@ -28,19 +28,29 @@
 //| own CopyFileW/MoveFileExW (kernel32.dll - nothing else). Needs     |
 //| "Allow DLL imports" ticked in the EA's Common tab; without it the  |
 //| copy is skipped with a warning (the local export still runs).      |
+//| Copying is tracked separately from the local write: a failed copy  |
+//| (G: not mounted yet at boot, DLLs off) is retried every minute and |
+//| never stops or re-churns the local files. Compiled in only when    |
+//| the EA defines XTR_EXPORT_COPY_DLL before including this file -    |
+//| remove that #define for a build with no DLL import at all (MQL5    |
+//| Market does not accept DLL imports).                               |
 //+------------------------------------------------------------------+
 #ifndef XTR_BAR_EXPORT_MQH
 #define XTR_BAR_EXPORT_MQH
 
+#ifdef XTR_EXPORT_COPY_DLL
 #import "kernel32.dll"
 int CopyFileW(string existingFile, string newFile, int failIfExists);
 int MoveFileExW(string existingFile, string newFile, int flags);
 int CreateDirectoryW(string pathName, long securityAttributes);
+int DeleteFileW(string fileName);
 #import
+#endif
 
 datetime g_xtrExpLastM1 = 0;          // last M1 bar handled
 datetime g_xtrExpLastBar[4];          // per timeframe: last closed bar written
 int      g_xtrExpRows[4];             // per timeframe: rows in the file last written
+datetime g_xtrExpCopiedBar[4];        // per timeframe: last bar copied to copyTo
 datetime g_xtrExpWarnAt = 0;          // throttles warnings to one per 30 min
 bool     g_xtrExpInit   = false;
 
@@ -89,6 +99,7 @@ void XtrExpReset()
    g_xtrExpWarnAt = 0;
    ArrayInitialize(g_xtrExpLastBar, 0);
    ArrayInitialize(g_xtrExpRows, 0);
+   ArrayInitialize(g_xtrExpCopiedBar, 0);
 }
 
 // "G:\\My Drive\\X\\" -> "G:\\My Drive\\X"
@@ -103,29 +114,40 @@ string XtrExpCleanDir(const string dir)
    return(d);
 }
 
-// Copies Common\Files\<folder>\<file> to <copyTo>\<file> (temp + replace).
-// true when copyTo is empty (nothing to do) or the copy succeeded.
-bool XtrExpMirror(const string copyTo, const string folder, const string file)
+// Copies Common\Files\<folder>\<file> to <dir>\<file> (temp + replace).
+bool XtrExpMirror(const string dir, const string folder, const string file)
 {
-   string dir = XtrExpCleanDir(copyTo);
-   if(StringLen(dir) == 0)
-      return(true);
+#ifdef XTR_EXPORT_COPY_DLL
    if(!MQLInfoInteger(MQL_DLLS_ALLOWED))
    {
       XtrExpWarn("copy to " + dir + " skipped - tick \"Allow DLL imports\" in the EA's Common tab "
-                 "(only kernel32 CopyFileW/MoveFileExW are used).");
+                 "(only kernel32 CopyFileW/MoveFileExW are used). Local files keep updating.");
       return(false);
    }
    string src = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files\\" + folder + "\\" + file;
    string dst = dir + "\\" + file;
    string tmp = dst + ".tmp";
-   if(CopyFileW(src, tmp, 0) != 0 && MoveFileExW(tmp, dst, 1 | 2) != 0)   // REPLACE_EXISTING | COPY_ALLOWED
-      return(true);
-   if(CopyFileW(src, dst, 0) != 0)       // some virtual drives refuse the rename - plain overwrite
-      return(true);
-   XtrExpWarn("could not copy " + file + " to " + dir + " - check the folder exists and Google Drive "
-              "for Desktop is running (G: mounted).");
+   for(int attempt = 0; attempt < 2; attempt++)
+   {
+      if(CopyFileW(src, tmp, 0) != 0)
+      {
+         if(MoveFileExW(tmp, dst, 1 | 2) != 0)          // REPLACE_EXISTING | COPY_ALLOWED
+            return(true);
+         DeleteFileW(tmp);                              // never leave a .tmp behind in Drive
+         if(CopyFileW(src, dst, 0) != 0)                // a drive that refuses the rename
+            return(true);
+      }
+      if(attempt == 0)
+         CreateDirectoryW(dir, 0);                      // folder missing (or G: just mounted) - once
+   }
+   XtrExpWarn("could not copy " + file + " to " + dir + " - check the exact folder path (Google "
+              "Drive's default is G:\\My Drive\\...) and that Google Drive for Desktop is running. "
+              "Retrying every minute; local files keep updating.");
    return(false);
+#else
+   XtrExpWarn("copy to " + dir + " needs the EA compiled with #define XTR_EXPORT_COPY_DLL.");
+   return(false);
+#endif
 }
 
 // Broker clock minus true UTC, rounded to 15 min; false when untrustworthy.
@@ -139,7 +161,7 @@ bool XtrExpBrokerOffset(long &offsetSec)
 
 // One timeframe -> <folder>\<name>_<TF>.csv. Returns rows written (0 = skipped/unchanged, -1 = error).
 int XtrExpWriteTf(const string symbol, const string folder, const string name, ENUM_TIMEFRAMES tf,
-                  int slot, int bars, int digits, long offsetSec, const string copyTo)
+                  int slot, int bars, int digits, long offsetSec)
 {
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
@@ -165,8 +187,6 @@ int XtrExpWriteTf(const string symbol, const string folder, const string name, E
       XtrExpWarn(StringFormat("could not write Common\\Files\\%s (error %d).", path, GetLastError()));
       return(-1);
    }
-   if(!XtrExpMirror(copyTo, folder, file))
-      return(-1);                                       // not marked written - retried next minute
    g_xtrExpLastBar[slot] = rates[n - 1].time;
    g_xtrExpRows[slot] = n;
    return(n);
@@ -188,9 +208,6 @@ void XtrExpMaybeExport(bool enabled, const string symbol, const string folder, c
       ArrayInitialize(g_xtrExpLastBar, 0);
       ArrayInitialize(g_xtrExpRows, 0);
       FolderCreate(folder, FILE_COMMON);
-      string dir = XtrExpCleanDir(copyTo);
-      if(StringLen(dir) > 0 && MQLInfoInteger(MQL_DLLS_ALLOWED))
-         CreateDirectoryW(dir, 0);                      // fails harmlessly when it already exists
       g_xtrExpInit = true;
    }
    long offsetSec;
@@ -210,7 +227,7 @@ void XtrExpMaybeExport(bool enabled, const string symbol, const string folder, c
    {
       if(k == 0 && !includeM1)
          continue;
-      int rows = XtrExpWriteTf(symbol, folder, name, tfs[k], k, bars, digits, offsetSec, copyTo);
+      int rows = XtrExpWriteTf(symbol, folder, name, tfs[k], k, bars, digits, offsetSec);
       if(rows < 0)
       {
          failed = true;                                 // retried on the next M1 bar
@@ -233,10 +250,26 @@ void XtrExpMaybeExport(bool enabled, const string symbol, const string folder, c
       "  \"exported_at_utc\": \"" + XtrExpUtcString(TimeGMT()) + "\",\r\n"
       "  \"exported_by\": \"UnifiedTrader_EA\"\r\n"
       "}\r\n";
-   if(!XtrExpWriteAtomic(folder + "\\" + name + "_manifest.json", manifest))
+   bool manifestOk = XtrExpWriteAtomic(folder + "\\" + name + "_manifest.json", manifest);
+   if(!manifestOk)
       XtrExpWarn(StringFormat("could not write the manifest (error %d).", GetLastError()));
-   else
-      XtrExpMirror(copyTo, folder, name + "_manifest.json");
+
+   // Copy step, independent of the local write: every CSV not yet copied
+   // at its current bar, then the manifest (heartbeat). Stops at the first
+   // failure (G: down) and retries all of it next minute.
+   string dir = XtrExpCleanDir(copyTo);
+   if(StringLen(dir) == 0)
+      return;
+   for(int k = 0; k < 4; k++)
+   {
+      if((k == 0 && !includeM1) || g_xtrExpLastBar[k] == 0 || g_xtrExpCopiedBar[k] == g_xtrExpLastBar[k])
+         continue;
+      if(!XtrExpMirror(dir, folder, name + "_" + XtrExpTfName(tfs[k]) + ".csv"))
+         return;
+      g_xtrExpCopiedBar[k] = g_xtrExpLastBar[k];
+   }
+   if(manifestOk)
+      XtrExpMirror(dir, folder, name + "_manifest.json");
 }
 
 #endif

@@ -223,6 +223,9 @@
 #include <Trade\Trade.mqh>
 #include <TelegramSMC_Common.mqh>
 #include <EconCalendar.mqh>
+// Copy of the Drive price files to any folder (InpXtrExportCopyTo) uses
+// kernel32 CopyFileW. Delete this line for a build with no DLL import.
+#define XTR_EXPORT_COPY_DLL
 #include <XtrBarExport.mqh>
 
 //================================= CONSTANTS ====================================
