@@ -1086,6 +1086,16 @@ def test_backtest_no_lookahead_and_reset() -> bool:
                 "gateway instead of raising AttributeError",
                 gateway.account_equity() == 10002.0, gateway.account_equity())
 
+    raised_wrong_symbol = None
+    try:
+        gateway.get_bars("EURUSD", "M15", 5)
+    except ValueError as exc:
+        raised_wrong_symbol = exc
+    ok &= check("get_bars() for a DIFFERENT symbol than this backtest loaded raises ValueError "
+                "instead of silently returning XAUUSD's own bars mislabeled as EURUSD's (the trap "
+                "market_intel.dxy_context() would otherwise fall into if pointed at a backtest run)",
+                raised_wrong_symbol is not None, raised_wrong_symbol)
+
     reset_ok = gateway.reset("M15", warmup_bars=3)
     ok &= check("reset() succeeds with enough history on every timeframe", reset_ok)
     ok &= check("reset() lands on the earliest bar where H4 (the binding constraint) has "
@@ -1442,9 +1452,20 @@ def test_day_roll_daily_limits() -> bool:
     ok &= check("roll() returns None on a same-day call",
                 day5.roll(10050.0) is None)
     day5.date = yesterday
-    rolled_ended_date = day5.roll(10100.0)
-    ok &= check("roll() returns the date that just ended on a genuine UTC day transition",
-                rolled_ended_date == yesterday, rolled_ended_date)
+    gap = day5.roll(10100.0)
+    ok &= check("roll() returns a (gap_start, gap_end) range on a genuine UTC day transition - "
+                "both ends are 'yesterday' for the ordinary, no-outage case",
+                gap == (yesterday, yesterday), gap)
+
+    today = main_mod.datetime.now(main_mod.timezone.utc).date()
+    long_ago = today - timedelta(days=6)
+    day6 = main_mod.DayRoll()
+    day6.date = long_ago
+    outage_gap = day6.roll(10000.0)
+    ok &= check("after a multi-day outage, roll() returns the FULL gap (from the last day it "
+                "was tracking through the day before today), not just a single stale date - "
+                "nothing in between is silently dropped",
+                outage_gap == (long_ago, today - timedelta(days=1)), outage_gap)
 
     return ok
 
@@ -1534,6 +1555,27 @@ def test_digest_lookback_days() -> bool:
                 "cover the day that ended while the process was down",
                 main_mod.digest_lookback_days(ended_five_days_ago, now=now) == 5,
                 main_mod.digest_lookback_days(ended_five_days_ago, now=now))
+
+    single_day = datetime(2026, 9, 22, tzinfo=timezone.utc).date()  # a Tuesday
+    ok &= check("sundays_in_range() finds nothing in a single non-Sunday day (the ordinary case)",
+                main_mod.sundays_in_range(single_day, single_day) == [])
+
+    gap_spanning_sunday = main_mod.sundays_in_range(
+        datetime(2026, 9, 18, tzinfo=timezone.utc).date(),   # Friday
+        datetime(2026, 9, 22, tzinfo=timezone.utc).date())   # Tuesday - spans Sun 9/20
+    ok &= check("sundays_in_range() finds the Sunday a multi-day outage gap crossed, so the week "
+                "that completed during the outage still gets a weekly digest",
+                gap_spanning_sunday == [datetime(2026, 9, 20, tzinfo=timezone.utc).date()],
+                gap_spanning_sunday)
+
+    gap_spanning_two_sundays = main_mod.sundays_in_range(
+        datetime(2026, 9, 18, tzinfo=timezone.utc).date(),   # Friday
+        datetime(2026, 9, 27, tzinfo=timezone.utc).date())   # the following Sunday
+    ok &= check("a gap spanning two Sundays returns both, oldest first, so an outage crossing "
+                "multiple week boundaries gets a digest for each",
+                gap_spanning_two_sundays == [datetime(2026, 9, 20, tzinfo=timezone.utc).date(),
+                                             datetime(2026, 9, 27, tzinfo=timezone.utc).date()],
+                gap_spanning_two_sundays)
 
     return ok
 

@@ -191,6 +191,16 @@ class HistoricalGateway:
 
     # --- market data (no-lookahead) ------------------------------------- #
     def get_bars(self, symbol: str, timeframe_name: str, count: int) -> pd.DataFrame:
+        if symbol != self.symbol:
+            # This gateway only ever holds ONE instrument's bars (self.bars,
+            # preloaded for self.symbol) - silently returning self.symbol's
+            # data for a different symbol (e.g. market_intel.dxy_context()
+            # asking for cfg.dxy_symbol) would look like real DXY history
+            # but actually just be XAUUSD's own price series mislabeled.
+            # Fail loudly instead: a backtest run genuinely can't answer for
+            # a second instrument without also being handed its bars.
+            raise ValueError(f"HistoricalGateway only has bars for {self.symbol!r}, not {symbol!r} "
+                              "- this backtest replay only ever loaded one instrument's history.")
         df = self.bars[timeframe_name]
         duration = TIMEFRAME_DURATIONS[timeframe_name]
         closed = df[df["time"] + duration <= self.current_time].tail(count - 1)

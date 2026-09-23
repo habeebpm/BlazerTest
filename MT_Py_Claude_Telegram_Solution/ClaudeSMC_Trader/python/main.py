@@ -116,20 +116,27 @@ class DayRoll:
         self.daily_target_hit = False
 
     def roll(self, equity: float):
-        """Returns the date that just ended if today is a genuinely new UTC
-        day (so callers can fire a once-per-day digest - see main.py's
-        send_performance_digests()), else None. Never returns a date on the
-        very first call (process just started - there's no "previous day"
-        to digest yet, only an anchor point)."""
+        """Returns the (gap_start, gap_end) INCLUSIVE UTC date range that
+        needs a digest if today is a genuinely new UTC day, else None -
+        see main.py's send_performance_digests(). Ordinarily gap_start ==
+        gap_end == yesterday, but if the poll loop was down across more
+        than one UTC midnight (self.date only advances while it's actually
+        running), gap_start is the last day it was tracking and gap_end is
+        the day before today, so a caller can still account for every day
+        in between rather than silently dropping all but one of them.
+        Never returns a range on the very first call (process just
+        started - there's no "previous day" to digest yet, only an anchor
+        point)."""
         today = datetime.now(timezone.utc).date()
         if today != self.date:
-            ended_date = self.date
+            gap_start = self.date
+            gap_end = today - timedelta(days=1)
             self.date = today
             self.trades_today = 0
             self.day_start_equity = equity
             self.daily_loss_hit = False
             self.daily_target_hit = False
-            return ended_date
+            return (gap_start, gap_end)
         if self.day_start_equity <= 0:
             # First cycle ever (process just started mid-day) - anchor here
             # rather than waiting for the next UTC midnight.
@@ -196,23 +203,37 @@ class Heartbeat:
         self.stale_alert_sent = True
 
 
-def digest_lookback_days(ended_date, now=None) -> int:
+def digest_lookback_days(gap_start, now=None) -> int:
     """How many days of MT5 deal history send_performance_digests() needs
-    to fetch to be sure it reaches back to ended_date, even after a
+    to fetch to be sure it reaches back to gap_start, even after a
     multi-day process outage (DayRoll.date only advances while the poll
     loop is actually running, so a restart after several days down can
-    hand roll() an ended_date well in the past).
+    hand roll() a gap_start well in the past).
     """
     now = now or datetime.now(timezone.utc)
-    return max(0, (now.date() - ended_date).days)
+    return max(0, (now.date() - gap_start).days)
 
 
-def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
-    """Fires once per UTC day roll (see DayRoll.roll()) with a digest of the
-    day that just ended, plus a weekly digest too on the Sunday->Monday
-    roll. Reuses mt5_gateway.recent_closed_trades() (see #69's own comment)
-    rather than logs/trades.csv, so it reflects real broker fills whether
-    or not this process was running the whole time.
+def sundays_in_range(gap_start, gap_end) -> list:
+    """Every UTC Sunday in the inclusive [gap_start, gap_end] range -
+    send_performance_digests() sends one weekly digest per Sunday found
+    here, so a UTC week boundary crossed entirely during a multi-day
+    outage still gets its own digest rather than being silently skipped.
+    """
+    return [gap_start + timedelta(days=i) for i in range((gap_end - gap_start).days + 1)
+            if (gap_start + timedelta(days=i)).weekday() == 6]
+
+
+def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end) -> None:
+    """Fires once per UTC day roll (see DayRoll.roll()) with a digest of
+    every day in the inclusive [gap_start, gap_end] range - ordinarily a
+    single day (yesterday), but after a multi-day process outage this can
+    span several days, and every UTC Sunday found in that range gets its
+    own weekly digest too, so nothing between the last successful cycle
+    and recovery is silently dropped. Reuses mt5_gateway.
+    recent_closed_trades() (see #69's own comment) rather than
+    logs/trades.csv, so it reflects real broker fills whether or not this
+    process was running the whole time.
 
     The MT5 query itself runs INLINE, on the caller's thread (run_once()'s,
     i.e. the main loop's) - the MetaTrader5 package's IPC connection to the
@@ -224,44 +245,42 @@ def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
     must never delay the next poll cycle, but the local MT5 IPC call is
     fast and must never race with the rest of this cycle's own MT5 calls.
     """
-    # count=500/2000 are generous ceilings, not real limits - a manual
-    # trading system won't produce anywhere near that many trades in a day
-    # or week; lookback_days needs to reach back far enough to cover
-    # ended_date even after a multi-day process outage (DayRoll.date only
-    # advances while this loop is actually running, so a restart after
-    # several days down can hand roll() an ended_date well in the past -
-    # exactly the scenario the heartbeat/stale-cycle alert exists to catch)
-    # - the exact date filter below does the real work either way, this
-    # just has to fetch far ENOUGH history to include what it's filtering.
-    days_since_ended = digest_lookback_days(ended_date)
-    daily_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=500,
-                                                        lookback_days=days_since_ended + 2)
-                    if t["time"].date() == ended_date]
-    daily_msg = telegram_alert.format_performance_digest(cfg.symbol, "Daily", daily_trades)
+    # count=500*however many days are 5000 are generous ceilings, not real
+    # limits - a manual trading system won't produce anywhere near that
+    # many trades; lookback_days needs to reach back far enough to cover
+    # gap_start even after a multi-day process outage (exactly the
+    # scenario the heartbeat/stale-cycle alert exists to catch) - the
+    # exact date-range filters below do the real work either way, this
+    # just has to fetch far ENOUGH history to include what they filter.
+    lookback_days = digest_lookback_days(gap_start) + 2
+    gap_days = (gap_end - gap_start).days + 1
+    all_trades = gw.recent_closed_trades(cfg.symbol, cfg.magic, count=max(500, 500 * gap_days),
+                                         lookback_days=lookback_days)
 
-    weekly_msg = None
-    if ended_date.weekday() == 6:  # Sunday just ended - the UTC week (Mon-Sun) just completed
-        week_start = ended_date - timedelta(days=6)
-        weekly_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=2000,
-                                                             lookback_days=days_since_ended + 9)
-                        if week_start <= t["time"].date() <= ended_date]
-        weekly_msg = telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades)
+    gap_trades = [t for t in all_trades if gap_start <= t["time"].date() <= gap_end]
+    period_label = "Daily" if gap_start == gap_end else f"{gap_start} to {gap_end}"
+    daily_msg = telegram_alert.format_performance_digest(cfg.symbol, period_label, gap_trades)
+
+    weekly_msgs = []
+    for week_end in sundays_in_range(gap_start, gap_end):
+        week_start = week_end - timedelta(days=6)
+        weekly_trades = [t for t in all_trades if week_start <= t["time"].date() <= week_end]
+        weekly_msgs.append(telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades))
 
     def _send():
         telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, daily_msg)
-        if weekly_msg is not None:
-            telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
-                                      weekly_msg)
+        for msg in weekly_msgs:
+            telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, msg)
 
     threading.Thread(target=_send, daemon=True).start()
 
 
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     equity = gw.account_equity()
-    ended_date = day.roll(equity)
-    if ended_date is not None and cfg.send_performance_digest and cfg.telegram_alert_bot_token \
+    gap = day.roll(equity)
+    if gap is not None and cfg.send_performance_digest and cfg.telegram_alert_bot_token \
             and cfg.telegram_alert_chat_id:
-        send_performance_digests(cfg, ended_date)
+        send_performance_digests(cfg, gap[0], gap[1])
     day.check_daily_limits(cfg, equity)
     features = market_intel.build_feature_snapshot(gw, cfg)
     verdict = claude_advisor.get_verdict(client, cfg, features)
