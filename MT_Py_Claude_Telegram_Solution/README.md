@@ -1,5 +1,11 @@
 # XAUUSD Confluence EA (MQL5)
 
+> **One folder, one launcher:** everything runs from this folder with
+> `solution.py` or the double-click `setup.bat` / `keys.bat` / `check.bat` /
+> `start.bat` / `relay_login.bat` - it installs the Python packages, copies
+> and compiles the EAs in MT5, saves your keys and starts the program.
+> [`INSTALL.md`](INSTALL.md) uses only that.
+
 > **Installing the recommended setup (Telegram + Claude)?** Follow
 > [`INSTALL.md`](INSTALL.md) (steps only) or [`QUICKSTART.md`](QUICKSTART.md)
 > (same steps, explained).

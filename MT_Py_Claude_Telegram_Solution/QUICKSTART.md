@@ -1,5 +1,11 @@
 # Quick Start - the simple way
 
+> **One folder, one launcher:** everything runs from this folder with
+> `solution.py` or the double-click `setup.bat` / `keys.bat` / `check.bat` /
+> `start.bat` / `relay_login.bat` - it installs the Python packages, copies
+> and compiles the EAs in MT5, saves your keys and starts the program.
+> [`INSTALL.md`](INSTALL.md) uses only that.
+
 > Steps only, no explanations: [`INSTALL.md`](INSTALL.md).
 
 This gets you from nothing to a running setup using the **recommended
