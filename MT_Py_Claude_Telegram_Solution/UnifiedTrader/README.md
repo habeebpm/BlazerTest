@@ -98,9 +98,9 @@ wins for its own new entries while the higher one keeps opening past it.
 `shared_cap_magic_numbers` is set, but can't verify the MQL5-side value
 for you - check it by hand.
 
-## Remote control (optional): PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab
+## Remote control (optional): PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab / Why
 
-Four plain-text commands, DM'd to this bot from your own Telegram account
+Five plain-text commands, DM'd to this bot from your own Telegram account
 (`InpControlChatId`) - a completely separate command path from trading
 signals, matched by **exact** text (trimmed, case-insensitive), never
 substring, since these close real positions. Also subject to
@@ -123,11 +123,13 @@ Telegram client (including ones where reply keyboards render oddly).
 | `ResumeHab` | Re-enables new Telegram entries. Reopens nothing. |
 | `PauseTelHab` | Closes this symbol's Telegram-sourced positions/orders only and blocks new Telegram entries until `ResumeHab`. Claude-sourced positions untouched. |
 | `PauseClaudeHab` | Closes this symbol's Claude-sourced (`InpClaudeMagicNumber`) positions only. |
+| `Why` | Echoes the latest Claude verdict's reasoning, read from the shared `Common\Files` text file `python/main.py` writes it to after every evaluation cycle (`InpLastVerdictFilename` - MUST match `config.py`'s `last_verdict_filename`, both default `claudesmc_last_verdict.txt`). Read-only - never touches a position or the pause state. Reports "No Claude verdict on file yet" if `main.py` hasn't run a cycle, or the filenames don't match. |
 
 **Scope: this chart's symbol only**, like every other position-management
 function in this file (`CloseAllMine`/`CancelAllPendingMine`/
 `ManageAllPositions`) - a position opened by hand on a different symbol is
-untouched by any of these four commands.
+untouched by any of the four position-affecting commands (`Why` doesn't
+touch positions at all).
 
 **Run only one instance of this EA per terminal, on any symbol.** This was
 already true before remote control existed - the Telegram update-id
@@ -167,6 +169,31 @@ dormant (never enforced) rather than silently blocking every Telegram
 entry forever with no `ResumeHab` reachable to clear it - setting
 `InpControlChatId` back to a real chat restores whatever pause was last
 actually set, unchanged.
+
+## Optional risk features (Telegram-sourced entries only)
+
+Off by default - neither changes existing behavior until set:
+
+- **Daily loss circuit breaker** (`InpMaxDailyLossPct`, default `0.0` =
+  disabled): withholds new Telegram-sourced entries once the account is
+  down this many percent on the UTC day, latched until the next day.
+  Existing open positions are never touched. Mirrors `ClaudeSMC_Trader`'s
+  own `max_daily_loss_pct` (Python side).
+- **Equity-scaled lot sizing** (`InpUseRiskPercent`, `InpRiskPercent`,
+  `InpMaxLotSize`): sizes each Telegram-sourced trade from current equity
+  instead of always `InpFixedLot`, holding risk a constant fraction of the
+  account. The reference price distance (`InpSlDollars` at `InpFixedLot`)
+  stays fixed either way - only the traded volume changes - so
+  `InpTp1Dollars`/`InpTrailDollars` keep meaning exactly what they say
+  regardless of lot size. If the risk-sized lot would round below the
+  broker's minimum, it's clamped up to that minimum with a logged warning
+  (there's no smaller order to place) rather than silently over-risking a
+  small account with no signal that it happened. When `InpMaxDailyLossPct`
+  is also set, `OnInit()` logs a startup risk audit: the actual lot size,
+  money risked, and how many losing trades the daily cap absorbs at that
+  size - warning if it's fewer than 3 (the breaker would then double as
+  the strategy, halting on ordinary variance rather than a genuinely bad
+  day).
 
 ## Setup
 

@@ -333,6 +333,28 @@ whether a trade executes. This alert is not simulated in `backtest.py`
 (`run_backtest()` never calls it), so a historical replay never spams your
 chat even if these two fields are set.
 
+### 4. Further optional enhancements
+
+Everything below is off by default (or takes effect only once the Telegram
+alert credentials from step 3 above are set) - none of it changes existing
+behavior until you opt in. Every field lives in `config.py`'s `AdvisorConfig`
+with its own comment there; most have a matching `main.py` CLI flag too (see
+`python main.py --help`).
+
+| Feature | Config field(s) | What it does |
+|---|---|---|
+| Daily loss circuit breaker | `max_daily_loss_pct`, `use_daily_target`, `daily_target_pct` | `main.py`'s `DayRoll` tracks equity from the first cycle of each UTC day and withholds **new** entries (never touches open positions) once the day is down `max_daily_loss_pct`, or up `daily_target_pct` if `use_daily_target` is set. Mirrors `../../python/trader.py`'s own daily-loss pattern. |
+| Recent-performance feedback | (always on) | `market_intel.recent_performance_summary()` feeds Claude a win/loss/net-P&L summary of this system's own last 10 closed trades (from MT5's real deal history, not just `trades.csv`) as context - it can narrow conviction toward "partial" on a cold streak, but never raises or lowers the bar mechanically. |
+| Equity-scaled lot sizing | `use_risk_percent`, `risk_percent`, `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `ClaudeSMC_TradeManager.mq5` needs no change either way - it already recomputes its dollar-based lock/trail distances from each position's real volume. |
+| DXY correlation context | `dxy_symbol` | Optional US Dollar Index read (no fixed broker symbol - set this to whatever your broker calls it) fed to Claude as corroborating/contradicting context for gold's usual inverse correlation with the dollar. Gracefully no-ops if the symbol isn't available. |
+| News/calendar blackout windows | `news_blackout_windows` | A hand-maintained list of UTC `(start, end)` pairs (no economic-calendar data source is wired up) - `executor.gate()` rejects any new entry whose evaluation falls inside one, checked before every other gate. |
+| ATR-adaptive initial stop-loss | `sl_mode`, `sl_atr_mult`, `sl_atr_period`, `sl_atr_timeframe`, `sl_dollars_min/max` | `sl_mode="atr"` derives the entry stop from recent ATR instead of the fixed `sl_dollars`, clamped to `[sl_dollars_min, sl_dollars_max]`. Entry SL only - `tp1_dollars`/`trail_dollars` stay fixed either way, since the MQL5 trade manager only ever reads those two INPUT values. |
+| Cross-system consensus context | `consensus_magic_numbers` | Read-only buy/sell position count from another trading system on this account (e.g. `UnifiedTrader_EA.mq5`'s Telegram side) fed to Claude - purely informational, `executor.gate()` never touches it. |
+| Daily/weekly performance digest | `send_performance_digest` (on by default once alert creds are set) | A Telegram message on every UTC day roll (and, on the Sunday->Monday roll, a weekly one too) summarizing that period's closed trades - win rate, net P&L. |
+| "Why" button | `last_verdict_filename` | Writes every evaluation cycle's Claude verdict (any conviction level) to MT5's shared `Common\Files` folder, so `UnifiedTrader_EA.mq5`'s new **Why** Telegram button (alongside PauseHab/ResumeHab/PauseTelHab/PauseClaudeHab) can echo the latest reasoning on demand. `InpLastVerdictFilename` on the EA side MUST match this filename. |
+| Conviction calibration report | `python calibration_report.py` (standalone script) | Offline report joining `logs/decisions.csv` against `logs/trades.csv` and MT5's real closed-trade P&L, bucketed by conviction/confluence_count. Honestly scoped: with `require_full_conviction=True` (the default), only `conviction="full"` trades ever have outcome data - "partial"/"none" calls only show up in the frequency count. |
+| Heartbeat / stale-cycle alert | `heartbeat_interval_hours` (off by default), `stale_cycle_alert_minutes` (on by default at 60 once alert creds are set) | A periodic "still alive" Telegram ping, and a one-time warning if too long passes without a successful evaluation cycle (the poll loop may be stuck on a repeating error, e.g. a dropped MT5 connection) - independent of trading activity. |
+
 ## Running with only one side available
 
 This solution and the Telegram copier stack (`../python/`, `../MQL5/`) share
