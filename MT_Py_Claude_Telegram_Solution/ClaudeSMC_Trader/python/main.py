@@ -769,8 +769,7 @@ def main(argv: list | None = None) -> int:
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off",
                   f"after {cfg.stale_cycle_alert_minutes:g}min" if (cfg.stale_cycle_alert_minutes > 0
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
-        log.info("XTR alignment gate: %s (ranging, not full conviction -> size x%g)",
-                 cfg.xtr_gate, cfg.xtr_ranging_risk_mult)
+        log.info("XTR alignment gate: %s (entry filter only - lot, SL and TP unchanged)", cfg.xtr_gate)
         log.info("Breaking-news check before each entry: %s",
                  "off" if not cfg.breaking_news_check else
                  f"{len(cfg.news_feeds)} free RSS feed(s)"

@@ -3053,8 +3053,7 @@ def test_xtr_logic() -> bool:
     d = X.evaluate("sell", _assess(m15="bearish", h1="bearish", m5=_tf("bearish", rsi=42, hist=-0.2, hist_prev=-0.1),
                                    recent=["bearish"] * 6), cfg)
     ok &= check("a SELL with M15 and H1 both bearish is full conviction trend continuation, allowed at full size",
-                d.conviction == X.FULL and d.setup_type == X.TREND_CONTINUATION and not d.block_reason
-                and d.risk_multiplier == 1.0, d)
+                d.conviction == X.FULL and d.setup_type == X.TREND_CONTINUATION and not d.block_reason, d)
 
     chase_decel = _assess(m5=_tf(rsi=68, hist=0.3, hist_prev=0.5))
     chase_accel = _assess(m5=_tf(rsi=68, hist=0.5, hist_prev=0.3))
@@ -3074,9 +3073,9 @@ def test_xtr_logic() -> bool:
                      m15="mixed", h1="bullish", recent=["bearish"] * 6)
     d = X.evaluate("buy", bounce, cfg)
     ok &= check("5a: RSI < 30 at the lower band in a ranging market is an RSI-extreme bounce (not a 'failed bounce'), "
-                "flagged 6c, sized down (ranging + reduced)",
+                "flagged 6c, allowed",
                 d.setup_type == X.RSI_EXTREME_BOUNCE and not d.block_reason and "RSI 27" in d.caution
-                and d.risk_multiplier == cfg.xtr_ranging_risk_mult and d.regime == X.RANGING, d)
+                and d.regime == X.RANGING, d)
 
     strict = AdvisorConfig(xtr_gate="require_alignment")
     no_trigger = _assess(m5=_tf("mixed", rsi=52, hist=-0.1, hist_prev=-0.2), recent=["mixed"] * 6)
@@ -3180,14 +3179,16 @@ def test_xtr_logic() -> bool:
     d = executor.execute(fg_block, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=blocked)
     ok &= check("executor: an XTR block rejects the entry with its reason and sends no order",
                 not d.executed and fg_block.orders_sent == [] and d.reject_reason.startswith("XTR:"), d.reject_reason)
-    fg_full, fg_half = FakeGateway(), FakeGateway()
     full = X.evaluate("buy", _assess(), cfg_risk)
-    half = X.evaluate("buy", _assess(m5=_tf(adx=18), m15="mixed"), cfg_risk)
-    executor.execute(fg_full, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=full)
-    executor.execute(fg_half, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=half)
-    lots_full, lots_half = fg_full.orders_sent[0][1], fg_half.orders_sent[0][1]
-    ok &= check("sec. 7: ranging + reduced conviction halves the risk-sized lot; trending full keeps it",
-                half.risk_multiplier == 0.5 and abs(lots_half - lots_full / 2) <= 0.011, (lots_full, lots_half))
+    fg_plain, fg_trend, fg_range = FakeGateway(), FakeGateway(), FakeGateway()
+    ranging_reduced = X.evaluate("buy", _assess(m5=_tf(adx=18), m15="mixed"), cfg_risk)
+    executor.execute(fg_plain, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    executor.execute(fg_trend, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=full)
+    executor.execute(fg_range, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=ranging_reduced)
+    ok &= check("XTR never changes lot size, SL or TP: the same order with no XTR, full conviction, or "
+                "ranging + reduced conviction",
+                fg_plain.orders_sent == fg_trend.orders_sent == fg_range.orders_sent
+                and len(fg_plain.orders_sent) == 1, (fg_plain.orders_sent, fg_range.orders_sent))
 
     msg = telegram_alert.format_full_conviction_message("XAUUSD", make_verdict(), True, xtr_note=full.summary())
     ok &= check("the Telegram alert carries the XTR reading",

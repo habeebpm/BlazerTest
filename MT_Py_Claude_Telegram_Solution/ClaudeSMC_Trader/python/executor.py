@@ -221,7 +221,7 @@ def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: 
     return ""
 
 
-def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float, risk_mult: float = 1.0) -> float:
+def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> float:
     """cfg.fixed_lot, or a size derived from current equity when
     use_risk_percent is set - see config.py's own comment on those fields.
     Falls back to fixed_lot on any degenerate input (no equity, no tick
@@ -233,7 +233,7 @@ def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float, risk_mult: 
     if equity <= 0 or spec.tick_size <= 0 or spec.tick_value <= 0 or sl_dist <= 0:
         return cfg.fixed_lot
     loss_per_lot = (sl_dist / spec.tick_size) * spec.tick_value
-    lots = (equity * cfg.risk_percent * risk_mult / 100.0) / loss_per_lot
+    lots = (equity * cfg.risk_percent / 100.0) / loss_per_lot
     step = spec.volume_step or 0.01
     # A plain `lots // step` silently under-sizes by a whole step whenever
     # floating-point imprecision leaves the true ratio a hair under an
@@ -334,7 +334,7 @@ def _reject(cfg: AdvisorConfig, verdict: ConfluenceVerdict, reason: str,
     return Decision(executed=False, reject_reason=reason, plan=plan, news_note=news_note)
 
 
-def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str, risk_mult: float = 1.0) -> TradePlan:
+def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str) -> TradePlan:
     """Entry/SL/TP1/trail/lots for a market entry in `direction` at the
     current tick. Raises ValueError on an unrecognized sl_mode/exit_style."""
     tick = gateway.get_tick(cfg.symbol)
@@ -351,7 +351,7 @@ def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str, risk_mult: flo
         sl_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.reference_lot)
     else:
         raise ValueError(f"Unrecognized sl_mode {cfg.sl_mode!r} - must be 'fixed' or 'atr'.")
-    lots = position_size(gateway, cfg, spec, sl_dist, risk_mult)
+    lots = position_size(gateway, cfg, spec, sl_dist)
     tp1_dist = gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.reference_lot)
     trail_dist = gateway.price_distance_for_dollars(spec, cfg.trail_dollars, cfg.reference_lot)
 
@@ -396,18 +396,15 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     check (news_check.py); backtests pass nothing (no historical news).
 
     xtr (an xtr_logic.XtrDecision for this verdict's direction, or None)
-    applies the XTR alignment gate: its block_reason rejects the entry and
-    its risk_multiplier scales the lot."""
+    applies the XTR alignment gate: its block_reason rejects the entry. It
+    never changes the lot, SL or TP - only whether the entry is allowed."""
     reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
     if reason:
         return _reject(cfg, verdict, reason)
-    risk_mult = 1.0
-    if xtr is not None:
-        if xtr.block_reason:
-            return _reject(cfg, verdict, xtr.block_reason)
-        risk_mult = xtr.risk_multiplier
+    if xtr is not None and xtr.block_reason:
+        return _reject(cfg, verdict, xtr.block_reason)
 
-    plan = build_plan(gateway, cfg, spec, verdict.direction, risk_mult)
+    plan = build_plan(gateway, cfg, spec, verdict.direction)
     if spec.tick_size > 0:
         budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, plan.risk_money)
         if budget_reason:
@@ -423,7 +420,7 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
         # That check can take tens of seconds (web search): re-price the
         # entry, SL and lot from a fresh tick and re-check the budget, so
         # the stop is still sl_dollars from the price actually filled.
-        plan = build_plan(gateway, cfg, spec, verdict.direction, risk_mult)
+        plan = build_plan(gateway, cfg, spec, verdict.direction)
         if spec.tick_size > 0:
             budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity,
                                                      plan.risk_money)

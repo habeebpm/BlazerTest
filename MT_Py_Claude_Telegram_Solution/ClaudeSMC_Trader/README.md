@@ -427,13 +427,17 @@ M15 and H1 bars:
 | Extended chase (M5 RSI > 65 / < 35 or outside the Bollinger band) | Only while the M5 MACD histogram is still accelerating |
 | Bounce-failure reversal (M5 bounced against the trend in the last 6 bars and turned back) | Only once the M5 histogram has already crossed zero |
 | RSI-extreme bounce (RSI < 30 at the lower band / > 70 at the upper band, ADX < 25) | Recognised as its own setup type; RSI beyond 30/70 is flagged, never blocked |
-| Ranging (M5 ADX < 25) and not full conviction (both HTFs agreeing) | Risk-sized lot x `xtr_ranging_risk_mult` (0.5) |
+| Regime (M5 ADX >= 25 trending, else ranging) | Reported in the log, alert and Claude's context only |
 | 2 losses in a row on the same setup type within 1 M5 ATR | That setup stands down until an M5 close beyond the range with ADX >= 30, or an HTF turning clearly in favor (state in `logs/xtr_state.json`, learnt from real MT5 results by ticket) |
 
 Claude also sees the reading (`xtr` in the snapshot: each timeframe's
 class, the M5 trigger, regime and a conviction/setup preview for both
 directions), and the Telegram alert shows it (`XTR: FULL conviction, trend
 continuation, trending`).
+
+The gate only decides **whether** an entry is allowed - it never changes
+the lot size, stop-loss, TP1 lock or trail (2% risk, $6 / $6 / $3 at the
+reference lot stay exactly as configured).
 
 `--xtr-gate require_alignment` applies the spec's complete decision flow
 (the M5 trigger must fire in Claude's direction and at least one HTF must
@@ -442,7 +446,8 @@ M5/M15/H1 bars can't be read the gate is skipped and logged, never halting
 trading. `UnifiedTrader_EA.mq5` applies the same "never against a clear
 M15/H1" rule to Telegram signals (`InpXtrHtfFilter`, on by default).
 
-Not taken from the spec, on purpose: its entry/SL/TP maths (the fixed $6
+Not taken from the spec, on purpose: its smaller size in ranging markets,
+its entry/SL/TP maths (the fixed $6
 stop and $6 TP1 lock is already 1.0R, the spec's own recommended target),
 its breakeven at 0.5 x M5 ATR plus 15-minute window (already available as
 `exit_style="breakeven_r_decay"` / `InpExitStyle`), and its per-pip lot

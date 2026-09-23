@@ -108,11 +108,10 @@ class AdvisorConfig:
     #         direction and at least one agreeing HTF (the spec's full flow -
     #         far fewer trades);
     #       "off": context for Claude only.
-    #     Ranging (ADX14 M5 < 25) and not FULL conviction -> risk_percent x
-    #     xtr_ranging_risk_mult. Needs M5, M15 and H1 bars; if they can't be
-    #     read the gate is skipped (logged) rather than halting trading.
+    #     It never changes lot size, SL or TP - only whether an entry is
+    #     allowed. Needs M5, M15 and H1 bars; if they can't be read the gate
+    #     is skipped (logged) rather than halting trading.
     xtr_gate: str = "block_opposed"
-    xtr_ranging_risk_mult: float = 0.5
     xtr_bars: int = 200
 
     # --- Breaking-news check (on by default) - see news_check.py. Right

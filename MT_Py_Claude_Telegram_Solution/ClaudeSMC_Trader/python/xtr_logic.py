@@ -20,8 +20,8 @@ What is used from the XTR specification, and how:
         lower band for a buy, > 70 at the upper band for a sell) (5a).
       TREND_CONTINUATION - everything else.
     RSI beyond 30/70 at entry is flagged, never blocked (6c).
-  - Regime (sec. 7): ADX14(M5) >= 25 trending, else ranging. Ranging and not
-    FULL conviction -> the trade is sized down, never blocked.
+  - Regime (sec. 7): ADX14(M5) >= 25 trending, else ranging - reported
+    only (log, alert, Claude's context); it never changes the lot.
   - Two-loss range stand-down (sec. 8): XtrStanddown below.
 
 Deliberately NOT taken from the spec (the solution already has an
@@ -30,9 +30,9 @@ equivalent, or the rule conflicts with the fixed trading rules):
     - i.e. TP1 = 1.0R, the spec's own recommended default. Breakeven at
     0.5 x M5 ATR plus the 15-minute decay window (sec. 10-11) already exist
     as exit_style="breakeven_r_decay" in both EAs.
-  - Sizing (sec. 12): executor.position_size() already risks 2% of equity
-    using the broker's tick value, which is more exact than a per-pip
-    contract size.
+  - Sizing (sec. 7, 12): lot size, SL and TP rules are never changed by
+    this module - the 2% risk sizing and the $6 / $6 / $3 exits stay
+    exactly as configured. It only decides whether an entry is allowed.
 
 Pure functions over closed-bar DataFrames (no MT5 imports) - selftest.py
 tests them offline.
@@ -136,13 +136,10 @@ class XtrDecision:
     setup_type: str
     regime: str
     block_reason: str        # "" = allowed
-    risk_multiplier: float   # 1.0, or cfg.xtr_ranging_risk_mult
     caution: str             # "" or the 6c RSI-extreme flag
 
     def summary(self) -> str:
         text = f"{self.conviction.upper()} conviction, {self.setup_type.replace('_', ' ')}, {self.regime}"
-        if self.risk_multiplier < 1.0:
-            text += f", size x{self.risk_multiplier:g}"
         if self.caution:
             text += f" ({self.caution})"
         return text
@@ -243,9 +240,8 @@ def evaluate(direction: str, a: XtrAssessment, cfg, standdown: "XtrStanddown | N
             block = "XTR: no clean M5 trigger (EMA9/21, RSI, MACD histogram) in this direction"
         elif conviction == UNALIGNED:
             block = "XTR: neither M15 nor H1 agrees (both mixed)"
-    mult = cfg.xtr_ranging_risk_mult if (a.regime == RANGING and conviction != FULL) else 1.0
     return XtrDecision(direction=direction, conviction=conviction, setup_type=setup, regime=a.regime,
-                       block_reason=block, risk_multiplier=mult, caution=caution)
+                       block_reason=block, caution=caution)
 
 
 def snapshot_context(a: XtrAssessment | None) -> dict | None:
