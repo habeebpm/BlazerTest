@@ -31,6 +31,7 @@ import mt5_gateway as gw
 import news_check
 import relay_supervisor
 import services
+import tactics
 import telegram_alert
 import xtr_logic
 from config import AdvisorConfig
@@ -124,6 +125,17 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.min_confluence_count = args.min_confluence
     if args.allow_partial_conviction:
         cfg.require_full_conviction = False
+    if args.trade_hours is not None:
+        cfg.trade_windows_ny = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
+            else args.trade_hours
+    if args.friday_cutoff is not None:
+        cfg.friday_cutoff_ny = "" if args.friday_cutoff.strip().lower() in ("", "off") \
+            else args.friday_cutoff
+    if args.max_spread is not None:
+        cfg.max_spread_points = args.max_spread
+    if args.min_adx is not None:
+        cfg.min_adx = args.min_adx
+    tactics.validate(cfg)   # a typo stops here, not silently later
     cfg.dry_run = not args.live
     return cfg
 
@@ -434,6 +446,17 @@ def xtr_skip_reason(cfg: AdvisorConfig, a) -> str:
     return ""
 
 
+def skip_cycle(cfg: AdvisorConfig, reason: str) -> None:
+    """A cycle that ends before the Claude call: log it and leave the reason
+    for the EA's "Why" button."""
+    log.info("No evaluation this cycle (no Claude call): %s", reason)
+    if cfg.last_verdict_filename:
+        try:
+            gw.write_common_file(cfg.last_verdict_filename, f"No evaluation this cycle: {reason}")
+        except Exception:
+            log.debug("Could not update the last-verdict file.", exc_info=True)
+
+
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> None:
     equity = gw.account_equity()
     gap = day.roll(equity)
@@ -453,15 +476,13 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> 
         xtr_a = xtr_assessment(cfg)
         skip_reason = xtr_skip_reason(cfg, xtr_a)
     if skip_reason:
-        log.info("No evaluation this cycle (no Claude call): %s", skip_reason)
-        if cfg.last_verdict_filename:
-            try:
-                gw.write_common_file(cfg.last_verdict_filename,
-                                     f"No evaluation this cycle: {skip_reason}")
-            except Exception:
-                log.debug("Could not update the last-verdict file.", exc_info=True)
+        skip_cycle(cfg, skip_reason)
         return
     features = market_intel.build_feature_snapshot(gw, cfg)
+    skip_reason = tactics.regime_block(cfg, features)
+    if skip_reason:
+        skip_cycle(cfg, skip_reason)
+        return
     features["xtr"] = xtr_logic.snapshot_context(xtr_a)
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
@@ -734,10 +755,10 @@ def build_parser() -> argparse.ArgumentParser:
                         dest="news_check_no_web_search", help=argparse.SUPPRESS)  # the default now
     parser.add_argument("--xtr-gate", choices=["off", "block_opposed", "require_alignment"],
                         dest="xtr_gate",
-                        help="XTR M5/M15/H1 alignment gate on Claude's entries (default block_opposed: "
-                             "never against a clearly opposed M15/H1, plus the momentum filters and the "
-                             "two-loss stand-down; require_alignment also needs the M5 trigger; off = "
-                             "context only) - see xtr_logic.py")
+                        help="XTR M5/M15/H1 alignment gate on Claude's entries (default "
+                             "require_alignment: the M5 trigger plus one agreeing M15/H1; block_opposed: "
+                             "only never against a clearly opposed M15/H1, plus the momentum filters and "
+                             "the two-loss stand-down; off = context only) - see xtr_logic.py")
     parser.add_argument("--news-check-fail-closed", action="store_true", dest="news_check_fail_closed",
                         help="refuse the entry when the breaking-news check cannot run at all "
                              "(default: trade anyway and say so in the log and alert)")
@@ -761,6 +782,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="don't block entries around high-impact economic-calendar events "
                              "(on by default; needs the MQL5 EA's calendar export - see "
                              "econ_calendar.py). The calendar is still shown to Claude.")
+    parser.add_argument("--trade-hours", dest="trade_hours",
+                        help="entries only inside these New York-time windows, e.g. "
+                             "\"08:00-16:45\" (default: see config.py trade_windows_ny; "
+                             "'any' = no restriction) - entry filter only")
+    parser.add_argument("--friday-cutoff", dest="friday_cutoff",
+                        help="no new entry on Friday from this New York time (e.g. 16:00; "
+                             "'off' = none)")
+    parser.add_argument("--max-spread", type=int, dest="max_spread",
+                        help="no entry while the spread is above this many points (0 = off)")
+    parser.add_argument("--min-adx", type=float, dest="min_adx",
+                        help="no entry while M15 ADX14 is below this (0 = off) - checked before "
+                             "the Claude call, so a flat market costs nothing")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
     parser.add_argument("--allow-partial-conviction", action="store_true",
@@ -805,8 +838,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+SETTINGS_ERROR = 3   # goldtrader.py start does not restart on this - fix the options first
+
+
 def main(argv: list | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:          # --help (0) or a mistyped option (argparse's 2)
+        return 0 if exc.code in (0, None) else SETTINGS_ERROR
 
     setup_logging(args.verbose)
     # First start (or ANTHROPIC_API_KEY missing) with someone at the keyboard:
@@ -815,7 +854,11 @@ def main(argv: list | None = None) -> int:
         first_run.run_wizard(args.preset, send_test=_send_setup_test)
         if args.setup:
             return 0
-    cfg = build_config(args)
+    try:
+        cfg = build_config(args)
+    except ValueError as exc:
+        log.error("Setting not understood: %s - fix it in start.bat (GT_ARGS) and start again.", exc)
+        return SETTINGS_ERROR
     if cfg.shared_cap_magic_numbers:
         log.warning(
             "shared_cap_magic_numbers=%s is set - this only folds those magics' positions into THIS "
@@ -870,6 +913,8 @@ def main(argv: list | None = None) -> int:
                   f"after {cfg.stale_cycle_alert_minutes:g}min" if (cfg.stale_cycle_alert_minutes > 0
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
         log.info("XTR alignment gate: %s (entry filter only - lot, SL and TP unchanged)", cfg.xtr_gate)
+        log.info("Entry tactics: %s (entry filters only - lot, SL and TP unchanged)",
+                 tactics.describe(cfg))
         log.info("Breaking-news check before each entry: %s",
                  "off" if not cfg.breaking_news_check else
                  f"{len(cfg.news_feeds)} free RSS feed(s)"
@@ -903,6 +948,8 @@ def main(argv: list | None = None) -> int:
         return 0
 
     start_companions(cfg, args.preset, force_relay=args.relay)
+    log.info("Entry filters: XTR gate %s; %s (lot, SL, TP and trail unchanged)",
+             cfg.xtr_gate, tactics.describe(cfg))
 
     log.info("Watching %s for a new closed %s candle every %ds - Ctrl+C to stop.",
               cfg.symbol, cfg.primary_timeframe, cfg.poll_seconds)

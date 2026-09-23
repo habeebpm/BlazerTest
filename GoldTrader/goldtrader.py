@@ -215,6 +215,7 @@ def cmd_install_mt5(args) -> int:
 # --------------------------------------------------------------- main.py wrappers
 
 RESTART_DELAY = 60   # seconds between automatic restarts of `start`
+SETTINGS_ERROR = 3   # main.py: a mistyped option - restarting cannot fix that
 
 
 def disable_quick_edit() -> None:
@@ -237,7 +238,8 @@ def disable_quick_edit() -> None:
 def run_forever(cwd: str, script: str, args, sleep=None, max_runs=None) -> int:
     """`start`: keep the trading program running. A normal stop (Ctrl+C,
     exit 0) ends it; any other exit (MT5 not open yet after a reboot, a
-    crash) restarts it after RESTART_DELAY seconds."""
+    crash) restarts it after RESTART_DELAY seconds - except a settings error
+    (SETTINGS_ERROR), which a restart cannot fix."""
     import time
     sleep = sleep or time.sleep
     runs = 0
@@ -245,6 +247,10 @@ def run_forever(cwd: str, script: str, args, sleep=None, max_runs=None) -> int:
         rc = py(cwd, script, *args)
         runs += 1
         if rc in (0, 130) or (max_runs is not None and runs >= max_runs):
+            return rc
+        if rc == SETTINGS_ERROR:
+            print("\nThe program stopped because of a setting it did not understand (see the "
+                  "message above). Fix it in start.bat, then start again.", flush=True)
             return rc
         print(f"\nThe program stopped (exit {rc}) - restarting in {RESTART_DELAY}s. "
               "Close this window or press Ctrl+C to stop.", flush=True)

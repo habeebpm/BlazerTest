@@ -61,6 +61,7 @@ import executor
 import market_intel
 import mt5_gateway as gw
 import paths
+import tactics
 import xtr_logic
 from config import AdvisorConfig
 
@@ -74,6 +75,7 @@ TIMEFRAME_DURATIONS = {
 }
 
 AUX_WARMUP_BARS = 5   # D1/W1 history needed before the first evaluated bar
+ROLLOVER_START, ROLLOVER_END = 16 * 60 + 55, 18 * 60 + 15   # daily reopen, New York minutes
 
 TRADE_FIELDS = ["entry_time", "exit_time", "direction", "lots", "entry_price",
                 "exit_price", "sl", "tp", "exit_reason", "pnl_dollars"]
@@ -134,7 +136,7 @@ class HistoricalGateway:
     running inside MT5, not Python).
     """
     def __init__(self, symbol: str, bars: dict, spec, spread_points: int = 25,
-                 starting_equity: float = 10000.0):
+                 starting_equity: float = 10000.0, rollover_spread_points: int = 0):
         """bars: {"M15": df, "H4": df, "D1": df, "W1": df, ...} - each a
         DataFrame of time(tz-aware ascending)/open/high/low/close/volume,
         every row a genuinely CLOSED historical bar. starting_equity backs
@@ -146,6 +148,7 @@ class HistoricalGateway:
         self.bars = {tf: df.sort_values("time").reset_index(drop=True) for tf, df in bars.items()}
         self.spec = spec
         self.spread_points = spread_points
+        self.rollover_spread_points = rollover_spread_points
         self.starting_equity = starting_equity
         self.primary_timeframe = None
         self.cursor = 0
@@ -188,6 +191,19 @@ class HistoricalGateway:
         bar_open = self.bars[self.primary_timeframe]["time"].iloc[self.cursor]
         return bar_open + TIMEFRAME_DURATIONS[self.primary_timeframe]
 
+    def spread_at(self, ts: pd.Timestamp) -> float:
+        """Spread (price units) at bar time `ts`: the constant spread, widened
+        to rollover_spread_points around the daily reopen (16:55-18:15 New
+        York), where real gold spreads are several times wider."""
+        points = self.spread_points
+        if self.rollover_spread_points:
+            ny = ts.tz_convert(tactics.NEW_YORK) if ts.tzinfo else ts.tz_localize("UTC").tz_convert(
+                tactics.NEW_YORK)
+            minute = ny.hour * 60 + ny.minute
+            if ROLLOVER_START <= minute < ROLLOVER_END:
+                points = max(points, self.rollover_spread_points)
+        return self.spec.point * points
+
     @property
     def current_bar(self) -> pd.Series:
         return self.bars[self.primary_timeframe].iloc[self.cursor]
@@ -200,6 +216,15 @@ class HistoricalGateway:
         run on (mirrors mt5_gateway.now()'s own docstring/reasoning).
         """
         return self.current_time
+
+    def market_closed_now(self) -> bool:
+        """True when the next primary bar does not start right after the one
+        just evaluated - the daily break or the weekend. A live market order
+        sent then is refused (market closed); the replay must not fill it at
+        the reopen price instead."""
+        primary = self.bars[self.primary_timeframe]
+        next_idx = self.cursor + 1
+        return next_idx < len(primary) and primary["time"].iloc[next_idx] > self.current_time
 
     def advance(self) -> bool:
         """Moves to the next primary-timeframe bar. Returns False once the
@@ -238,12 +263,16 @@ class HistoricalGateway:
         # decision is already made on it.
         primary = self.bars[self.primary_timeframe]
         next_idx = self.cursor + 1
-        price = float(primary["open"].iloc[next_idx]) if next_idx < len(primary) \
-            else float(primary["close"].iloc[self.cursor])
+        if next_idx < len(primary):
+            price = float(primary["open"].iloc[next_idx])
+            fill_time = primary["time"].iloc[next_idx]
+        else:
+            price = float(primary["close"].iloc[self.cursor])
+            fill_time = self.current_time
         # Bars are BID prices (as MT5's are): bid = the bar, ask = bar +
         # spread - the same convention manage_positions() prices exits with,
         # so a buy and a sell each pay exactly one spread per round trip.
-        spread = self.spec.point * self.spread_points
+        spread = self.spread_at(fill_time)
         return _FakeTick(bid=price, ask=price + spread)
 
     def symbol_spec(self, symbol: str):
@@ -370,7 +399,7 @@ class HistoricalGateway:
                 f"backtest.py has no simulation for exit_style={cfg.exit_style!r} yet - only "
                 f"'sl_to_tp1' and 'fixed_tp' are supported here.")
         bar_open = float(bar["open"])
-        spread = self.spec.point * self.spread_points
+        spread = self.spread_at(bar["time"])
         still_open = []
         for pos in self.sim_positions:
             # Bars are bid prices. A sell is closed at the ASK, so its stop,
@@ -688,7 +717,8 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
             g, cfg = gateways[s], cfgs[s]
             day = g.current_time.date()
             trades_today = day_trades[s].get(day, 0)
-            block_reason = day_states[s].block_reason(g, cfg)
+            block_reason = (day_states[s].block_reason(g, cfg) or tactics.regime_block(cfg, features)
+                            or ("market closed (daily break / weekend)" if g.market_closed_now() else ""))
             # Same order as main.run_once(): learn from closed trades, lift a
             # due stand-down, grade Claude's direction, then execute() -
             # which only ever REJECTS on xtr.block_reason (lot/SL/TP untouched).
@@ -791,6 +821,18 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--start", help="range start (with --from-mt5), e.g. 2026-01-01")
     parser.add_argument("--end", help="range end (with --from-mt5)")
     parser.add_argument("--symbol", default="XAUUSD")
+    parser.add_argument("--rollover-spread-points", type=int, default=80, dest="rollover_spread_points",
+                        help="spread around the daily reopen, 16:55-18:15 New York (default 80; 0 = "
+                             "the normal spread all day)")
+    parser.add_argument("--trade-hours", dest="trade_hours",
+                        help="entry trading hours, New York time (default: the live setting in "
+                             "config.py; 'any' = no restriction)")
+    parser.add_argument("--friday-cutoff", dest="friday_cutoff",
+                        help="no new entry on Friday from this New York time ('off' = none)")
+    parser.add_argument("--max-spread", type=int, dest="max_spread",
+                        help="no entry while the spread is above this many points (0 = off)")
+    parser.add_argument("--min-adx", type=float, dest="min_adx",
+                        help="no entry while M15 ADX14 is below this (default 0 = off)")
     parser.add_argument("--spread-points", type=int, default=25, dest="spread_points",
                         help="simulated spread in points for CSV runs (XAUUSD 0.01 point: 25 = $0.25)")
     parser.add_argument("--mechanical", action="store_true",
@@ -835,6 +877,22 @@ def main(argv: list | None = None) -> int:
         base_cfg.use_risk_percent = args.risk_percent > 0
     if args.sl_mode:
         base_cfg.sl_mode = args.sl_mode
+    if args.trade_hours is not None:
+        base_cfg.trade_windows_ny = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
+            else args.trade_hours
+    if args.friday_cutoff is not None:
+        base_cfg.friday_cutoff_ny = "" if args.friday_cutoff.strip().lower() in ("", "off") \
+            else args.friday_cutoff
+    if args.max_spread is not None:
+        base_cfg.max_spread_points = args.max_spread
+    if args.min_adx is not None:
+        base_cfg.min_adx = args.min_adx
+    try:
+        tactics.validate(base_cfg)
+    except ValueError as exc:
+        log.error("Setting not understood: %s", exc)
+        return 1
+    log.info("Entry tactics: %s", tactics.describe(base_cfg))
 
     if args.from_mt5:
         if not args.start or not args.end:
@@ -889,7 +947,8 @@ def main(argv: list | None = None) -> int:
             name = style if not args.compare_xtr else f"{style}_xtr-{mode}"
             styles.append(name)
             gateways[name] = HistoricalGateway(args.symbol, bars, spec,
-                                               spread_points=args.spread_points)
+                                               spread_points=args.spread_points,
+                                               rollover_spread_points=args.rollover_spread_points)
             if not gateways[name].reset(base_cfg.primary_timeframe, base_cfg.bars_per_timeframe):
                 log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
                           base_cfg.bars_per_timeframe)

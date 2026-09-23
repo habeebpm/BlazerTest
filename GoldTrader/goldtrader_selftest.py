@@ -90,6 +90,15 @@ def main() -> int:
     finally:
         solution.py = real_py
     check("Ctrl+C stops it for good (no restart)", rc_int == 130 and len(naps) == 2)
+    seq3 = iter([solution.SETTINGS_ERROR])
+    solution.py = lambda cwd, script, *args: next(seq3)
+    try:
+        rc_cfg = solution.run_forever(solution.APP_DIR, "main.py", ["--trade-hours", "8-17"],
+                                      sleep=naps.append)
+    finally:
+        solution.py = real_py
+    check("a mistyped setting stops start (no endless restarts)",
+          rc_cfg == solution.SETTINGS_ERROR and len(naps) == 2)
     rc = solution.main(["install-mt5", "--data-folder", os.path.join(solution.ROOT, "nope")])
     check("install-mt5 refuses a folder without MQL5", rc == 1)
     ok = all(results)

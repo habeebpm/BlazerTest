@@ -213,8 +213,8 @@ def assess(gateway, symbol: str, bars: int = 200, recent: int = 6) -> XtrAssessm
 
 def evaluate(direction: str, a: XtrAssessment, cfg, standdown: "XtrStanddown | None" = None) -> XtrDecision:
     """Grades `direction` (Claude's call) against the XTR rules. cfg.xtr_gate:
-    "block_opposed" (default) blocks an opposed HTF, a failed momentum filter
-    and an active stand-down; "require_alignment" additionally requires the
+    "block_opposed" blocks an opposed HTF, a failed momentum filter
+    and an active stand-down; "require_alignment" (default) additionally requires the
     M5 trigger (or an RSI-extreme bounce) in the same direction and at least
     one agreeing HTF, exactly as the spec's own decision flow."""
     conviction = grade_conviction(direction, a.m15_class, a.h1_class)

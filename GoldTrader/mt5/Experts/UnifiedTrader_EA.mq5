@@ -158,6 +158,7 @@ input int     InpMaxSignalAgeSec   = 180;          // Reject a signal/control co
 input bool    InpTradeXAUUSDOnly   = true;         // Require chart symbol to contain "XAU"
 input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-sourced trades only)
 input double  InpMaxDailyLossPct   = 10.0;         // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
+input int     InpMaxSpreadPoints   = 50;           // Skip a Telegram entry while the spread is above this many points (0 = off)
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity (pips; 1 pip = 10 broker points) ==="
@@ -2108,6 +2109,15 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
                                      InpNewsBlockBeforeMin, InpNewsBlockAfterMin, newsDesc))
    {
       string r = "news blackout: " + newsDesc;
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   int spreadPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(InpMaxSpreadPoints > 0 && spreadPts > InpMaxSpreadPoints)
+   {
+      string r = StringFormat("spread %d points is above the %d-point limit", spreadPts, InpMaxSpreadPoints);
       PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
       LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);

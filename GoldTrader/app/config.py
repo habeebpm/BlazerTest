@@ -13,14 +13,13 @@ trailing $3 behind price from there (exit_style="sl_to_tp1" - see below).
 exit_style has three values. All three agree on one thing: no broker-side
 take-profit is ever placed except under "fixed_tp" - the stop-loss is the
 only thing that closes a position early.
-  - "sl_to_tp1" (default, and what UnifiedTrader_EA.mq5/
-    UnifiedTrader_EA.mq5 implement live when InpExitStyle is left at its
-    own default): once floating profit reaches tp1_dollars, the SL moves
+  - "sl_to_tp1" (default, and what UnifiedTrader_EA.mq5 implements live
+    when InpExitStyle is left at its own default): once floating profit reaches tp1_dollars, the SL moves
     to lock in exactly that much profit, then trails trail_dollars behind
     new highs/lows from there. Chosen over "fixed_tp" below because it has
     no broker order sitting at the same price as the arm threshold -
     nothing for the broker to auto-fill ahead of the stop being moved.
-  - "breakeven_r_decay" (also implemented live, selectable per-EA via
+  - "breakeven_r_decay" (also implemented live, selectable via
     InpExitStyle - see UnifiedTrader_EA.mq5):
     adds an earlier protective step before the sl_to_tp1 lock described
     above. Once floating profit reaches breakeven_atr_mult x the position's
@@ -77,8 +76,8 @@ class AdvisorConfig:
     news_blackout_windows: list = field(default_factory=list)
 
     # --- Economic calendar (on by default) - MT5's own built-in calendar,
-    #     exported every few minutes by UnifiedTrader_EA.mq5 /
-    #     UnifiedTrader_EA.mq5 (EconCalendar.mqh) to this file in the
+    #     exported every few minutes by UnifiedTrader_EA.mq5
+    #     (EconCalendar.mqh) to this file in the
     #     shared Common\Files folder; see econ_calendar.py. MUST match the
     #     EA's InpCalendarExportFile. Two uses:
     #       - automatic blackout: executor.gate() refuses a new entry from
@@ -101,20 +100,33 @@ class AdvisorConfig:
     # --- XTR alignment gate (on by default) - see xtr_logic.py. Mechanical
     #     M5/M15/H1 rules from the XTR gold scalping specification, applied
     #     on top of Claude's verdict:
-    #       "block_opposed" (default): never enter against a CLEARLY opposed
+    #       "block_opposed": never enter against a CLEARLY opposed
     #         M15 or H1 (EMA9/21, RSI14 and MACD histogram all agreeing), an
     #         extended entry whose M5 MACD histogram stopped accelerating, a
     #         bounce-failure entry before the histogram crossed zero, or a
     #         setup type in its two-loss range stand-down;
-    #       "require_alignment": also require the M5 trigger in Claude's
-    #         direction and at least one agreeing HTF (the spec's full flow -
-    #         far fewer trades);
+    #       "require_alignment" (default): also require the M5 trigger in
+    #         Claude's direction and at least one agreeing HTF (the spec's
+    #         full flow - far fewer trades; the lowest drawdown in every
+    #         backtest, see docs/BACKTEST_REPORT.md);
     #       "off": context for Claude only.
     #     It never changes lot size, SL or TP - only whether an entry is
     #     allowed. Needs M5, M15 and H1 bars; if they can't be read the gate
     #     is skipped (logged) rather than halting trading.
-    xtr_gate: str = "block_opposed"
+    xtr_gate: str = "require_alignment"
     xtr_bars: int = 200
+
+    # --- Entry tactics (tactics.py) - WHEN an entry may be taken; entry
+    #     filters only, never lot/SL/TP/trail/cap. Times are New York time
+    #     (daylight saving followed automatically). "" / 0 switches one off.
+    #     Six-month test (docs/BACKTEST_REPORT.md): the trading hours below
+    #     improved both halves of the data under every XTR gate, halved the
+    #     drawdown and skip about half of the paid Claude calls. min_adx
+    #     helped the first half but not the second, so it ships off.
+    trade_windows_ny: str = "08:00-16:45,18:15-20:00"   # US session + early evening; not Asia/London morning
+    friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this time (weekend gap)
+    max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
+    min_adx: float = 0.0              # e.g. 25: no entry while M15 ADX14 is below this
 
     # --- Breaking-news check (on by default) - see news_check.py. Right
     #     before a full-conviction entry is sent (after every other gate

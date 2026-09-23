@@ -422,6 +422,14 @@ def consensus_context(gateway, cfg: AdvisorConfig) -> dict | None:
         return None
 
 
+def _now_utc(gateway) -> pd.Timestamp:
+    """The gateway's clock - the replayed bar time in a backtest, so Claude
+    sees the date being tested, not the day the backtest runs."""
+    now_fn = getattr(gateway, "now", None)
+    ts = pd.Timestamp(now_fn()) if now_fn else pd.Timestamp.now(tz="UTC")
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
 def economic_calendar_context(gateway, cfg: AdvisorConfig) -> dict | None:
     """Recent releases and upcoming events from MT5's own calendar (see
     econ_calendar.py) - context for Claude, never a gate here (executor.
@@ -432,8 +440,7 @@ def economic_calendar_context(gateway, cfg: AdvisorConfig) -> dict | None:
         if calendar is None:
             return None
         events, exported_at = calendar
-        now_fn = getattr(gateway, "now", None)
-        now = econ_calendar.to_utc_datetime(now_fn() if now_fn else pd.Timestamp.utcnow())
+        now = econ_calendar.to_utc_datetime(_now_utc(gateway))
         return econ_calendar.calendar_context(events, exported_at, now, cfg)
     except ValueError:
         raise   # a misconfigured news_min_importance must be seen, not swallowed
@@ -512,18 +519,21 @@ def candle_features(closed: pd.DataFrame) -> dict:
     }
 
 
+# Local business hours of each gold session, in its own time zone - so the
+# labels follow each region's daylight-saving change instead of drifting an
+# hour for half the year (London and New York switch on different dates).
+SESSIONS = (("Asian", "Asia/Tokyo", 9, 18), ("London", "Europe/London", 8, 17),
+            ("New York", "America/New_York", 8, 17))
+
+
 def session_info(ts_utc: pd.Timestamp) -> dict:
-    hour = ts_utc.hour
-    sessions = []
-    if 0 <= hour < 9:
-        sessions.append("Asian")
-    if 7 <= hour < 16:
-        sessions.append("London")
-    if 12 <= hour < 21:
-        sessions.append("New York")
+    ts = ts_utc.tz_localize("UTC") if ts_utc.tzinfo is None else ts_utc.tz_convert("UTC")
+    sessions = [name for name, zone, start, end in SESSIONS
+                if start <= ts.tz_convert(zone).hour < end]
     return {
-        "hour_utc": hour,
-        "day_of_week": ts_utc.strftime("%A"),
+        "hour_utc": ts.hour,
+        "new_york_time": ts.tz_convert("America/New_York").strftime("%H:%M"),
+        "day_of_week": ts.strftime("%A"),
         "active_sessions": sessions or ["Off-hours"],
         "session_overlap": len(sessions) >= 2,
     }
@@ -603,7 +613,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
 
     snapshot = {
         "symbol": cfg.symbol,
-        "timestamp_utc": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp_utc": _now_utc(gateway).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "current_price": {"bid": tick.bid, "ask": tick.ask, "spread_points": spec.spread_points},
         "session": session_info(primary_closed["time"].iloc[-1]),
         "primary_timeframe": cfg.primary_timeframe,

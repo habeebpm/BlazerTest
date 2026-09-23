@@ -1,96 +1,129 @@
-# Backtest report - XAUUSD, 6 Aug - 23 Sep 2026
+# Backtest report - XAUUSD, 20 Mar - 23 Sep 2026 (six months)
 
-Real history (Twelve Data XAU/USD, M5/M15/H1/H4, converted to UTC, weekend
-filler bars removed). 3,277 closed M15 bars evaluated, no lookahead.
-Gold over the window: 4,055 -> 4,673 -> 4,289 (buy-and-hold -0.15%) - a
-wide two-way range, not a trend.
+Real history from Twelve Data (XAU/USD, 5-minute bars; M15 and H1 built
+from them, H4/D1/W1 from the 4-hour series), converted to UTC. 12,269
+closed M15 bars evaluated, no lookahead. Gold over the window:
+4,645 -> 4,888 (April) -> 3,949 (end of June) -> 4,286, i.e. a rally, a
+19% fall and a rebound - three different markets in one test.
 
 **What this measures:** `backtest.py --mechanical` - the three-leg rules
-Claude is told to apply, voted mechanically. It tests the rules, exits,
-risk and XTR gate on real prices. **It is not Claude's judgment** (Claude
-also reads SMC structure, levels, news and calendar).
+Claude is told to apply, voted mechanically. It tests the rules, the exits,
+the risk limits, the XTR gate and the entry tactics on real prices. **It is
+not Claude's judgment** (Claude also reads SMC structure, levels, news and
+the calendar).
 
-Live rules, unchanged: 2% risk per trade, 10% daily cap/budget, $6 SL /
+Trading rules, unchanged: 2% risk per trade, 10% daily cap/budget, $6 SL /
 $6 TP1 lock / $3 trail at the 0.01 reference lot, max 5 per direction,
-starting equity $10,000, spread 25 points ($0.25).
+starting equity $10,000, spread 25 points ($0.25) and 80 points around the
+daily reopen.
 
-## Ranking
+**R** below = result per trade in multiples of the $6 stop (+1R = won as
+much as the stop risks). It is the fair way to compare - the dollar return
+compounds with equity and swings with a few large trades. Each variant is
+also split into two periods: **Mar-Jul** and **Aug-Sep**.
 
-| # | Exit style | XTR gate | Trades | Win % | Return | Max DD | Profit factor | Return at 50-pt spread | P(edge <= 0) |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | fixed_tp | require_alignment | 19 | 52.6 | **+1.2%** | **6.2%** | 1.07 | - | 0.42 |
-| 2 | sl_to_tp1 | require_alignment | 19 | 47.4 | -0.8% | 7.4% | 0.96 | **-1.5%** | 0.55 |
-| 3 | sl_to_tp1 | off | 109 | 46.8 | -9.0% | 21.8% | 0.92 | -31.2% | 0.65 |
-| 4 | sl_to_tp1 | block_opposed *(live default)* | 60 | 45.0 | -9.9% | 22.8% | 0.84 | -15.5% | 0.74 |
-| 5 | fixed_tp | block_opposed | 59 | 45.8 | -11.8% | 22.7% | 0.80 | - | 0.82 |
-| 6 | fixed_tp | off | 108 | 46.3 | -17.9% | 27.1% | 0.83 | - | 0.84 |
+## Verdict
 
-P(edge <= 0) = share of 5,000 bootstrap resamples with expectancy <= 0.
-**No variant shows a statistically reliable edge** - every 95% confidence
-interval for expectancy spans zero. #1 and #2 differ by about one trade.
+1. **Trading hours are the tactic that works.** Entries only 08:00-16:45 and
+   18:15-20:00 New York time (skipping the Asian session and the London
+   morning) improved the average trade in **both** periods, under **every**
+   XTR setting, also at double spread, and cut the worst drawdown by half or
+   more. It also skips about half of the paid Claude calls. **On by
+   default.**
+2. The idea came from the earlier 7-week test (Aug-Sep: Asian and London
+   entries lost). The Mar-Jul data was not used to form it and confirms it -
+   that is the out-of-sample check.
+3. **`require_alignment` + trading hours** (the new default) had the lowest
+   risk: 25 trades in six months, +7.7%, max drawdown 9.5% (26% without the
+   hours), positive in both periods, and still positive at double spread.
+   It trades rarely - about one trade a week.
+4. **No variant has a proven edge.** Even the best has a 29-31% chance that
+   its true average trade is zero or negative (bootstrap). Treat these as
+   risk-reduction results, not profit forecasts.
+5. **Trend-strength filter (ADX >= 25) did not hold up.** Big gains in
+   Mar-Jul, but on top of the trading hours it made Aug-Sep worse under
+   every gate. Available (`--min-adx 25`), **off by default**.
 
-## Findings
+## Results (spread 25 points, 80 at the reopen)
 
-1. **`require_alignment` is the clear risk winner.** It cuts max drawdown
-   from ~22% to ~7% (Monte Carlo 95th percentile 39% -> 13%), the longest
-   losing streak from 11 to 3-4, and it is the only variant that survives a
-   doubled spread (-0.8% -> -1.5%, vs -9.0% -> -31.2% ungated). It trades
-   rarely (19 trades in 7 weeks).
-2. **`block_opposed` (the live default) did not help here.** Graded per
-   trade on the ungated run, entries XTR calls "opposed" (pullbacks against
-   M15/H1) won 53.7% and made +$1,339. The real losers were "extended chase"
-   (37 trades, -$2,963) and "reduced" conviction (50 trades, -$1,790).
-   It does halve the damage of a wide spread (-15.5% vs -31.2%).
-3. **`sl_to_tp1` beats `fixed_tp`** ungated (+8.9 points) and with
-   `block_opposed` (+1.9): the trail makes the average win bigger. With
-   `require_alignment`, `fixed_tp` came out ahead, but that sample is only
-   19 trades, too few to call.
-4. **Time of day:** 17:00-22:00 UTC was the only profitable window in every
-   variant (+$2,731 ungated). Asian (22-07) and London (07-12) lost.
-   This is a pattern to watch in the demo, not a rule yet.
-5. **Very cost-sensitive.** A $6 stop is about one M15 ATR on gold at
-   $4,300, so spread and slippage are a big share of each trade. Use a
-   raw-spread/ECN account, 25 points or less.
-6. **Risk controls held.** Worst day -$930 (-9.3%), inside the 10% cap.
-7. **Buys lost in every variant**; sells were flat to positive (except
-   `fixed_tp` ungated) - consistent with the down-leg from 4,673 in late
-   August.
+| XTR gate | Entry tactics | Trades | Win % | Return | Max DD | Profit factor | Avg R Mar-Jul (n) | Avg R Aug-Sep (n) |
+|---|---|---|---|---|---|---|---|---|
+| **require_alignment** *(default)* | none | 72 | 44.4 | +9.1% | 26.2% | 1.11 | +0.15 (55) | -0.10 (17) |
+| **require_alignment** *(default)* | **hours + guards** *(default)* | **25** | **48.0** | **+7.7%** | **9.5%** | **1.30** | **+0.21 (16)** | **+0.09 (9)** |
+| off | none | 330 | 42.4 | -2.6% | 103.7% | 0.99 | +0.06 (231) | +0.00 (99) |
+| off | hours + guards | 133 | 47.4 | +25.5% | 39.6% | 1.15 | +0.17 (93) | +0.04 (40) |
+| block_opposed | none | 173 | 41.6 | -28.3% | 52.2% | 0.83 | -0.07 (116) | -0.07 (57) |
+| block_opposed | hours + guards | 66 | 47.0 | +1.4% | 23.8% | 1.02 | +0.00 (45) | +0.10 (21) |
 
-## Engine fixes found by these reviews
+"Hours + guards" = the defaults: trading hours, no new entry on Friday from
+16:00 New York, no entry while the spread is above 50 points. Max DD is the
+worst peak-to-trough fall of the equity curve in % of the starting $10,000
+(it can pass 100% when profits made earlier are lost again).
+
+## Stress test: double spread (50 points, 150 at the reopen)
+
+| XTR gate | Entry tactics | Trades | Return | Max DD | Avg R Mar-Jul | Avg R Aug-Sep |
+|---|---|---|---|---|---|---|
+| require_alignment | none | 72 | +10.5% | 29.3% | +0.17 | -0.12 |
+| require_alignment | hours + guards | 25 | +6.8% | 9.6% | +0.20 | +0.08 |
+| off | none | 318 | -28.1% | 100.4% | +0.04 | -0.13 |
+| off | hours + guards | 131 | +13.4% | 47.6% | +0.15 | -0.03 |
+| block_opposed | none | 169 | -38.2% | 57.5% | -0.09 | -0.18 |
+| block_opposed | hours + guards | 65 | -6.0% | 28.6% | -0.02 | -0.04 |
+
+The hours still improve every gate. `require_alignment` + hours is the only
+setting positive in both periods at double spread.
+
+## Tried and not switched on
+
+| Idea | Result |
+|---|---|
+| ADX >= 25 (trend strength) | Mar-Jul much better, but on top of the hours Aug-Sep got worse under every gate (require_alignment +0.09 -> -0.02 R) - off |
+| Start at 07:00 New York (London overlap) | Worse under every gate (require_alignment -2.7%) |
+| Evening window from 19:00 | Aug-Sep worse (require_alignment -0.15 R) |
+| Evening window to 21:00 | Worse under every gate |
+| US session only (no evening) | Worse (require_alignment -4.2%) |
+| No Friday cutoff | More profit in this sample - from two +9R trades held over **one** weekend gap. A gap the other way loses several times the $6 stop, so the cutoff stays on |
+| Other entry features (extension from EMA, RSI level, D1/H4 bias, stacking, round numbers) | No pattern that held in both periods |
+
+Moving an hours edge by one hour made results worse each time: the finding
+"not the Asian session, not the London morning" is robust; the exact edges
+are the best of those tried, not a guarantee.
+
+## Engine fixes found in this round
 
 | Severity | Finding | Fix |
 |---|---|---|
-| High | Sell stops fired on the bid (25 points late) and gap-through stops filled at the stop price - flattered results (ungated +15.2% before; -9.0% with this and the spread fix below) | Sell stop/lock/trail on the ask; a bar opening through a stop fills at the open |
-| Medium | `reset()` demanded 300 D1 **and 300 W1** bars (~6 years) - a short CSV or `--from-mt5` range could not start | D1/W1 need only 5 bars (they feed previous day/week levels) |
-| Medium | XTR gate could not be backtested | `--m5-csv`/`--h1-csv`/`--xtr-gate`/`--compare-xtr`, same order as live: stand-down learns from closed trades, entry filter only |
-| Medium | Entries priced bars as MID (+/- half spread) while exits priced them as BID - a buy paid 0.5 spread per round trip, a sell 1.5 | Bars are bid (as in MT5): bid = bar, ask = bar + spread - every trade pays exactly one spread |
-| Medium | XTR stand-down counted losses per setup only: two failed buys also blocked sells, and a buy loss + a sell loss counted as "two in a row" | Counted per setup AND direction |
-| Low | A malformed `xtr_state.json` record could raise on every bar; unseen closes grew the open-ticket list | Records validated on load; open list capped at 200 |
-| Low | Backtest `decisions.csv` stamped with wall-clock time | Stamped with the replayed bar time |
-| Low | README said risk % and daily cap are off in backtests - they use the live defaults | Corrected |
-| Low | Summary lacked profit factor / expectancy / % figures | Added |
+| High | The data vendor fills gold's daily break (17:00-18:00 New York) with flat fake bars; entries "traded" in a closed market. The earlier 7-week report was affected | Break hour removed from the data before testing |
+| High | A signal on the last bar before the daily break or the weekend was filled at the reopen price; live, the order is refused (market closed) | Refused in the backtest too |
+| Medium | Spread was constant all day; real gold spreads are several times wider at the reopen | `--rollover-spread-points` (default 80) from 16:55 to 18:15 New York |
+| Medium | The snapshot sent to Claude carried today's date in a backtest (wall clock, not the replayed bar) | Uses the replay clock |
+| Low | Session labels for Claude (Asian/London/New York) were fixed UTC hours - one hour wrong for half the year | Each session in its own time zone (daylight saving followed) |
 
-Lot size, SL, TP and trail rules were not changed.
+Earlier rounds (still in place): sell stops on the ask, gap fills at the
+open, bid/ask pricing with one spread per round trip, short D1/W1 warm-up,
+XTR stand-down per setup and direction, validated state records, replay-time
+stamps on decision logs.
 
 ## Recommendations
 
-1. **Don't read these numbers as the live result.** Measure Claude itself:
-   a paid Claude backtest on two weeks (~900 bars, about $45-135), or 2-4
-   weeks on demo, the XTR gate choice decided from those results.
-2. `start.bat` already runs `--xtr-gate require_alignment` (EA side
-   unchanged): about a third of the drawdown in this sample. It is an entry
-   filter only.
-3. Keep `sl_to_tp1` as the exit style (better in the larger samples).
-4. Log the entry hour in the demo and review the 17-22 UTC effect after
-   100+ trades before acting on it.
+1. Run the defaults on **demo** for 2-4 weeks. Expect few Claude trades
+   (about one a week) - that is the tactic working, not a fault.
+2. Judge after 100+ trades across both sources, not after a week.
+3. Keep a raw-spread account: the $6 stop is about one M15 ATR.
+4. A paid Claude backtest of two weeks in the trading hours (~450 bars) is
+   the next real test of Claude's own judgment.
 
 ## Reproduce
 
 In the GoldTrader folder (CSV paths in full):
 
 ```bat
-python goldtrader.py backtest --bars-csv C:\data\m15.csv --trend-csv C:\data\h4.csv --daily-csv C:\data\d1.csv --weekly-csv C:\data\w1.csv --m5-csv C:\data\m5.csv --h1-csv C:\data\h1.csv --mechanical --compare --compare-xtr --xtr-gate require_alignment
+python goldtrader.py backtest --bars-csv C:\data\m15.csv --trend-csv C:\data\h4.csv --daily-csv C:\data\d1.csv --weekly-csv C:\data\w1.csv --m5-csv C:\data\m5.csv --h1-csv C:\data\h1.csv --mechanical
 ```
 
-Stress test: add `--spread-points 50`. Straight from MT5 instead of CSVs:
-`--from-mt5 --start 2026-08-01 --end 2026-09-23`.
+That runs the live defaults (require_alignment + trading hours + guards).
+Compare without the tactics: add `--trade-hours any --friday-cutoff off
+--max-spread 0`; other gates: `--compare-xtr --xtr-gate block_opposed`;
+stress: `--spread-points 50 --rollover-spread-points 150`. Straight from
+MT5 instead of CSVs: `--from-mt5 --start 2026-03-16 --end 2026-09-23`.

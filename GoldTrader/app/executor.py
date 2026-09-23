@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 import econ_calendar
 import market_intel
+import tactics
 from claude_advisor import ConfluenceVerdict
 from config import AdvisorConfig
 
@@ -201,6 +202,15 @@ def verdict_independent_block(gateway, cfg: AdvisorConfig, trades_today: int) ->
     # judges news_blackout_windows against the bar being evaluated, not
     # whatever real date the backtest happens to be run on.
     now = gateway.now()
+    reason = tactics.time_block(cfg, now)
+    if reason:
+        return reason
+    if cfg.max_spread_points:
+        spread = tactics.current_spread_points(gateway, cfg)
+        if spread is not None:
+            reason = tactics.spread_block(cfg, spread)
+            if reason:
+                return reason
     blackout = in_news_blackout(cfg, now=now)
     if blackout:
         return blackout

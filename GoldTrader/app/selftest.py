@@ -54,6 +54,7 @@ import ml_advisor
 import news_check
 import relay_supervisor
 import services
+import tactics
 import telegram_alert
 import xtr_logic
 import mt5_gateway as gw
@@ -333,6 +334,9 @@ class FakeResult:
         self.retcode, self.order, self.price = retcode, order, price
 
 
+TEST_NOW = datetime(2026, 9, 23, 14, 0, tzinfo=timezone.utc)
+
+
 class FakeGateway:
     """Implements exactly the mt5_gateway functions executor.py calls."""
     SymbolSpec = gw.SymbolSpec
@@ -368,7 +372,9 @@ class FakeGateway:
         return self.equity
 
     def now(self):
-        return self._now or gw.now()
+        # A fixed Wednesday 10:00 New York, inside the default trading hours:
+        # a test's outcome must never depend on the time of day it runs.
+        return self._now or TEST_NOW
 
     def get_bars(self, symbol, timeframe_name, count):
         return self.bars_df.tail(count).reset_index(drop=True)
@@ -529,8 +535,7 @@ def test_executor() -> bool:
     fg_real_clock = FakeGateway(same_dir_open=0)
     d_real_clock = executor.execute(fg_real_clock, cfg_blackout_historical, make_verdict("buy", 3, "full"),
                                     spec, trades_today=0)
-    ok &= check("a historical-only blackout window does NOT block a trade under the real gateway's "
-                "own real-wall-clock now()",
+    ok &= check("a historical-only blackout window does NOT block a trade evaluated today",
                 d_real_clock.executed, d_real_clock.reject_reason)
 
     fg_sim_clock = FakeGateway(same_dir_open=0, now=datetime(2020, 6, 15, 12, 0, tzinfo=timezone.utc))
@@ -3084,7 +3089,7 @@ class _BarsGateway:
 def test_xtr_logic() -> bool:
     print("\n=== 31. XTR alignment gate (M5 trigger, M15/H1 alignment, filters, stand-down) ===")
     ok = True
-    cfg = AdvisorConfig()
+    cfg = AdvisorConfig(xtr_gate="block_opposed")
     X = xtr_logic
 
     ok &= check("a timeframe is clear only when EMA9/21, RSI and MACD histogram ALL agree (2 of 3 = mixed)",
@@ -3132,7 +3137,7 @@ def test_xtr_logic() -> bool:
     no_trigger = _assess(m5=_tf("mixed", rsi=52, hist=-0.1, hist_prev=-0.2), recent=["mixed"] * 6)
     unaligned = _assess(m15="mixed", h1="mixed")
     ok &= check("require_alignment: no clean M5 trigger -> blocked; both HTFs mixed -> blocked; "
-                "block_opposed (default) allows both",
+                "block_opposed allows both",
                 "no clean M5 trigger" in X.evaluate("buy", no_trigger, strict).block_reason
                 and "both mixed" in X.evaluate("buy", unaligned, strict).block_reason
                 and not X.evaluate("buy", no_trigger, cfg).block_reason
@@ -3311,8 +3316,8 @@ def test_xtr_logic() -> bool:
          main_mod.claude_paused, main_mod.xtr_logic.assess) = originals
 
     ok &= check("--xtr-gate maps to config",
-                main_mod.build_config(main_mod.build_parser().parse_args(["--xtr-gate", "require_alignment"]))
-                .xtr_gate == "require_alignment" and AdvisorConfig().xtr_gate == "block_opposed")
+                main_mod.build_config(main_mod.build_parser().parse_args(["--xtr-gate", "block_opposed"]))
+                .xtr_gate == "block_opposed" and AdvisorConfig().xtr_gate == "require_alignment")
     return ok
 
 def test_relay_supervisor() -> bool:
@@ -3548,6 +3553,180 @@ def test_first_run_wizard() -> bool:
     return ok
 
 
+def test_tactics() -> bool:
+    print("\n=== 34. entry tactics: trading hours, Friday cutoff, spread guard, trend strength ===")
+    ok = True
+    T = tactics
+    cfg = AdvisorConfig()
+    utc = timezone.utc
+    ok &= check("defaults: US session + early evening New York, Friday 16:00 cutoff, 50-point spread "
+                "guard, ADX filter off",
+                cfg.trade_windows_ny == "08:00-16:45,18:15-20:00" and cfg.friday_cutoff_ny == "16:00"
+                and cfg.max_spread_points == 50 and cfg.min_adx == 0, T.describe(cfg))
+    ok &= check("windows parse to minutes; a midnight-wrapping window works",
+                T.parse_windows("08:00-16:45,18:15-20:00") == [(480, 1005), (1095, 1200)]
+                and T.in_windows(23 * 60, T.parse_windows("20:00-02:00"))
+                and T.in_windows(60, T.parse_windows("20:00-02:00"))
+                and not T.in_windows(12 * 60, T.parse_windows("20:00-02:00")))
+    bad = []
+    for spec in ("8-17", "08:00", "25:00-26:00", "08:61-09:00"):
+        try:
+            T.parse_windows(spec)
+        except ValueError:
+            bad.append(spec)
+    ok &= check("a malformed window is an error, never 'any hour'", len(bad) == 4, bad)
+    summer = datetime(2026, 9, 23, 13, 0, tzinfo=utc)     # 09:00 New York (EDT)
+    asia = datetime(2026, 9, 23, 6, 0, tzinfo=utc)        # 02:00 New York
+    winter_in = datetime(2026, 1, 15, 13, 30, tzinfo=utc)  # 08:30 New York (EST)
+    winter_out = datetime(2026, 1, 15, 12, 30, tzinfo=utc)  # 07:30 New York (EST) - 08:30 in summer
+    rollover = datetime(2026, 9, 23, 21, 30, tzinfo=utc)  # 17:30 New York - daily break
+    ok &= check("New York time: 09:00 allowed, 02:00 (Asia) and 17:30 (daily break) refused",
+                T.time_block(cfg, summer) == "" and "outside trading hours" in T.time_block(cfg, asia)
+                and "outside trading hours" in T.time_block(cfg, rollover), T.time_block(cfg, asia))
+    ok &= check("daylight saving is followed: 13:30 UTC in January (08:30 EST) is in, 12:30 UTC is out",
+                T.time_block(cfg, winter_in) == "" and T.time_block(cfg, winter_out) != "")
+    ok &= check("a pandas Timestamp (the backtest clock) works like a datetime",
+                T.time_block(cfg, pd.Timestamp(summer)) == "" and T.time_block(cfg, pd.Timestamp(asia)) != "")
+    friday = datetime(2026, 9, 25, 20, 30, tzinfo=utc)    # Friday 16:30 New York
+    thursday = datetime(2026, 9, 24, 20, 30, tzinfo=utc)
+    ok &= check("Friday from 16:00 New York: no new entry; the same time on Thursday is fine",
+                "Friday" in T.time_block(cfg, friday) and T.time_block(cfg, thursday) == "")
+    anyhour = AdvisorConfig(trade_windows_ny="", friday_cutoff_ny="")
+    ok &= check("'' switches both time checks off", T.time_block(anyhour, asia) == ""
+                and T.time_block(anyhour, friday) == "")
+    ok &= check("spread guard: 60 points refused at a 50-point limit, 50 allowed, 0 = off",
+                "spread 60" in T.spread_block(cfg, 60) and T.spread_block(cfg, 50) == ""
+                and T.spread_block(AdvisorConfig(max_spread_points=0), 500) == "")
+    feats = {"primary_indicators": {"adx14": 18.2}}
+    ok &= check("trend strength: off by default; min_adx=25 refuses ADX 18.2 and allows 30",
+                T.regime_block(cfg, feats) == ""
+                and "ADX14 18.2" in T.regime_block(AdvisorConfig(min_adx=25), feats)
+                and T.regime_block(AdvisorConfig(min_adx=25), {"primary_indicators": {"adx14": 30}}) == "")
+
+    class Gw:
+        def __init__(self, when, spread_points):
+            self.when, self.spread = when, spread_points
+
+        def now(self):
+            return self.when
+
+        def symbol_spec(self, symbol):
+            return gw.SymbolSpec(name=symbol, point=0.01, digits=2, stops_level_points=0,
+                                 spread_points=self.spread, volume_min=0.01, volume_max=5.0,
+                                 volume_step=0.01, tick_value=1.0, tick_size=0.01)
+
+        def get_tick(self, symbol):
+            return backtest._FakeTick(bid=4300.0, ask=4300.0 + self.spread * 0.01)
+
+    quiet = AdvisorConfig(news_auto_blackout=False)
+    ok &= check("verdict_independent_block (before the Claude call): hours and live spread are checked",
+                executor.verdict_independent_block(Gw(summer, 20), quiet, 0) == ""
+                and "outside trading hours" in executor.verdict_independent_block(Gw(asia, 20), quiet, 0)
+                and "spread 80" in executor.verdict_independent_block(Gw(summer, 80), quiet, 0))
+
+    def cfg_for(*argv):
+        return main_mod.build_config(main_mod.build_parser().parse_args(list(argv)))
+    c = cfg_for("--trade-hours", "any", "--friday-cutoff", "off", "--max-spread", "0", "--min-adx", "25")
+    ok &= check("start.bat options map to config ('any' / 'off' / 0 switch off)",
+                c.trade_windows_ny == "" and c.friday_cutoff_ny == "" and c.max_spread_points == 0
+                and c.min_adx == 25)
+    ok &= check("a mistyped option or time stops with the settings-error code (no endless restarts)",
+                main_mod.main(["--trade-hours", "8-17", "--check"]) == main_mod.SETTINGS_ERROR
+                and main_mod.main(["--no-such-option"]) == main_mod.SETTINGS_ERROR)
+
+    # Backtest realism: the daily break, the weekend and the reopen spread.
+    t0 = pd.Timestamp("2026-09-23 20:15", tz="UTC")       # 16:15 New York
+    times = [t0 + pd.Timedelta(minutes=15 * i) for i in range(3)] + [pd.Timestamp("2026-09-23 22:00", tz="UTC")]
+    bars = pd.DataFrame({"time": times, "open": 4300.0, "high": 4301.0, "low": 4299.0, "close": 4300.0,
+                         "volume": 0})
+    spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+                         volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+    g = backtest.HistoricalGateway("XAUUSD", {"M15": bars}, spec, spread_points=25, rollover_spread_points=80)
+    g.primary_timeframe, g.cursor = "M15", 1
+    open_before = g.market_closed_now()
+    g.cursor = 2                                           # the 16:45 bar - the next one is the 18:00 reopen
+    ok &= check("backtest: an entry decided on the last bar before the daily break is refused "
+                "(live: market closed), not filled at the reopen",
+                not open_before and g.market_closed_now())
+    ok &= check("backtest: the spread is widened around the reopen only",
+                abs(g.spread_at(pd.Timestamp("2026-09-23 22:00", tz="UTC")) - 0.80) < 1e-9
+                and abs(g.spread_at(pd.Timestamp("2026-09-23 20:15", tz="UTC")) - 0.25) < 1e-9)
+    return ok
+
+
+def _mql_inputs(path: str) -> dict:
+    """`input <type> <Name> = <value>;` defaults of an EA, as strings."""
+    import re
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r'\s*input\s+\w+\s+(Inp\w+)\s*=\s*("[^"]*"|[^;]+);', line)
+            if m:
+                out[m.group(1)] = m.group(2).strip().strip('"')
+    return out
+
+
+def _preset(path: str) -> dict:
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith(";") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.split("||")[0].strip()
+    return out
+
+
+def test_ea_preset_python_consistency() -> bool:
+    print("\n=== 35. EA inputs <-> presets <-> Python settings <-> start.bat agree ===")
+    import paths
+    import shlex
+    ok = True
+    mt5 = os.path.join(paths.PACKAGE_ROOT, "mt5")
+    ea = _mql_inputs(os.path.join(mt5, "Experts", "UnifiedTrader_EA.mq5"))
+    logger = _mql_inputs(os.path.join(mt5, "Experts", "TelegramSMC_TradeLogger.mq5"))
+    ea_set = _preset(os.path.join(mt5, "Presets", "UnifiedTrader_EA_Default.set"))
+    log_set = _preset(os.path.join(mt5, "Presets", "TelegramSMC_TradeLogger_Unified.set"))
+    ok &= check("every preset line names a real EA input (a typo would be ignored by MT5)",
+                set(ea_set) <= set(ea) and set(log_set) <= set(logger),
+                (sorted(set(ea_set) - set(ea)), sorted(set(log_set) - set(logger))))
+    cfg = AdvisorConfig()
+
+    def num(v):
+        return float(v)
+    same = {
+        "InpSlDollars": cfg.sl_dollars, "InpTp1Dollars": cfg.tp1_dollars, "InpTrailDollars": cfg.trail_dollars,
+        "InpReferenceLot": cfg.reference_lot, "InpMaxPositionsPerDirection": cfg.max_open_positions_per_direction,
+        "InpRiskPercent": cfg.risk_percent, "InpMaxDailyLossPct": cfg.max_daily_loss_pct,
+        "InpClaudeMagicNumber": cfg.magic, "InpMaxSpreadPoints": cfg.max_spread_points,
+    }
+    bad = {k: (ea.get(k), ea_set.get(k), v) for k, v in same.items()
+           if num(ea[k]) != v or (k in ea_set and num(ea_set[k]) != v)}
+    ok &= check("lot/SL/TP1/trail/cap/risk/daily cap/magic/spread limit: EA default = preset = Python",
+                not bad, bad)
+    files = {"InpLastVerdictFilename": cfg.last_verdict_filename,
+             "InpClaudePauseFilename": cfg.claude_pause_filename,
+             "InpCalendarExportFile": cfg.econ_calendar_filename}
+    bad = {k: (ea.get(k), ea_set.get(k), v) for k, v in files.items()
+           if ea[k] != v or ea_set.get(k, v) != v}
+    ok &= check("shared file names (Why button, Claude pause, calendar) match", not bad, bad)
+    ok &= check("trade logger journals both magics under the EA's source tags",
+                int(log_set["InpMagicNumber"]) == int(ea["InpTelegramMagicNumber"])
+                and int(log_set["InpMagicNumber2"]) == cfg.magic
+                and log_set["InpSourceLabel2"] == cfg.comment, log_set)
+    with open(os.path.join(paths.PACKAGE_ROOT, "start.bat"), encoding="utf-8") as f:
+        line = next(ln for ln in f if ln.strip().lower().startswith("set gt_args="))
+    gt_args = shlex.split(line.split("=", 1)[1])
+    started = main_mod.build_config(main_mod.build_parser().parse_args(gt_args))
+    ok &= check("start.bat's options parse; its shared cap counts the EA's Telegram magic",
+                started.shared_cap_magic_numbers == [int(ea["InpTelegramMagicNumber"])]
+                and not started.dry_run, gt_args)
+    ok &= check("start.bat keeps the fixed trading rules (2% risk, 10% cap, $6/$6/$3, 5 per direction)",
+                (started.risk_percent, started.max_daily_loss_pct, started.sl_dollars, started.tp1_dollars,
+                 started.trail_dollars, started.max_open_positions_per_direction) == (2.0, 10.0, 6.0, 6.0, 3.0, 5))
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3584,6 +3763,8 @@ def main() -> int:
         test_xtr_logic(),
         test_relay_supervisor(),
         test_first_run_wizard(),
+        test_tactics(),
+        test_ea_preset_python_consistency(),
     ]
     print()
     if all(results):
