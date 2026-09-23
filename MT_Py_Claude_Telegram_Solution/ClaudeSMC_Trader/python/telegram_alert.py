@@ -1,6 +1,7 @@
 """
-Sends a one-way Telegram notification when Claude issues a "full" conviction
-verdict - see main.py's run_once(). This is send-only, not a signal source:
+Sends one-way Telegram notifications: a "full" conviction verdict alert (see
+main.py's run_once()) and an optional daily/weekly performance digest (see
+main.py's send_performance_digests()). This is send-only, not a signal source:
 it never reads Telegram, never places an order, and is completely
 independent of the Telegram signal-copying stack elsewhere in this repo
 (../../python/telegram_copier.py, ../../MQL5/Experts/TelegramSMC_Copier.mq5,
@@ -54,6 +55,21 @@ def format_full_conviction_message(symbol: str, verdict, executed: bool,
         f"Status: {status}\n"
         f"Reasoning: {verdict.reasoning}"
     )
+
+
+def format_performance_digest(symbol: str, period_label: str, trades: list[dict]) -> str:
+    """trades: mt5_gateway.recent_closed_trades()'s own shape, already
+    filtered to the period being reported on - see main.py's
+    send_performance_digests(). period_label is e.g. "Daily" or "Weekly".
+    """
+    if not trades:
+        return f"{period_label} digest for {symbol}: no closed trades."
+    wins = [t for t in trades if t["pnl_dollars"] > 0]
+    losses = [t for t in trades if t["pnl_dollars"] < 0]
+    net = sum(t["pnl_dollars"] for t in trades)
+    win_rate = len(wins) / len(trades) * 100.0
+    return (f"{period_label} digest for {symbol}: {len(trades)} trades, "
+            f"{len(wins)}W/{len(losses)}L ({win_rate:.0f}% win rate), net P&L ${net:+.2f}")
 
 
 def send_alert(bot_token: str, chat_id: str, text: str, poster=_post_json) -> bool:

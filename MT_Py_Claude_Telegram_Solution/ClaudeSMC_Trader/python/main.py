@@ -18,7 +18,7 @@ import argparse
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import claude_advisor
 import executor
@@ -82,6 +82,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.telegram_alert_bot_token = args.telegram_alert_bot_token
     if args.telegram_alert_chat_id:
         cfg.telegram_alert_chat_id = args.telegram_alert_chat_id
+    if args.no_performance_digest:
+        cfg.send_performance_digest = False
     if args.model:
         cfg.claude_model = args.model
     if args.poll_seconds is not None:
@@ -109,18 +111,26 @@ class DayRoll:
         self.daily_loss_hit = False
         self.daily_target_hit = False
 
-    def roll(self, equity: float) -> None:
+    def roll(self, equity: float):
+        """Returns the date that just ended if today is a genuinely new UTC
+        day (so callers can fire a once-per-day digest - see main.py's
+        send_performance_digests()), else None. Never returns a date on the
+        very first call (process just started - there's no "previous day"
+        to digest yet, only an anchor point)."""
         today = datetime.now(timezone.utc).date()
         if today != self.date:
+            ended_date = self.date
             self.date = today
             self.trades_today = 0
             self.day_start_equity = equity
             self.daily_loss_hit = False
             self.daily_target_hit = False
-        elif self.day_start_equity <= 0:
+            return ended_date
+        if self.day_start_equity <= 0:
             # First cycle ever (process just started mid-day) - anchor here
             # rather than waiting for the next UTC midnight.
             self.day_start_equity = equity
+        return None
 
     def check_daily_limits(self, cfg: AdvisorConfig, equity: float) -> None:
         if self.day_start_equity <= 0:
@@ -145,9 +155,45 @@ class DayRoll:
         return ""
 
 
+def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
+    """Fires once per UTC day roll (see DayRoll.roll()) with a digest of the
+    day that just ended, plus a weekly digest too on the Sunday->Monday
+    roll. Reuses mt5_gateway.recent_closed_trades() (see #69's own comment)
+    rather than logs/trades.csv, so it reflects real broker fills whether
+    or not this process was running the whole time. Runs in a daemon
+    thread, same reasoning as the full-conviction alert just above -
+    a slow/unreachable Telegram API must never delay the next poll cycle.
+    """
+    def _send():
+        # count=500/2000 are generous ceilings, not real limits - a manual
+        # trading system won't produce anywhere near that many trades in a
+        # day or week; lookback_days pads a couple of days past the window
+        # being reported on purely to tolerate clock/timezone edge cases,
+        # the exact date filter below does the real work.
+        daily_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=500,
+                                                            lookback_days=2)
+                        if t["time"].date() == ended_date]
+        daily_msg = telegram_alert.format_performance_digest(cfg.symbol, "Daily", daily_trades)
+        telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, daily_msg)
+
+        if ended_date.weekday() == 6:  # Sunday just ended - the UTC week (Mon-Sun) just completed
+            week_start = ended_date - timedelta(days=6)
+            weekly_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=2000,
+                                                                 lookback_days=9)
+                            if week_start <= t["time"].date() <= ended_date]
+            weekly_msg = telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades)
+            telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
+                                      weekly_msg)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     equity = gw.account_equity()
-    day.roll(equity)
+    ended_date = day.roll(equity)
+    if ended_date is not None and cfg.send_performance_digest and cfg.telegram_alert_bot_token \
+            and cfg.telegram_alert_chat_id:
+        send_performance_digests(cfg, ended_date)
     day.check_daily_limits(cfg, equity)
     features = market_intel.build_feature_snapshot(gw, cfg)
     verdict = claude_advisor.get_verdict(client, cfg, features)
@@ -240,6 +286,9 @@ def main(argv: list | None = None) -> int:
                              "See README.md for setup; see telegram_alert.py for what's sent")
     parser.add_argument("--telegram-alert-chat-id", dest="telegram_alert_chat_id",
                         help="chat id to send full-conviction alerts to (default: unset, alerts off)")
+    parser.add_argument("--no-performance-digest", action="store_true", dest="no_performance_digest",
+                        help="disable the daily/weekly performance digest (on by default once "
+                             "telegram-alert-bot-token/chat-id are set - see config.py)")
     parser.add_argument("--model", help="Claude model id (default claude-opus-5)")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
@@ -279,7 +328,7 @@ def main(argv: list | None = None) -> int:
         log.info("Config: lot=%s max_same_dir=%d shared_cap_magics=%s sl_mode=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
                   "min_confluence=%d/3 require_full=%s max_daily_loss=%s daily_target=%s model=%s "
-                  "dry_run=%s telegram_alerts=%s",
+                  "dry_run=%s telegram_alerts=%s performance_digest=%s",
                   f"risk {cfg.risk_percent:g}% of equity (max {cfg.max_lot_size:g})"
                   if cfg.use_risk_percent else f"fixed {cfg.fixed_lot:g}",
                   cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
@@ -290,7 +339,9 @@ def main(argv: list | None = None) -> int:
                   f"{cfg.max_daily_loss_pct:g}%" if cfg.max_daily_loss_pct > 0 else "off",
                   f"{cfg.daily_target_pct:g}%" if cfg.use_daily_target else "off",
                   cfg.claude_model, cfg.dry_run,
-                  "on" if (cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
+                  "on" if (cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off",
+                  "on" if (cfg.send_performance_digest and cfg.telegram_alert_bot_token
+                           and cfg.telegram_alert_chat_id) else "off")
         return 0
 
     if cfg.dry_run:

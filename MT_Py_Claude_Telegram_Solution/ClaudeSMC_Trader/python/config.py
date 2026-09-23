@@ -181,6 +181,13 @@ class AdvisorConfig:
     telegram_alert_chat_id: str = ""     # your own chat id - DM the bot, then GET
                                          # https://api.telegram.org/bot<token>/getUpdates to find it
 
+    # Daily (every UTC day roll) + weekly (every UTC Sunday->Monday roll)
+    # performance digest, reusing the same telegram_alert_bot_token/
+    # telegram_alert_chat_id above - see main.py's send_performance_digests()
+    # and telegram_alert.format_performance_digest(). Takes effect only when
+    # those credentials are actually set; this flag alone changes nothing.
+    send_performance_digest: bool = True
+
     # --- Order plumbing ---
     magic: int = 20260921
     comment: str = "Claude_Sig"

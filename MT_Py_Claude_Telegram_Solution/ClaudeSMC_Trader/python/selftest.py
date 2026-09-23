@@ -1235,6 +1235,18 @@ def test_telegram_alert() -> bool:
     ok &= check("a rejected verdict's message includes the reject_reason, not just NOT executed",
                 "NOT executed - already 5 open buy position(s) (max 5)" in msg_rej, msg_rej)
 
+    empty_digest = telegram_alert.format_performance_digest("XAUUSD", "Daily", [])
+    ok &= check("an empty trade list reports 'no closed trades', not a division by zero",
+                empty_digest == "Daily digest for XAUUSD: no closed trades.", empty_digest)
+
+    mixed_digest = telegram_alert.format_performance_digest("XAUUSD", "Weekly", [
+        {"pnl_dollars": 5.0}, {"pnl_dollars": -2.0}, {"pnl_dollars": 3.0}, {"pnl_dollars": -1.0},
+    ])
+    ok &= check("wins/losses/net P&L/win rate are all correct in the digest text",
+                mixed_digest == "Weekly digest for XAUUSD: 4 trades, 2W/2L (50% win rate), "
+                                 "net P&L $+5.00",
+                mixed_digest)
+
     return ok
 
 
@@ -1289,6 +1301,16 @@ def test_day_roll_daily_limits() -> bool:
     ok &= check("roll() into a new UTC day resets the latch and re-anchors day_start_equity",
                 day4.block_reason() == "" and day4.day_start_equity == 9000.0,
                 (day4.block_reason(), day4.day_start_equity))
+
+    day5 = main_mod.DayRoll()
+    ok &= check("roll() returns None on the very first call - no previous day to digest yet",
+                day5.roll(10000.0) is None)
+    ok &= check("roll() returns None on a same-day call",
+                day5.roll(10050.0) is None)
+    day5.date = yesterday
+    rolled_ended_date = day5.roll(10100.0)
+    ok &= check("roll() returns the date that just ended on a genuine UTC day transition",
+                rolled_ended_date == yesterday, rolled_ended_date)
 
     return ok
 
