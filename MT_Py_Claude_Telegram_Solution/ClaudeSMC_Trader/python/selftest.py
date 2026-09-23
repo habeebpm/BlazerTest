@@ -33,6 +33,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -616,6 +617,54 @@ def test_executor() -> bool:
     executor.execute(fg8, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("execute() actually sends the risk-sized lot, not fixed_lot",
                 fg8.orders_sent and abs(fg8.orders_sent[0][1] - lots_6k) < 1e-9, fg8.orders_sent)
+
+    return ok
+
+
+def test_stale_csv_header_warning() -> bool:
+    print("\n=== 5b. executor._append_row(): stale CSV header detection ===")
+    ok = True
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "decisions.csv")
+        # Simulate a file written by an OLDER version, missing a column a
+        # newer `fieldnames` list adds - exactly what happens after
+        # upgrading a live deployment's decisions.csv to include "ticket".
+        old_fields = ["time", "source", "direction"]
+        with open(path, "w", newline="") as f:
+            csv.writer(f).writerow(old_fields)
+            csv.writer(f).writerow(["2026-01-01T00:00:00+00:00", "Claude_Sig", "buy"])
+
+        new_fields = ["time", "source", "direction", "ticket"]
+        logged = []
+        handler = logging.Handler()
+        handler.emit = lambda record: logged.append(record.getMessage())
+        executor.log.addHandler(handler)
+        try:
+            executor._append_row(path, new_fields,
+                                 {"time": "x", "source": "Claude_Sig", "direction": "buy", "ticket": "1"})
+            executor._append_row(path, new_fields,
+                                 {"time": "y", "source": "Claude_Sig", "direction": "sell", "ticket": "2"})
+        finally:
+            executor.log.removeHandler(handler)
+
+        ok &= check("a stale (older-layout) header on an existing file is warned about",
+                    any("older column layout" in m for m in logged), logged)
+        ok &= check("the warning is only logged ONCE per file, not once per appended row",
+                    sum("older column layout" in m for m in logged) == 1, logged)
+
+        path2 = os.path.join(tmp, "trades.csv")
+        logged2 = []
+        handler2 = logging.Handler()
+        handler2.emit = lambda record: logged2.append(record.getMessage())
+        executor.log.addHandler(handler2)
+        try:
+            executor._append_row(path2, ["a", "b"], {"a": "1", "b": "2"})
+        finally:
+            executor.log.removeHandler(handler2)
+        ok &= check("a brand-new file (no existing header to compare against) never warns",
+                    logged2 == [], logged2)
 
     return ok
 
@@ -1325,6 +1374,58 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
     return ok
 
 
+class FakeDayStateGateway:
+    """Only current_time/account_equity() - enough to test
+    backtest.BacktestDayState in isolation from a real HistoricalGateway.
+    """
+    def __init__(self, current_time, equity):
+        self.current_time = current_time
+        self._equity = equity
+
+    def account_equity(self):
+        return self._equity
+
+
+def test_backtest_day_state() -> bool:
+    print("\n=== 11b. backtest.BacktestDayState: daily loss breaker wired into a backtest ===")
+    ok = True
+    cfg = AdvisorConfig(max_daily_loss_pct=3.0)
+    state = backtest.BacktestDayState()
+    day1 = pd.Timestamp("2026-01-01", tz="UTC")
+    g = FakeDayStateGateway(day1, 10000.0)
+
+    ok &= check("no block reason on the first call of a new simulated day (day-start equity just "
+                "anchored, nothing to compare against yet)",
+                state.block_reason(g, cfg) == "", state.block_reason(g, cfg))
+
+    g._equity = 9500.0  # -5%, same simulated day
+    ok &= check("the breaker trips once simulated equity is down max_daily_loss_pct on the same day",
+                state.block_reason(g, cfg) == "daily loss circuit breaker triggered",
+                state.block_reason(g, cfg))
+
+    g._equity = 10000.0  # recovers, still same day
+    ok &= check("the breaker stays latched for the rest of the simulated day even if equity "
+                "recovers",
+                state.block_reason(g, cfg) == "daily loss circuit breaker triggered",
+                state.block_reason(g, cfg))
+
+    g.current_time = pd.Timestamp("2026-01-02", tz="UTC")
+    ok &= check("a new simulated day resets the latch and re-anchors day-start equity - this is "
+                "what makes max_daily_loss_pct actually engage during a backtest, instead of "
+                "silently never applying the way it would if backtest.py never called this",
+                state.block_reason(g, cfg) == "", state.block_reason(g, cfg))
+
+    cfg_off = AdvisorConfig()  # max_daily_loss_pct=0 (disabled)
+    state_off = backtest.BacktestDayState()
+    g_off = FakeDayStateGateway(day1, 10000.0)
+    state_off.block_reason(g_off, cfg_off)
+    g_off._equity = 5000.0  # -50%
+    ok &= check("max_daily_loss_pct=0 (the default) never blocks anything, even a 50% drawdown",
+                state_off.block_reason(g_off, cfg_off) == "", state_off.block_reason(g_off, cfg_off))
+
+    return ok
+
+
 def test_backtest_end_to_end_mechanical() -> bool:
     print("\n=== 12. backtest.py end-to-end run (--mechanical, tiny synthetic dataset, no API) ===")
     ok = True
@@ -1567,6 +1668,28 @@ def test_calibration_report() -> bool:
                 and pairs3[1] == (decisions[3], trades_missing_middle[1]),
                 pairs3)
 
+    # Regression: a decision with a REAL ticket that has no matching trade
+    # row must be reported unmatched, never silently steal the fallback
+    # trade meant for a later, genuinely-ticketless decision - otherwise
+    # both end up wrong (one paired to an unrelated trade, the other
+    # wrongly reported unmatched) with no warning either way.
+    decisions_with_a_lost_ticket = [
+        {"executed": "True", "conviction": "full", "confluence_count": "3", "ticket": "101"},
+        {"executed": "True", "conviction": "full", "confluence_count": "3", "ticket": "999"},  # trade row lost
+        {"executed": "True", "conviction": "full", "confluence_count": "3", "ticket": ""},      # genuine dry-run
+    ]
+    trades_with_one_dry_run = [{"ticket": "101"}, {"ticket": ""}]
+    pairs4, unmatched4 = calibration_report.join_decisions_and_trades(
+        decisions_with_a_lost_ticket, trades_with_one_dry_run)
+    ok &= check("the decision with the lost ticket (999) is reported unmatched rather than "
+                "stealing the dry-run trade meant for the decision after it",
+                unmatched4 == 1, (pairs4, unmatched4))
+    ok &= check("the genuinely-ticketless decision still gets its own dry-run trade, not "
+                "wrongly reported unmatched because 999 stole it first",
+                len(pairs4) == 2 and pairs4[-1] == (decisions_with_a_lost_ticket[2],
+                                                    trades_with_one_dry_run[1]),
+                pairs4)
+
     pnl_by_ticket = {"101": 5.0, "102": -3.0, "103": 4.0}
     buckets = calibration_report.summarize_by_bucket(pairs, pnl_by_ticket)
     b_full_3 = buckets[("full", 3)]
@@ -1703,6 +1826,7 @@ def main() -> int:
         test_market_structure_ob_fvg_levels(),
         test_price_distance(),
         test_executor(),
+        test_stale_csv_header_warning(),
         test_claude_advisor_wiring(),
         test_claude_error_classification(),
         test_full_snapshot_pipeline(),
@@ -1714,6 +1838,7 @@ def main() -> int:
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),
         test_backtest_exit_simulation_sl_to_tp1(),
+        test_backtest_day_state(),
         test_backtest_end_to_end_mechanical(),
         test_telegram_alert(),
         test_day_roll_daily_limits(),

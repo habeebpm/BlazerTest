@@ -100,9 +100,17 @@ def join_decisions_and_trades(decisions: list[dict], trades: list[dict]) -> tupl
     unmatched = 0
     for d in executed:
         ticket = str(d.get("ticket", "")).strip()
-        bucket = trades_by_ticket.get(ticket) if ticket else None
-        if bucket:
-            pairs.append((d, bucket.pop(0)))
+        if ticket:
+            # A decision with a REAL ticket must only ever match that exact
+            # ticket - never fall through to the ticketless-trade pool,
+            # which would let a merely-missing trade row (a genuinely
+            # unmatched decision) silently steal the fallback slot meant
+            # for a later decision that actually has no ticket at all.
+            bucket = trades_by_ticket.get(ticket)
+            if bucket:
+                pairs.append((d, bucket.pop(0)))
+            else:
+                unmatched += 1
             continue
         t = next(fallback_iter, None)
         if t is not None:

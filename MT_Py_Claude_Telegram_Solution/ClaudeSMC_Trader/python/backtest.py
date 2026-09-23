@@ -527,8 +527,45 @@ def estimate_call_count(gateway: HistoricalGateway) -> int:
     return len(gateway.bars[gateway.primary_timeframe]) - gateway.cursor
 
 
+class BacktestDayState:
+    """Local equivalent of main.DayRoll's daily-loss/target tracking,
+    scoped to a single backtest run/gateway - without this,
+    config.py's max_daily_loss_pct/use_daily_target would silently never
+    engage during a backtest (unlike use_risk_percent/sl_mode=atr/
+    dxy_symbol/consensus_magic_numbers, which HistoricalGateway already
+    supports), making a backtest of a config that relies on the breaker
+    unrealistically optimistic about how much it would actually trade.
+    """
+    def __init__(self):
+        self.date = None
+        self.start_equity = 0.0
+        self.loss_hit = False
+        self.target_hit = False
+
+    def block_reason(self, gateway: HistoricalGateway, cfg: AdvisorConfig) -> str:
+        day = gateway.current_time.date()
+        equity = gateway.account_equity()
+        if day != self.date:
+            self.date = day
+            self.start_equity = equity
+            self.loss_hit = False
+            self.target_hit = False
+        if self.start_equity > 0:
+            move_pct = (equity - self.start_equity) / self.start_equity * 100.0
+            if cfg.max_daily_loss_pct > 0 and not self.loss_hit and -move_pct >= cfg.max_daily_loss_pct:
+                self.loss_hit = True
+            if cfg.use_daily_target and not self.target_hit and move_pct >= cfg.daily_target_pct:
+                self.target_hit = True
+        if self.loss_hit:
+            return "daily loss circuit breaker triggered"
+        if self.target_hit:
+            return "daily profit target already reached"
+        return ""
+
+
 def run_backtest(gateway: HistoricalGateway, cfg: AdvisorConfig, client, mechanical: bool) -> None:
     day_trades = {}  # date -> count, so max_trades_per_day applies per simulated day too
+    day_state = BacktestDayState()
     evaluated = 0
     while True:
         gateway.manage_positions(cfg)
@@ -547,7 +584,8 @@ def run_backtest(gateway: HistoricalGateway, cfg: AdvisorConfig, client, mechani
 
         day = gateway.current_time.date()
         trades_today = day_trades.get(day, 0)
-        decision = executor.execute(gateway, cfg, verdict, gateway.spec, trades_today)
+        block_reason = day_state.block_reason(gateway, cfg)
+        decision = executor.execute(gateway, cfg, verdict, gateway.spec, trades_today, block_reason)
         if decision.executed:
             day_trades[day] = trades_today + 1
 
@@ -586,6 +624,7 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
     primary_gw = gateways[styles[0]]
     shared_cfg = cfgs[styles[0]]
     day_trades = {s: {} for s in styles}
+    day_states = {s: BacktestDayState() for s in styles}
     evaluated = 0
     while True:
         for s in styles:
@@ -605,7 +644,8 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
             g, cfg = gateways[s], cfgs[s]
             day = g.current_time.date()
             trades_today = day_trades[s].get(day, 0)
-            decision = executor.execute(g, cfg, verdict, g.spec, trades_today)
+            block_reason = day_states[s].block_reason(g, cfg)
+            decision = executor.execute(g, cfg, verdict, g.spec, trades_today, block_reason)
             if decision.executed:
                 day_trades[s][day] = trades_today + 1
 

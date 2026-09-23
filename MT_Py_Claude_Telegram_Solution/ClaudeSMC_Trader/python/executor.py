@@ -53,8 +53,29 @@ def _csv_path(cfg: AdvisorConfig, name: str) -> str:
     return os.path.join(cfg.log_dir, name)
 
 
+_warned_stale_header_paths: set = set()
+
+
 def _append_row(path: str, fieldnames: list, row: dict) -> None:
     new_file = not os.path.exists(path)
+    if not new_file and path not in _warned_stale_header_paths:
+        # A file from before a field was added to `fieldnames` (e.g. the
+        # "ticket" column) keeps its OLD header forever - DictWriter only
+        # writes one when the file doesn't exist yet. New rows appended
+        # under that stale header silently misalign when read back with
+        # csv.DictReader (the extra trailing value lands under the None
+        # restkey, not its real column name) - warn loudly, once per file
+        # per process, rather than let that happen with no signal at all.
+        with open(path, newline="") as f:
+            existing_header = f.readline().rstrip("\r\n")
+        expected_header = ",".join(fieldnames)
+        if existing_header and existing_header != expected_header:
+            log.warning(
+                "%s has an older column layout than this version writes (has: %r, now writing: "
+                "%r) - new rows will misalign when read back against the OLD header still on "
+                "file. Rename or archive the existing file so a fresh one starts with the "
+                "current header.", path, existing_header, expected_header)
+        _warned_stale_header_paths.add(path)
     with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if new_file:
