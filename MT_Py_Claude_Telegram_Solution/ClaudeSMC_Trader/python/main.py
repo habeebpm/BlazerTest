@@ -62,6 +62,10 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.shared_cap_magic_numbers = [int(m) for m in args.shared_cap_magic.split(",") if m.strip()]
     if args.sl_dollars is not None:
         cfg.sl_dollars = args.sl_dollars
+    if args.sl_mode:
+        cfg.sl_mode = args.sl_mode
+    if args.sl_atr_mult is not None:
+        cfg.sl_atr_mult = args.sl_atr_mult
     if args.tp_dollars is not None:
         cfg.tp1_dollars = args.tp_dollars
     if args.trail_dollars is not None:
@@ -198,6 +202,13 @@ def main(argv: list | None = None) -> int:
                         help="stop new entries once the account is up this many pct on the UTC "
                              "day (default: unset = disabled) - pass 0 to explicitly disable")
     parser.add_argument("--sl-dollars", type=float, dest="sl_dollars", help="stop-loss in USD (default 6)")
+    parser.add_argument("--sl-mode", choices=["fixed", "atr"], dest="sl_mode",
+                        help="default 'fixed' (always --sl-dollars); 'atr' derives the entry stop "
+                             "from recent ATR x --sl-atr-mult instead, clamped to "
+                             "[sl_dollars_min, sl_dollars_max] - entry SL only, tp1/trail stay "
+                             "fixed dollar amounts either way (see config.py)")
+    parser.add_argument("--sl-atr-mult", type=float, dest="sl_atr_mult",
+                        help="--sl-mode=atr only: stop = ATR x this multiplier (default 1.5)")
     parser.add_argument("--tp-dollars", type=float, dest="tp_dollars",
                         help="TP1 level in USD (default 6) - the profit level that locks in the "
                              "stop-loss (exit_style=sl_to_tp1) or the fixed broker take-profit "
@@ -265,13 +276,14 @@ def main(argv: list | None = None) -> int:
 
     if args.check:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
-        log.info("Config: lot=%s max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
+        log.info("Config: lot=%s max_same_dir=%d shared_cap_magics=%s sl_mode=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
                   "min_confluence=%d/3 require_full=%s max_daily_loss=%s daily_target=%s model=%s "
                   "dry_run=%s telegram_alerts=%s",
                   f"risk {cfg.risk_percent:g}% of equity (max {cfg.max_lot_size:g})"
                   if cfg.use_risk_percent else f"fixed {cfg.fixed_lot:g}",
                   cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
+                  f"atr(x{cfg.sl_atr_mult:g})" if cfg.sl_mode == "atr" else "fixed",
                   cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
                   cfg.breakeven_atr_mult, cfg.breakeven_atr_period, cfg.decay_window_minutes,
                   cfg.min_confluence_count, cfg.require_full_conviction,

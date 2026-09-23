@@ -20,6 +20,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import market_intel
 from claude_advisor import ConfluenceVerdict
 from config import AdvisorConfig
 
@@ -153,6 +154,26 @@ def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> float:
     return round(lots, 2)
 
 
+def atr_sl_distance(gateway, cfg: AdvisorConfig, spec) -> float | None:
+    """ATR-based entry stop-loss price distance for sl_mode="atr" - see
+    config.py's own comment for why this is entry-SL only. Returns None
+    (callers fall back to the fixed sl_dollars distance) when there isn't
+    enough bar history yet, exactly like every other "not enough data"
+    path in market_intel.py.
+    """
+    bars = gateway.get_bars(cfg.symbol, cfg.sl_atr_timeframe, cfg.sl_atr_period + 5)
+    closed = bars.iloc[:-1]
+    if len(closed) <= cfg.sl_atr_period:
+        return None
+    atr_value = float(market_intel.atr(closed, cfg.sl_atr_period).iloc[-1])
+    if atr_value <= 0:
+        return None
+    sl_dist = atr_value * cfg.sl_atr_mult
+    min_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars_min, cfg.fixed_lot)
+    max_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars_max, cfg.fixed_lot)
+    return max(min_dist, min(sl_dist, max_dist))
+
+
 def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
             trades_today: int, daily_block_reason: str = "") -> Decision:
     reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
@@ -166,7 +187,14 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     # sl_dist is always solved at fixed_lot - a fixed REFERENCE price distance,
     # independent of what lot actually ends up trading (see position_size()
     # and config.py's use_risk_percent comment).
-    sl_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.fixed_lot)
+    if cfg.sl_mode == "atr":
+        sl_dist = atr_sl_distance(gateway, cfg, spec)
+        if sl_dist is None:
+            sl_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.fixed_lot)
+    elif cfg.sl_mode == "fixed":
+        sl_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.fixed_lot)
+    else:
+        raise ValueError(f"Unrecognized sl_mode {cfg.sl_mode!r} - must be 'fixed' or 'atr'.")
     lots = position_size(gateway, cfg, spec, sl_dist)
     if verdict.direction == "buy":
         sl_price = entry_price - sl_dist

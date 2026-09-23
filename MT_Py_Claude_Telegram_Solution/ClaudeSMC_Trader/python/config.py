@@ -111,6 +111,25 @@ class AdvisorConfig:
     exit_style: str = "sl_to_tp1"    # "sl_to_tp1" (live default), "breakeven_r_decay" (live, opt-in), or "fixed_tp" (comparison only)
     max_trades_per_day: int = 0      # 0 = unlimited
 
+    # --- ATR-adaptive initial stop-loss (opt-in; entry SL ONLY) - when
+    #     sl_mode="atr", executor.execute() derives the initial stop
+    #     distance from the symbol's own recent volatility (ATR) instead of
+    #     the fixed sl_dollars, clamped to [sl_dollars_min, sl_dollars_max]
+    #     (still USD, at fixed_lot) as a safety rail against a wild ATR
+    #     reading. This does NOT touch tp1_dollars/trail_dollars, which stay
+    #     fixed dollar amounts either way: ClaudeSMC_TradeManager.mq5's exit
+    #     logic only ever reads those two INPUT values, not anything
+    #     computed here at entry time - there is no live channel to hand it
+    #     a per-trade ATR-derived lock/trail distance, only the entry SL is
+    #     Python's own decision to make. Off by default: sl_mode="fixed"
+    #     keeps the old behavior (sl_dollars, always) unchanged.
+    sl_mode: str = "fixed"           # "fixed" (default) or "atr"
+    sl_atr_mult: float = 1.5         # sl_mode="atr" only: stop = ATR x this multiplier
+    sl_atr_period: int = 14
+    sl_atr_timeframe: str = "M15"    # sl_mode="atr" only: usually primary_timeframe
+    sl_dollars_min: float = 3.0      # sl_mode="atr" only: floor, in USD at fixed_lot
+    sl_dollars_max: float = 15.0     # sl_mode="atr" only: ceiling, in USD at fixed_lot
+
     # --- breakeven_r_decay only - see the module docstring; enforced by the
     #     MQL5 EAs, not this script, so these three exist purely as the one
     #     documented source of truth to mirror into InpBreakevenAtrMult/
@@ -135,6 +154,19 @@ class AdvisorConfig:
     # it) even though the magic-number wiring here is correct. See
     # mt5_gateway.count_same_direction() and main.py's startup warning.
     shared_cap_magic_numbers: list = field(default_factory=list)
+
+    # --- Consensus-aware context (optional, purely informational; empty by
+    #     default) - magic numbers of OTHER trading systems on this same
+    #     account/symbol (e.g. UnifiedTrader_EA.mq5's own
+    #     InpTelegramMagicNumber) whose open positions market_intel.
+    #     consensus_context() summarizes into the snapshot Claude sees, so
+    #     it can weigh whether the other system already agrees or disagrees
+    #     with the setup. Read-only: unlike shared_cap_magic_numbers above,
+    #     this never affects executor.gate() or any position cap - it only
+    #     ever changes what Claude reads, never what's allowed to execute.
+    #     Can safely be set to the SAME numbers as shared_cap_magic_numbers
+    #     if both behaviors are wanted from the same other system(s).
+    consensus_magic_numbers: list = field(default_factory=list)
 
     # --- Telegram alert (optional, send-only - see telegram_alert.py) ---
     # Fires on EVERY "full" conviction verdict from Claude, whether or not it

@@ -326,12 +326,13 @@ class FakeGateway:
     SymbolSpec = gw.SymbolSpec
 
     def __init__(self, same_dir_open: int = 0, bid: float = 2350.0, ask: float = 2350.2,
-                 equity: float = 10000.0):
+                 equity: float = 10000.0, bars_df=None):
         self.same_dir_open = same_dir_open
         self.bid, self.ask = bid, ask
         self.orders_sent = []
         self.last_additional_magics = None
         self.equity = equity
+        self.bars_df = bars_df
 
     def count_same_direction(self, symbol, magic, direction, additional_magics=()):
         self.last_additional_magics = additional_magics
@@ -339,6 +340,9 @@ class FakeGateway:
 
     def account_equity(self):
         return self.equity
+
+    def get_bars(self, symbol, timeframe_name, count):
+        return self.bars_df.tail(count).reset_index(drop=True)
 
     def get_tick(self, symbol):
         return FakeTick(self.bid, self.ask)
@@ -480,6 +484,52 @@ def test_executor() -> bool:
     d9 = executor.execute(fg9, cfg_blackout_now, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("gate() actually rejects a trade evaluated inside a currently-active blackout window",
                 not d9.executed and "news blackout" in d9.reject_reason, d9.reject_reason)
+
+    # --- ATR-adaptive initial stop-loss (sl_mode="atr") ---
+    atr_bars = make_trending_df(n=40, start=2350.0, drift=0.0, noise=0.5, seed=3)
+    cfg_atr = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                            sl_mode="atr", sl_atr_mult=1.5, sl_atr_period=14,
+                            sl_dollars_min=3.0, sl_dollars_max=15.0)
+    atr_dist = executor.atr_sl_distance(FakeGateway(bars_df=atr_bars), cfg_atr, spec)
+    ok &= check("atr_sl_distance() returns a positive price distance with enough bar history",
+                atr_dist is not None and atr_dist > 0, atr_dist)
+
+    min_dist = gw.price_distance_for_dollars(spec, cfg_atr.sl_dollars_min, cfg_atr.fixed_lot)
+    max_dist = gw.price_distance_for_dollars(spec, cfg_atr.sl_dollars_max, cfg_atr.fixed_lot)
+    ok &= check("the ATR distance is clamped within [sl_dollars_min, sl_dollars_max]",
+                min_dist <= atr_dist <= max_dist, (min_dist, atr_dist, max_dist))
+
+    too_short_bars = make_trending_df(n=5)
+    ok &= check("not enough bar history returns None (callers fall back to fixed sl_dollars)",
+                executor.atr_sl_distance(FakeGateway(bars_df=too_short_bars), cfg_atr, spec) is None)
+
+    fg10 = FakeGateway(same_dir_open=0, bars_df=atr_bars)
+    executor.execute(fg10, cfg_atr, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("execute() actually uses the ATR-derived SL distance under sl_mode='atr'",
+                fg10.orders_sent and abs((2350.2 - fg10.orders_sent[0][2]) - atr_dist) < 1e-6,
+                (fg10.orders_sent, atr_dist))
+
+    cfg_atr_no_history = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                       sl_mode="atr", sl_dollars=6.0)
+    fg11 = FakeGateway(same_dir_open=0, bars_df=too_short_bars)
+    executor.execute(fg11, cfg_atr_no_history, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    fallback_dist = gw.price_distance_for_dollars(spec, cfg_atr_no_history.sl_dollars,
+                                                   cfg_atr_no_history.fixed_lot)
+    ok &= check("sl_mode='atr' falls back to the fixed sl_dollars distance when there isn't enough "
+                "history yet",
+                fg11.orders_sent and abs((2350.2 - fg11.orders_sent[0][2]) - fallback_dist) < 1e-6,
+                (fg11.orders_sent, fallback_dist))
+
+    cfg_bad_sl_mode = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                    sl_mode="not_a_real_mode")
+    fg12 = FakeGateway(same_dir_open=0, bars_df=atr_bars)
+    raised_bad_sl_mode = None
+    try:
+        executor.execute(fg12, cfg_bad_sl_mode, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    except ValueError as exc:
+        raised_bad_sl_mode = exc
+    ok &= check("an unrecognized sl_mode raises ValueError instead of silently behaving like 'fixed'",
+                raised_bad_sl_mode is not None, raised_bad_sl_mode)
 
     # --- equity-scaled lot sizing (position_size()) ---
     cfg_fixed = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
@@ -683,6 +733,8 @@ def test_full_snapshot_pipeline() -> bool:
                 snapshot["recent_performance"])
     ok &= check("dxy is null when dxy_symbol is unset (the default)",
                 snapshot["dxy"] is None, snapshot["dxy"])
+    ok &= check("consensus is null when consensus_magic_numbers is unset (the default)",
+                snapshot["consensus"] is None, snapshot["consensus"])
 
     import json
     try:
@@ -737,6 +789,54 @@ def test_dxy_context() -> bool:
     too_short_df = make_trending_df(n=10)
     ok &= check("not enough history yet returns None rather than a garbage EMA",
                 market_intel.dxy_context(FakeDxyGateway(too_short_df), cfg_on) is None)
+
+    return ok
+
+
+class FakeConsensusGateway:
+    """Only implements open_positions() - enough to test
+    market_intel.consensus_context() in isolation. positions_by_magic maps
+    magic -> list of {"direction": "buy"|"sell"} dicts, same shape
+    mt5_gateway.open_positions() returns.
+    """
+    def __init__(self, positions_by_magic):
+        self.positions_by_magic = positions_by_magic
+        self.calls = []
+
+    def open_positions(self, symbol, magic):
+        self.calls.append((symbol, magic))
+        return self.positions_by_magic.get(magic, [])
+
+
+def test_consensus_context() -> bool:
+    print("\n=== 8e. market_intel.consensus_context() ===")
+    ok = True
+
+    cfg_off = AdvisorConfig()
+    fake_off = FakeConsensusGateway({})
+    ok &= check("consensus_magic_numbers unset (the default) returns None without calling the gateway",
+                market_intel.consensus_context(fake_off, cfg_off) is None and fake_off.calls == [],
+                fake_off.calls)
+
+    cfg_on = AdvisorConfig(consensus_magic_numbers=[20260922])
+    fake_on = FakeConsensusGateway({20260922: [{"direction": "buy"}, {"direction": "buy"},
+                                                {"direction": "sell"}]})
+    result = market_intel.consensus_context(fake_on, cfg_on)
+    ok &= check("positions from every configured magic are counted by direction",
+                result == {"other_system_buy_positions": 2, "other_system_sell_positions": 1}, result)
+
+    cfg_multi = AdvisorConfig(consensus_magic_numbers=[111, 222])
+    fake_multi = FakeConsensusGateway({111: [{"direction": "buy"}], 222: [{"direction": "sell"}] * 3})
+    result_multi = market_intel.consensus_context(fake_multi, cfg_multi)
+    ok &= check("multiple configured magics are combined into one summary",
+                result_multi == {"other_system_buy_positions": 1, "other_system_sell_positions": 3},
+                result_multi)
+
+    cfg_none_open = AdvisorConfig(consensus_magic_numbers=[999])
+    result_empty = market_intel.consensus_context(FakeConsensusGateway({}), cfg_none_open)
+    ok &= check("no open positions under the configured magic reports zero, not None",
+                result_empty == {"other_system_buy_positions": 0, "other_system_sell_positions": 0},
+                result_empty)
 
     return ok
 
@@ -1206,6 +1306,7 @@ def main() -> int:
         test_full_snapshot_pipeline(),
         test_recent_performance_summary(),
         test_dxy_context(),
+        test_consensus_context(),
         test_mt5_gateway_recent_closed_trades(),
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),

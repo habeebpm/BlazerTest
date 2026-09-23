@@ -129,6 +129,15 @@ BUY) as a reason to lean toward "partial" rather than "full", not an \
 automatic veto - the correlation breaks down often enough (risk-off moves, \
 central bank divergence) that it's context, not a rule.
 
+`consensus` (null if not configured for this account - ignore it entirely \
+when null) counts another trading system's currently open positions on this \
+same symbol (e.g. a Telegram-signal-driven EA sharing this account). \
+Agreement (its open positions lean the same direction you're evaluating) is \
+mild corroborating evidence; active disagreement (it's holding a meaningful \
+number of positions the OPPOSITE direction) is worth a mention and a reason \
+for extra caution, but never an automatic veto - it may simply be trading a \
+different, unrelated strategy.
+
 `recent_performance` summarizes this system's own last several closed trades \
 (win/loss count, win rate, net P&L) - context only, never a mechanical gate: \
 it does not change what counts as a valid setup. Use it the way a disciplined \

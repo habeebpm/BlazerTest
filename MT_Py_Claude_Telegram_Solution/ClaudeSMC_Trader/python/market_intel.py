@@ -394,6 +394,24 @@ def dxy_context(gateway, cfg: AdvisorConfig, timeframe: str = "H1", bars: int = 
         return None
 
 
+def consensus_context(gateway, cfg: AdvisorConfig) -> dict | None:
+    """Read-only summary of OTHER trading systems' open positions on this
+    same symbol (see config.py's consensus_magic_numbers) - purely
+    informational, never gates anything (executor.gate() knows nothing
+    about this). None when consensus_magic_numbers is empty (the default).
+    """
+    if not cfg.consensus_magic_numbers:
+        return None
+    buys = sells = 0
+    for magic in cfg.consensus_magic_numbers:
+        for p in gateway.open_positions(cfg.symbol, magic):
+            if p["direction"] == "buy":
+                buys += 1
+            else:
+                sells += 1
+    return {"other_system_buy_positions": buys, "other_system_sell_positions": sells}
+
+
 def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> dict:
     """Win/loss context from this system's own last `count` closed trades -
     qualitative input for Claude's reasoning (see claude_advisor.SYSTEM_PROMPT),
@@ -524,6 +542,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
     levels = daily_weekly_levels(gateway, cfg.symbol)
     performance = recent_performance_summary(gateway, cfg)
     dxy = dxy_context(gateway, cfg)
+    consensus = consensus_context(gateway, cfg)
 
     recent_candles = primary_closed.tail(20)[["time", "open", "high", "low", "close", "volume"]].copy()
     recent_candles["time"] = recent_candles["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -554,6 +573,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
         },
         "daily_weekly_levels": levels,
         "dxy": dxy,
+        "consensus": consensus,
         "recent_performance": performance,
         "last_closed_candle": candle_features(primary_closed),
         "recent_candles": recent_candles.to_dict(orient="records"),
