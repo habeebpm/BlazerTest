@@ -44,7 +44,6 @@
             font-size: 14px;
             background: var(--bg);
             color: var(--text);
-            -webkit-font-smoothing: antialiased;
         }
         form { height: 100%; }
 
@@ -88,8 +87,6 @@
             flex: 1;
             overflow-y: auto;
             padding: 4px 10px 16px;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, .25) transparent;
         }
         .nav-context {
             margin: 8px 0 6px;
@@ -135,7 +132,7 @@
             padding: 8px 10px;
             border-radius: 10px;
             cursor: pointer;
-            list-style: none;
+            list-style: none;   /* with display:flex this hides the default triangle */
             user-select: none;
             font-size: 12px;
             font-weight: 700;
@@ -143,7 +140,6 @@
             text-transform: uppercase;
             color: rgba(255, 255, 255, .85);
         }
-        .nav-group > summary::-webkit-details-marker { display: none; }
         .nav-group > summary:hover { background: rgba(255, 255, 255, .08); color: #fff; }
         .nav-group > summary:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
         .g-ic { width: 20px; text-align: center; font-size: 14px; }
