@@ -1,5 +1,9 @@
 # XAUUSD Confluence EA (MQL5)
 
+> **Installing the recommended setup (Telegram + Claude)?** Follow
+> [`INSTALL.md`](INSTALL.md) (steps only) or [`QUICKSTART.md`](QUICKSTART.md)
+> (same steps, explained).
+
 An MQL5 Expert Advisor that automates XAUUSD (Gold) trading using a
 multi-indicator **confluence** strategy: trend, momentum and trend-strength
 each vote on a direction, and a trade is taken when at least **2 of the 3**

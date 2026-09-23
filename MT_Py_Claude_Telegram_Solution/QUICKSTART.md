@@ -1,5 +1,7 @@
 # Quick Start - the simple way
 
+> Steps only, no explanations: [`INSTALL.md`](INSTALL.md).
+
 This gets you from nothing to a running setup using the **recommended
 combination**:
 
