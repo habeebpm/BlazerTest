@@ -118,6 +118,16 @@ levels where stops cluster and reversals often start - an entry priced right \
 through one of these, or a stop placed just beyond one where a lot of other \
 stops likely sit too, is worth a mention in your reasoning either way.
 
+`recent_performance` summarizes this system's own last several closed trades \
+(win/loss count, win rate, net P&L) - context only, never a mechanical gate: \
+it does not change what counts as a valid setup. Use it the way a disciplined \
+trader would use their own recent track record: a cold streak is a reason to \
+demand a cleaner setup before calling "full" (tighten toward "partial" on a \
+borderline call), never a reason to size up or chase to "get it back", and a \
+hot streak is never itself a reason to lower your bar. If `trade_count` is 0 \
+or the field is otherwise sparse, ignore it - there is nothing to learn from \
+yet.
+
 CONVICTION - this is the field that actually gates execution, so be honest \
 and conservative:
   - "full":    >=2 of 3 legs agree on direction, >=1 of those is CONFIRMED, \

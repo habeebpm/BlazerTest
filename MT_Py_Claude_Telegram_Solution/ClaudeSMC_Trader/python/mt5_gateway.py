@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import platform
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -177,6 +178,40 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
     """
     return sum(1 for magic_id in {magic, *additional_magics}
               for p in open_positions(symbol, magic_id) if p["direction"] == direction)
+
+
+def recent_closed_trades(symbol: str, magic: int, count: int = 10,
+                          lookback_days: int = 14) -> list[dict]:
+    """This system's own closed trades (filtered by magic number), newest
+    first - built from MT5's own deal history rather than logs/trades.csv,
+    so it reflects real broker fills (including anything the MQL5 trade
+    manager closed) whether or not this Python process was running at the
+    time. Each closed position produces one DEAL_ENTRY_OUT deal; its
+    profit+swap+commission is that trade's net P&L. Used by market_intel.
+    recent_performance_summary() to give Claude qualitative context on
+    recent performance - never touches trading decisions on its own.
+    """
+    m = mt5()
+    now = datetime.now(timezone.utc)
+    deals = m.history_deals_get(now - timedelta(days=lookback_days), now)
+    if deals is None:
+        return []
+    out = []
+    for d in deals:
+        if d.symbol != symbol or d.magic != magic or d.entry != m.DEAL_ENTRY_OUT:
+            continue
+        out.append({
+            "time": datetime.fromtimestamp(d.time, tz=timezone.utc),
+            # The CLOSING deal's type is the opposite of the position's own
+            # direction (closing a buy position is a sell deal, and vice
+            # versa) - flipped here so the direction reported is the
+            # position's, not the deal's.
+            "direction": "buy" if d.type == m.DEAL_TYPE_SELL else "sell",
+            "pnl_dollars": float(d.profit + d.swap + d.commission),
+            "ticket": d.position_id,
+        })
+    out.sort(key=lambda r: r["time"], reverse=True)
+    return out[:count]
 
 
 def price_distance_for_dollars(spec: SymbolSpec, dollars: float, lots: float) -> float:

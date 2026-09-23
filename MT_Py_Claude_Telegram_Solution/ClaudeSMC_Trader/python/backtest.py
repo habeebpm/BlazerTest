@@ -224,6 +224,22 @@ class HistoricalGateway:
         # so there is nothing else to count regardless of what's passed here.
         return sum(1 for p in self.open_positions if p.direction == direction)
 
+    def recent_closed_trades(self, symbol: str, magic: int, count: int) -> list[dict]:
+        """Mirrors mt5_gateway.recent_closed_trades()'s shape from this
+        backtest's OWN simulated trade history so far (self.closed_trades) -
+        magic/symbol accepted only for interface parity, same reasoning as
+        count_same_direction() above: a backtest run only ever has one
+        system's own trades to look back on. No lookahead risk: by the time
+        market_intel.build_feature_snapshot() calls this for bar N,
+        self.closed_trades only contains trades that closed strictly before
+        bar N (manage_positions() runs on each bar as it closes, before the
+        next evaluation), so this is exactly the information a live run
+        would have had at that same point in time too.
+        """
+        out = [{"direction": t.direction, "pnl_dollars": t.pnl_dollars} for t in self.closed_trades]
+        out.reverse()  # closed_trades is oldest-first; recent_closed_trades() is newest-first
+        return out[:count]
+
     def place_market_order(self, spec, direction: str, lots: float, sl_price: float, tp_price: float,
                             magic: int, comment: str, deviation_points: int, dry_run: bool):
         tick = self.get_tick(spec.name)

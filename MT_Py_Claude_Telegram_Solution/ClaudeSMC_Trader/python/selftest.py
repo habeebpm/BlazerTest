@@ -33,6 +33,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -40,6 +41,7 @@ import pandas as pd
 import backtest
 import claude_advisor
 import executor
+import main as main_mod
 import market_intel
 import telegram_alert
 import mt5_gateway as gw
@@ -442,6 +444,15 @@ def test_executor() -> bool:
     ok &= check("max_trades_per_day blocks a trade once the cap is reached",
                 not d6.executed and "max trades/day" in d6.reject_reason, d6.reject_reason)
 
+    fg7 = FakeGateway(same_dir_open=0)
+    d7 = executor.execute(fg7, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                          daily_block_reason="daily loss circuit breaker triggered")
+    ok &= check("a non-empty daily_block_reason blocks the trade before any other gate runs",
+                not d7.executed and d7.reject_reason == "daily loss circuit breaker triggered",
+                d7.reject_reason)
+    ok &= check("daily_block_reason short-circuits before the gateway is ever asked for "
+                "same-direction positions", fg7.last_additional_magics is None)
+
     return ok
 
 
@@ -586,6 +597,9 @@ class FakeIntelGateway:
                              spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                              tick_value=1.0, tick_size=0.01)
 
+    def recent_closed_trades(self, symbol, magic, count):
+        return []
+
 
 def test_full_snapshot_pipeline() -> bool:
     print("\n=== 8. full feature-snapshot pipeline (fake bars, real indicator code) ===")
@@ -595,9 +609,14 @@ def test_full_snapshot_pipeline() -> bool:
 
     ok &= check("snapshot has the expected top-level sections",
                 {"primary_indicators", "trend_bias", "smc", "last_closed_candle",
-                 "recent_candles", "session"} <= snapshot.keys(), list(snapshot.keys()))
+                 "recent_candles", "session", "recent_performance"} <= snapshot.keys(),
+                list(snapshot.keys()))
     ok &= check("recent_candles carries exactly 20 candles", len(snapshot["recent_candles"]) == 20,
                 len(snapshot["recent_candles"]))
+    ok &= check("recent_performance reports no data yet against a gateway with no trade history",
+                snapshot["recent_performance"] == {"trade_count": 0,
+                                                     "note": "no closed trades yet under this magic number"},
+                snapshot["recent_performance"])
 
     import json
     try:
@@ -612,6 +631,121 @@ def test_full_snapshot_pipeline() -> bool:
         print(f"    json.dumps failed: {exc}")
     ok &= check("the whole snapshot is natively JSON-serializable (no numpy leaks)",
                 serializes)
+
+    return ok
+
+
+class FakePerformanceGateway:
+    """Only implements recent_closed_trades() - enough to test
+    market_intel.recent_performance_summary() in isolation from the rest of
+    build_feature_snapshot()'s gateway surface.
+    """
+    def __init__(self, trades):
+        self.trades = trades
+
+    def recent_closed_trades(self, symbol, magic, count):
+        return self.trades[:count]
+
+
+def test_recent_performance_summary() -> bool:
+    print("\n=== 8b. market_intel.recent_performance_summary() ===")
+    ok = True
+    cfg = AdvisorConfig()
+
+    trades = [
+        {"direction": "buy", "pnl_dollars": 5.0, "ticket": 1},
+        {"direction": "sell", "pnl_dollars": -3.0, "ticket": 2},
+        {"direction": "buy", "pnl_dollars": 4.0, "ticket": 3},
+    ]
+    summary = market_intel.recent_performance_summary(FakePerformanceGateway(trades), cfg)
+    ok &= check("trade_count/wins/losses/win_rate are computed correctly",
+                summary["trade_count"] == 3 and summary["wins"] == 2 and summary["losses"] == 1
+                and abs(summary["win_rate_pct"] - 66.7) < 0.1, summary)
+    ok &= check("net_pnl_dollars sums every trade's P&L",
+                abs(summary["net_pnl_dollars"] - 6.0) < 1e-9, summary)
+    ok &= check("last_5_results carries every trade when there are fewer than 5",
+                len(summary["last_5_results"]) == 3, summary)
+
+    empty_summary = market_intel.recent_performance_summary(FakePerformanceGateway([]), cfg)
+    ok &= check("no closed trades yet is reported as a safe 'no data' shape, not an error",
+                empty_summary == {"trade_count": 0,
+                                   "note": "no closed trades yet under this magic number"},
+                empty_summary)
+
+    many_trades = [{"direction": "buy", "pnl_dollars": 1.0, "ticket": i} for i in range(8)]
+    many_summary = market_intel.recent_performance_summary(FakePerformanceGateway(many_trades), cfg)
+    ok &= check("last_5_results is capped at 5 even with more trades available",
+                len(many_summary["last_5_results"]) == 5, many_summary)
+
+    return ok
+
+
+class FakeMt5History:
+    """Stands in for the MetaTrader5 module's history_deals_get() +
+    DEAL_ENTRY_OUT/DEAL_TYPE_BUY/DEAL_TYPE_SELL constants, so
+    mt5_gateway.recent_closed_trades() is tested without a real terminal.
+    """
+    DEAL_ENTRY_OUT = 1
+    DEAL_ENTRY_IN = 0
+    DEAL_TYPE_BUY = 0
+    DEAL_TYPE_SELL = 1
+
+    class Deal:
+        def __init__(self, symbol, magic, entry, type_, time, profit, swap, commission, position_id):
+            self.symbol, self.magic, self.entry, self.type = symbol, magic, entry, type_
+            self.time, self.profit, self.swap, self.commission = time, profit, swap, commission
+            self.position_id = position_id
+
+    def __init__(self, deals):
+        self._deals = deals
+
+    def history_deals_get(self, date_from, date_to):
+        return self._deals
+
+
+def test_mt5_gateway_recent_closed_trades() -> bool:
+    print("\n=== 8c. mt5_gateway.recent_closed_trades() ===")
+    ok = True
+
+    fake_m = FakeMt5History([
+        # A closed BUY position: the exit deal is a SELL.
+        FakeMt5History.Deal("XAUUSD", 20260921, FakeMt5History.DEAL_ENTRY_OUT,
+                            FakeMt5History.DEAL_TYPE_SELL, 1000, 5.0, -0.2, -0.5, 101),
+        # A closed SELL position: the exit deal is a BUY.
+        FakeMt5History.Deal("XAUUSD", 20260921, FakeMt5History.DEAL_ENTRY_OUT,
+                            FakeMt5History.DEAL_TYPE_BUY, 2000, -3.0, -0.1, -0.5, 102),
+        # The matching ENTRY deal for the same position - must be excluded.
+        FakeMt5History.Deal("XAUUSD", 20260921, FakeMt5History.DEAL_ENTRY_IN,
+                            FakeMt5History.DEAL_TYPE_BUY, 900, 0.0, 0.0, 0.0, 101),
+        # A different symbol - must be excluded.
+        FakeMt5History.Deal("EURUSD", 20260921, FakeMt5History.DEAL_ENTRY_OUT,
+                            FakeMt5History.DEAL_TYPE_SELL, 1500, 9.0, 0.0, 0.0, 103),
+        # A different magic (e.g. the Telegram side's own trades) - excluded.
+        FakeMt5History.Deal("XAUUSD", 999, FakeMt5History.DEAL_ENTRY_OUT,
+                            FakeMt5History.DEAL_TYPE_SELL, 1600, 9.0, 0.0, 0.0, 104),
+    ])
+    gw._mt5 = fake_m
+    try:
+        trades = gw.recent_closed_trades("XAUUSD", 20260921, count=10)
+    finally:
+        gw._mt5 = None
+
+    ok &= check("only this symbol+magic's DEAL_ENTRY_OUT deals are returned",
+                len(trades) == 2, trades)
+    ok &= check("newest first", trades[0]["ticket"] == 102 and trades[1]["ticket"] == 101, trades)
+    ok &= check("a closed BUY position's exit (SELL) deal is reported as direction=buy",
+                trades[1]["direction"] == "buy", trades[1])
+    ok &= check("a closed SELL position's exit (BUY) deal is reported as direction=sell",
+                trades[0]["direction"] == "sell", trades[0])
+    ok &= check("net P&L is profit+swap+commission",
+                abs(trades[1]["pnl_dollars"] - 4.3) < 1e-9, trades[1])
+
+    gw._mt5 = FakeMt5History([])
+    try:
+        empty = gw.recent_closed_trades("XAUUSD", 20260921, count=10)
+    finally:
+        gw._mt5 = None
+    ok &= check("no history at all returns an empty list, not an error", empty == [], empty)
 
     return ok
 
@@ -898,6 +1032,61 @@ def test_telegram_alert() -> bool:
     return ok
 
 
+def test_day_roll_daily_limits() -> bool:
+    print("\n=== 14. main.DayRoll: daily loss circuit breaker / daily target ===")
+    ok = True
+
+    cfg = AdvisorConfig(max_daily_loss_pct=3.0)
+    day = main_mod.DayRoll()
+    day.date = main_mod.datetime.now(main_mod.timezone.utc).date()
+    day.roll(10000.0)
+    ok &= check("roll() anchors day_start_equity on the first call of the day",
+                day.day_start_equity == 10000.0, day.day_start_equity)
+
+    day.check_daily_limits(cfg, 9950.0)
+    ok &= check("a 0.5% drawdown does not trip a 3% daily loss limit",
+                day.block_reason() == "", day.block_reason())
+
+    day.check_daily_limits(cfg, 9690.0)
+    ok &= check("a 3.1% drawdown trips the daily loss circuit breaker",
+                day.block_reason() == "daily loss circuit breaker triggered", day.block_reason())
+
+    day.check_daily_limits(cfg, 10000.0)
+    ok &= check("the breaker stays latched for the rest of the day even if equity recovers",
+                day.block_reason() == "daily loss circuit breaker triggered", day.block_reason())
+
+    cfg_target = AdvisorConfig(use_daily_target=True, daily_target_pct=2.0)
+    day2 = main_mod.DayRoll()
+    day2.roll(10000.0)
+    day2.check_daily_limits(cfg_target, 10100.0)
+    ok &= check("a 1% gain does not trip a 2% daily target",
+                day2.block_reason() == "", day2.block_reason())
+    day2.check_daily_limits(cfg_target, 10250.0)
+    ok &= check("a 2.5% gain trips the daily profit target",
+                day2.block_reason() == "daily profit target already reached", day2.block_reason())
+
+    cfg_off = AdvisorConfig()
+    day3 = main_mod.DayRoll()
+    day3.roll(10000.0)
+    day3.check_daily_limits(cfg_off, 5000.0)
+    ok &= check("max_daily_loss_pct=0 (the default) disables the breaker even on a 50% drawdown",
+                day3.block_reason() == "", day3.block_reason())
+
+    yesterday = main_mod.datetime.now(main_mod.timezone.utc).date() - timedelta(days=1)
+    day4 = main_mod.DayRoll()
+    day4.date = yesterday
+    day4.roll(10000.0)
+    day4.check_daily_limits(cfg, 9000.0)
+    ok &= check("breaker latched before the day rolls over", day4.block_reason() != "")
+    day4.date = yesterday  # simulate the next UTC day boundary being reached
+    day4.roll(9000.0)
+    ok &= check("roll() into a new UTC day resets the latch and re-anchors day_start_equity",
+                day4.block_reason() == "" and day4.day_start_equity == 9000.0,
+                (day4.block_reason(), day4.day_start_equity))
+
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -909,11 +1098,14 @@ def main() -> int:
         test_claude_advisor_wiring(),
         test_claude_error_classification(),
         test_full_snapshot_pipeline(),
+        test_recent_performance_summary(),
+        test_mt5_gateway_recent_closed_trades(),
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),
         test_backtest_exit_simulation_sl_to_tp1(),
         test_backtest_end_to_end_mechanical(),
         test_telegram_alert(),
+        test_day_roll_daily_limits(),
     ]
     print()
     if all(results):

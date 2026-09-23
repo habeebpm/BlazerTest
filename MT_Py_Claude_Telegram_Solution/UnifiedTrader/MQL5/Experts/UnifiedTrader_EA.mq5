@@ -251,6 +251,7 @@ input int     InpHttpTimeoutMs     = 5000;         // WebRequest timeout (ms)
 input int     InpMaxSignalAgeSec   = 180;          // Reject a signal/control command older than this many seconds (0 = no limit)
 input bool    InpTradeXAUUSDOnly   = true;         // Require chart symbol to contain "XAU"
 input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-sourced trades only)
+input double  InpMaxDailyLossPct   = 0.0;          // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity - kept from TelegramSMC_Copier.mq5 (pips; 1 pip = 10 broker points) ==="
@@ -290,6 +291,8 @@ CTrade   trade;
 long     g_lastUpdateId  = 0;
 datetime g_currentDay    = 0;
 int      g_tradesToday   = 0;
+double   g_dayStartEquity = 0.0;             // InpMaxDailyLossPct only - see UpdateDailyTracking/DailyLossBreakerActive
+bool     g_dailyLossHit   = false;           // latches for the rest of the day once InpMaxDailyLossPct is breached
 int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - see OnInit/OnDeinit
 bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab - see file header
 bool     g_sentControlStartupMsg = false;    // one-shot: the buttons/keyboard intro, sent from TelegramPoll()
@@ -302,6 +305,7 @@ double   PipSize();
 bool     IsAllowedChat(long chatId);
 datetime DateToDay(datetime t);
 void     UpdateDailyTracking();
+bool     DailyLossBreakerActive();
 bool     IsDigitCh(ushort ch);
 bool     IsLetterCh(ushort ch);
 bool     IsWordCh(ushort ch);
@@ -489,6 +493,8 @@ int OnInit()
 
    g_currentDay  = DateToDay(TimeCurrent());
    g_tradesToday = 0;
+   g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_dailyLossHit   = false;
 
    // Only reset the one-shot startup-message flag when InpControlChatId
    // actually differs from whichever chat it was last sent to THIS
@@ -605,8 +611,36 @@ void UpdateDailyTracking()
    {
       g_currentDay  = today;
       g_tradesToday = 0;
-      Print("UnifiedTrader_EA: new day - Telegram trade counter reset.");
+      g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+      g_dailyLossHit   = false;
+      Print("UnifiedTrader_EA: new day - Telegram trade counter and daily loss breaker reset.");
    }
+}
+
+// InpMaxDailyLossPct==0 disables the check outright. Otherwise latches
+// g_dailyLossHit for the rest of the UTC day once equity has dropped this
+// many percent below g_dayStartEquity - existing open positions are left
+// alone (this only ever withholds NEW Telegram-sourced entries, exactly
+// like InpMaxTradesPerDay just above it in ProcessSignal), mirroring
+// python/main.py's DayRoll.check_daily_limits() on the Claude side.
+bool DailyLossBreakerActive()
+{
+   if(InpMaxDailyLossPct <= 0.0)
+      return(false);
+   if(g_dailyLossHit)
+      return(true);
+   if(g_dayStartEquity <= 0.0)
+      return(false);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double movePct = (equity - g_dayStartEquity) / g_dayStartEquity * 100.0;
+   if(-movePct >= InpMaxDailyLossPct)
+   {
+      g_dailyLossHit = true;
+      PrintFormat("UnifiedTrader_EA: daily loss breaker triggered (%.2f%% <= -%.2f%%) - no new "
+                  "Telegram entries until the next UTC day.", movePct, InpMaxDailyLossPct);
+      return(true);
+   }
+   return(false);
 }
 
 bool IsDigitCh(ushort ch)  { return(ch >= '0' && ch <= '9'); }
@@ -1508,6 +1542,14 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay)
    {
       string r = StringFormat("max Telegram trades/day reached (%d)", InpMaxTradesPerDay);
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   if(DailyLossBreakerActive())
+   {
+      string r = StringFormat("daily loss breaker triggered (max %.2f%%)", InpMaxDailyLossPct);
       PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
       LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);

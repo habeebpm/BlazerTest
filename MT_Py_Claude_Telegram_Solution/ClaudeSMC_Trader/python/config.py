@@ -51,6 +51,19 @@ class AdvisorConfig:
     # --- Execution rules (requested, fixed) ---
     fixed_lot: float = 0.01
     max_open_positions_per_direction: int = 5
+
+    # --- Daily loss circuit breaker (mirrors ../../python/trader.py's
+    #     Bot.roll_day()/entry_blocked() daily-loss pattern) - main.py's
+    #     DayRoll tracks account equity from the first cycle of each UTC day
+    #     and withholds NEW entries once the day's move breaches these
+    #     limits. Existing open positions are left alone -
+    #     ClaudeSMC_TradeManager.mq5 already owns exit management, so this
+    #     never closes anything itself, only executor.gate() refusing new
+    #     signals. Off by default: max_daily_loss_pct=0 disables the check.
+    max_daily_loss_pct: float = 0.0        # 0 = disabled; e.g. 3.0 = stop new entries after -3% on the day
+    use_daily_target: bool = False         # also stop new entries once daily_target_pct is reached
+    daily_target_pct: float = 2.0
+
     sl_dollars: float = 6.0
     tp1_dollars: float = 6.0         # profit level that locks in (sl_to_tp1/breakeven_r_decay) or the fixed TP (fixed_tp)
     trail_dollars: float = 3.0       # trailing distance once armed, any exit_style

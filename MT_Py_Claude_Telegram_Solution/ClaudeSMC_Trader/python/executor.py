@@ -91,8 +91,11 @@ def log_trade(cfg: AdvisorConfig, direction: str, lots: float, entry_price: floa
     _append_row(_csv_path(cfg, "trades.csv"), TRADE_FIELDS, row)
 
 
-def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: int) -> str:
+def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: int,
+         daily_block_reason: str = "") -> str:
     """Returns "" if the verdict clears every gate, else the reason it didn't."""
+    if daily_block_reason:
+        return daily_block_reason
     if verdict.direction not in ("buy", "sell"):
         return "no actionable direction"
     if verdict.confluence_count < cfg.min_confluence_count:
@@ -111,8 +114,8 @@ def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: 
 
 
 def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
-            trades_today: int) -> Decision:
-    reason = gate(gateway, cfg, verdict, trades_today)
+            trades_today: int, daily_block_reason: str = "") -> Decision:
+    reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
     if reason:
         log.info("REJECTED %s: %s", verdict.direction, reason)
         log_decision(cfg, verdict, executed=False, reject_reason=reason)

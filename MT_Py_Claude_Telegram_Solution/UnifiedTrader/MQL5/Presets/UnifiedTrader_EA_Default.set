@@ -48,6 +48,7 @@ InpHttpTimeoutMs=5000
 InpMaxSignalAgeSec=180
 InpTradeXAUUSDOnly=true
 InpMaxTradesPerDay=0
+InpMaxDailyLossPct=0.0
 InpPendingExpiryMin=240
 InpMaxEntryDeviationPips=200.0
 InpControlChatId=0

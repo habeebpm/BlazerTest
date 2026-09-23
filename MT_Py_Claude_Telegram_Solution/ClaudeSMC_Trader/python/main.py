@@ -50,6 +50,11 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.fixed_lot = args.lots
     if args.max_positions is not None:
         cfg.max_open_positions_per_direction = args.max_positions
+    if args.max_daily_loss is not None:
+        cfg.max_daily_loss_pct = args.max_daily_loss
+    if args.daily_target is not None:
+        cfg.daily_target_pct = args.daily_target
+        cfg.use_daily_target = args.daily_target > 0
     if args.shared_cap_magic:
         cfg.shared_cap_magic_numbers = [int(m) for m in args.shared_cap_magic.split(",") if m.strip()]
     if args.sl_dollars is not None:
@@ -84,26 +89,64 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
 
 class DayRoll:
     """Tracks trades_today and resets it at UTC midnight, same convention as
-    the Telegram copier's Copier.roll_day().
+    the Telegram copier's Copier.roll_day(). Also tracks the day's starting
+    account equity so main.py can evaluate the daily loss circuit breaker
+    (see config.py's max_daily_loss_pct/use_daily_target/daily_target_pct)
+    without executor.py or mt5_gateway.py needing to know about calendar
+    days at all - same separation as ../../python/trader.py's Bot.roll_day().
     """
     def __init__(self):
         self.date = datetime.now(timezone.utc).date()
         self.trades_today = 0
+        self.day_start_equity = 0.0
+        self.daily_loss_hit = False
+        self.daily_target_hit = False
 
-    def roll(self) -> None:
+    def roll(self, equity: float) -> None:
         today = datetime.now(timezone.utc).date()
         if today != self.date:
             self.date = today
             self.trades_today = 0
+            self.day_start_equity = equity
+            self.daily_loss_hit = False
+            self.daily_target_hit = False
+        elif self.day_start_equity <= 0:
+            # First cycle ever (process just started mid-day) - anchor here
+            # rather than waiting for the next UTC midnight.
+            self.day_start_equity = equity
+
+    def check_daily_limits(self, cfg: AdvisorConfig, equity: float) -> None:
+        if self.day_start_equity <= 0:
+            return
+        move_pct = (equity - self.day_start_equity) / self.day_start_equity * 100.0
+        if (cfg.max_daily_loss_pct > 0 and not self.daily_loss_hit
+                and -move_pct >= cfg.max_daily_loss_pct):
+            self.daily_loss_hit = True
+            log.warning("Daily loss limit hit (%.2f%% <= -%.2f%%) - no new entries until the "
+                        "next UTC day.", move_pct, cfg.max_daily_loss_pct)
+        if (cfg.use_daily_target and not self.daily_target_hit
+                and move_pct >= cfg.daily_target_pct):
+            self.daily_target_hit = True
+            log.info("Daily profit target reached (+%.2f%% >= +%.2f%%) - no new entries until "
+                     "the next UTC day.", move_pct, cfg.daily_target_pct)
+
+    def block_reason(self) -> str:
+        if self.daily_loss_hit:
+            return "daily loss circuit breaker triggered"
+        if self.daily_target_hit:
+            return "daily profit target already reached"
+        return ""
 
 
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
-    day.roll()
+    equity = gw.account_equity()
+    day.roll(equity)
+    day.check_daily_limits(cfg, equity)
     features = market_intel.build_feature_snapshot(gw, cfg)
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
               verdict.direction, verdict.conviction, verdict.confluence_count, verdict.reasoning)
-    decision = executor.execute(gw, cfg, verdict, spec, day.trades_today)
+    decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, day.block_reason())
     if decision.executed:
         day.trades_today += 1
     if verdict.conviction == "full" and verdict.direction in ("buy", "sell"):
@@ -140,6 +183,13 @@ def main(argv: list | None = None) -> int:
                              "this to the UnifiedTrader EA's InpTelegramMagicNumber if you want the two "
                              "sources to share one combined per-direction cap instead of 5 each; see "
                              "config.py's AdvisorConfig.shared_cap_magic_numbers")
+    parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
+                        help="stop new entries after the account is down this many pct on the "
+                             "UTC day (default 0 = disabled) - existing positions are left alone, "
+                             "ClaudeSMC_TradeManager.mq5 keeps managing them; see config.py")
+    parser.add_argument("--daily-target", type=float, dest="daily_target",
+                        help="stop new entries once the account is up this many pct on the UTC "
+                             "day (default: unset = disabled) - pass 0 to explicitly disable")
     parser.add_argument("--sl-dollars", type=float, dest="sl_dollars", help="stop-loss in USD (default 6)")
     parser.add_argument("--tp-dollars", type=float, dest="tp_dollars",
                         help="TP1 level in USD (default 6) - the profit level that locks in the "
@@ -210,11 +260,15 @@ def main(argv: list | None = None) -> int:
         log.info("Connected. Symbol spec for %s: %s", cfg.symbol, spec)
         log.info("Config: lot=%.2f max_same_dir=%d shared_cap_magics=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
-                  "min_confluence=%d/3 require_full=%s model=%s dry_run=%s telegram_alerts=%s",
+                  "min_confluence=%d/3 require_full=%s max_daily_loss=%s daily_target=%s model=%s "
+                  "dry_run=%s telegram_alerts=%s",
                   cfg.fixed_lot, cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
                   cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
                   cfg.breakeven_atr_mult, cfg.breakeven_atr_period, cfg.decay_window_minutes,
-                  cfg.min_confluence_count, cfg.require_full_conviction, cfg.claude_model, cfg.dry_run,
+                  cfg.min_confluence_count, cfg.require_full_conviction,
+                  f"{cfg.max_daily_loss_pct:g}%" if cfg.max_daily_loss_pct > 0 else "off",
+                  f"{cfg.daily_target_pct:g}%" if cfg.use_daily_target else "off",
+                  cfg.claude_model, cfg.dry_run,
                   "on" if (cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
         return 0
 

@@ -356,6 +356,33 @@ def daily_weekly_levels(gateway, symbol: str) -> dict:
     }
 
 
+def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> dict:
+    """Win/loss context from this system's own last `count` closed trades -
+    qualitative input for Claude's reasoning (see claude_advisor.SYSTEM_PROMPT),
+    never a hard gate: executor.gate() knows nothing about recent performance,
+    so a cold streak narrows Claude's own conviction rather than being
+    enforced as a rule here. Returns a safe "no data yet" shape rather than
+    raising when the account has no closed trades under this magic yet
+    (a brand new account, or a fresh magic number).
+    """
+    trades = gateway.recent_closed_trades(cfg.symbol, cfg.magic, count)
+    if not trades:
+        return {"trade_count": 0, "note": "no closed trades yet under this magic number"}
+    wins = [t for t in trades if t["pnl_dollars"] > 0]
+    losses = [t for t in trades if t["pnl_dollars"] < 0]
+    return {
+        "trade_count": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_pct": round(len(wins) / len(trades) * 100.0, 1),
+        "net_pnl_dollars": round(sum(t["pnl_dollars"] for t in trades), 2),
+        "last_5_results": [
+            {"direction": t["direction"], "pnl_dollars": round(t["pnl_dollars"], 2)}
+            for t in trades[:5]
+        ],
+    }
+
+
 # --------------------------------------------------------------------------- #
 # price action
 # --------------------------------------------------------------------------- #
@@ -457,6 +484,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
                                         cfg.order_block_displacement_atr_mult)
     fvgs = detect_fair_value_gaps(primary_closed, cfg.fvg_lookback_bars)
     levels = daily_weekly_levels(gateway, cfg.symbol)
+    performance = recent_performance_summary(gateway, cfg)
 
     recent_candles = primary_closed.tail(20)[["time", "open", "high", "low", "close", "volume"]].copy()
     recent_candles["time"] = recent_candles["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -486,6 +514,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
             "fair_value_gaps": fvgs,
         },
         "daily_weekly_levels": levels,
+        "recent_performance": performance,
         "last_closed_candle": candle_features(primary_closed),
         "recent_candles": recent_candles.to_dict(orient="records"),
     }
