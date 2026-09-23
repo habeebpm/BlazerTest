@@ -1,5 +1,9 @@
 # End-to-End Setup Guide
 
+> **New here? Start with [`QUICKSTART.md`](QUICKSTART.md)** - one
+> recommended setup (UnifiedTrader_EA + Claude-SMC Trader), start to end,
+> in plain steps. This file is the full reference for every system.
+
 The checklist that gets you from a fresh clone to something running. Each
 per-system `README.md` is the full reference (every input, every edge
 case, every "why") - this file is just the steps, in order.
@@ -12,7 +16,7 @@ without them interfering.
 
 | # | System | What it does | Needs | Full docs |
 |---|---|---|---|---|
-| A | **XAUUSD Confluence EA** | Trades its own 3-indicator (trend/momentum/strength) confluence rule | MT5 (MQL5), or MT5 + Python | `README.md`, `python/README.md` |
+| A | **XAUUSD Confluence EA** *(optional - not needed with C or E; don't delete `python/mt5_client.py`, the Python copier uses it)* | Trades its own 3-indicator (trend/momentum/strength) confluence rule | MT5 (MQL5), or MT5 + Python | `README.md`, `python/README.md` |
 | B | **Telegram SMC Copier** | Copies BUY/SELL signals from a Telegram channel into MT5, with SMC sanity checks | MT5 + bot token (MQL5), or MT5 + Python + Telegram account | `README.md` § "Telegram SMC Copier", `python/README.md` |
 | B+ | **Trade Logger + Dashboard** | Generic CSV trade journal + a read-only web dashboard | MT5 (Logger EA), IIS + ASP.NET (Dashboard) | `ASPX/README.md` |
 | C | **Claude-SMC Trader** | Builds a market-intelligence snapshot and asks Claude to validate a 3-confluence setup before trading | MT5 + Python + Anthropic API key | `ClaudeSMC_Trader/README.md` |
@@ -224,9 +228,12 @@ Logs to `logs/decisions.csv` (every evaluation, accepted or rejected, with
 reasoning) and `logs/trades.csv` (every order sent), both tagged
 `source=Claude_Sig`.
 
-Defaults (see `python main.py --help` for every override): `fixed_lot=0.01`,
+Defaults (see `python main.py --help` for every override): 2% of equity
+risked per trade (`risk_percent`), 10% daily loss cap (`max_daily_loss_pct`,
+also enforced as a budget across open positions), reference `fixed_lot=0.01`,
 `max_open_positions_per_direction=5`, `sl_dollars=6.0`, `tp1_dollars=6.0`,
-`trail_dollars=3.0`, `magic=20260921`, `min_confluence_count=2` of 3,
+`trail_dollars=3.0` (dollars at the reference lot, scaled with the traded
+lot), `magic=20260921`, `min_confluence_count=2` of 3,
 `require_full_conviction=True`, `claude_model="claude-opus-5"`.
 
 **Optional Telegram alert:** `--telegram-alert-bot-token`/
@@ -242,7 +249,8 @@ position's exit tick-by-tick.
 1. Copy `ClaudeSMC_Trader/MQL5/Experts/ClaudeSMC_TradeManager.mq5` into
    `Experts/`, compile.
 2. Drag onto an XAUUSD chart. Confirm `InpMagicNumber` (default
-   `20260921`) matches `config.py`'s `AdvisorConfig.magic`. Tick "Allow
+   `20260921`) matches `config.py`'s `AdvisorConfig.magic`, and
+   `InpReferenceLot` (default `0.01`) matches `fixed_lot`. Tick "Allow
    Algo Trading".
 3. Leave `InpDryRun=true` until you trust the logged SL modifications.
 4. **Both halves must run together** - Python places no broker
@@ -331,9 +339,11 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
    `ClaudeSMC_Trader/python/config.py`'s `AdvisorConfig.magic` (both
    `20260921`), keep `python main.py` running - this EA only manages
    those exits, never opens them.
-5. Defaults: `InpFixedLot=0.01`, `InpMaxPositionsPerDirection=5` (combined
-   across both magics), `InpSlDollars=6.0`, `InpTp1Dollars=6.0`,
-   `InpTrailDollars=3.0`.
+5. Defaults: `InpRiskPercent=2.0` (risk-sized lots), `InpMaxDailyLossPct=10.0`
+   (also a budget across open positions), reference `InpFixedLot=0.01`,
+   `InpMaxPositionsPerDirection=5` (combined across both magics),
+   `InpSlDollars=6.0`, `InpTp1Dollars=6.0`, `InpTrailDollars=3.0` (dollars at
+   the reference lot, scaled with the traded lot).
 6. Leave `InpDryRun=true` until you trust the logged behavior.
 
 **Optional remote control:** set `InpControlChatId` to your own DM chat id
