@@ -37,10 +37,13 @@ def last_closed_bar_time(symbol: str, timeframe: str = DEFAULT_TRIGGER_TIMEFRAME
     """The most recently CLOSED `timeframe` bar's own time (broker epoch
     seconds) - used only to detect "a new bar closed since last export",
     never exported itself (export_once() re-reads and re-converts everything
-    to true UTC on every cycle). With the default M1 trigger, every file is
-    rewritten once a minute: the M5/M15/H1 files then also carry the
-    freshest CLOSED bars as soon as each one closes, with at most ~1 minute
-    of lag instead of up to 5.
+    to true UTC on every cycle). With the default M1 trigger the export runs
+    once a minute: the manifest's exported_at_utc becomes a once-a-minute
+    heartbeat and an optional M1 file (--timeframes M1,M5,M15,H1) stays
+    current. It does NOT make M5/M15/H1 bars arrive sooner - an M5 bar
+    closes on the same tick as an M1 bar, so an M5 trigger catches it just
+    as fast (lag = --poll-seconds either way). drive_uploader skips files
+    whose content hasn't changed, so the extra cycles cost almost nothing.
     """
     bars = gw.get_bars(symbol, timeframe, 2)
     if len(bars) < 2:

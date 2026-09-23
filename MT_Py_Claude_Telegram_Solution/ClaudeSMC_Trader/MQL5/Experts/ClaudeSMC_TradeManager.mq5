@@ -73,15 +73,15 @@
 //| opens.                                                              |
 //|                                                                    |
 //| DOLLAR -> PRICE CONVERSION: InpTp1Dollars/InpTrailDollars are      |
-//| USD amounts AT InpReferenceLot (= Python's fixed_lot), converted   |
-//| to a price distance with the symbol's live tick value/size:        |
+//| USD amounts AT InpReferenceLot (= Python's reference_lot),         |
+//| converted to a price distance with the live tick value/size:       |
 //|   price_distance = dollars * tick_size / (tick_value * ref_lot)    |
 //| the exact inverse of python/mt5_gateway.py's                        |
 //| price_distance_for_dollars(), which sizes Python's initial SL the  |
-//| same way (sl_dollars at fixed_lot). SL, TP1 and trail are therefore |
-//| all FIXED price distances; with risk-% sizing a bigger lot risks   |
-//| and locks proportionally more dollars, keeping the same shape. No  |
-//| contract size is ever assumed.                                     |
+//| same way (sl_dollars at reference_lot). SL, TP1 and trail are     |
+//| therefore all FIXED price distances; with risk-% sizing a bigger   |
+//| lot risks and locks proportionally more dollars, keeping the same  |
+//| shape. No contract size is ever assumed.                           |
 //|                                                                    |
 //| SETUP: attach to an XAUUSD chart alongside (or instead of) running |
 //| python main.py on the same or a different machine - this EA only   |
@@ -100,7 +100,7 @@ input bool   InpDryRun        = true;        // Log what would happen; do not mo
 input group "=== Exit rule - USD amounts at InpReferenceLot, i.e. fixed PRICE distances ==="
 input double InpTp1Dollars    = 6.0;         // Profit (USD at InpReferenceLot) that locks the stop-loss in here
 input double InpTrailDollars  = 3.0;         // Trailing distance (USD at InpReferenceLot) once locked/armed
-input double InpReferenceLot  = 0.01;        // MUST match python/config.py AdvisorConfig.fixed_lot (the SL's reference lot too)
+input double InpReferenceLot  = 0.01;        // MUST match python/config.py AdvisorConfig.reference_lot (the SL's reference lot too)
 
 enum ENUM_EXIT_STYLE
 {
@@ -248,7 +248,7 @@ void ManagePosition(ulong ticket)
       return;
 
    // At the REFERENCE lot, not this position's own volume: Python sizes
-   // the stop as sl_dollars at fixed_lot (a fixed price distance) and then
+   // the stop as sl_dollars at reference_lot (a fixed price distance) and then
    // scales the lot to risk a % of equity. Converting TP1/trail at the
    // position's real volume would shrink them as the lot grows - risking
    // e.g. $200 at the stop to lock only $6. Fixed price distances keep the

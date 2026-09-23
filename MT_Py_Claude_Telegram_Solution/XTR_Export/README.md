@@ -73,17 +73,20 @@ python xtr_export.py --once      # one export cycle, exit
 python xtr_export.py             # loop: export on every new M1 candle close
 ```
 
-**Export pace:** every file (M5, M15, H1 and the manifest) is rewritten
-each time an **M1** bar closes, so a newly closed M5/M15/H1 bar shows up in
-its file within about a minute (plus the poll interval) rather than up to
-5 minutes later. Nothing else about the files changes - they still hold
-closed bars only. `--trigger-timeframe M5` restores the old
-once-per-5-minutes pace. Want the M1 bars themselves too? Add them with
-`--timeframes M1,M5,M15,H1` (writes an extra `XAUUSD_M1.csv`).
+**Export pace:** the export runs each time an **M1** bar closes. Every
+file still holds closed bars only. Be clear on what this gains: a new
+M5/M15/H1 bar closes on the same tick as an M1 bar, so it reaches its file
+just as fast with `--trigger-timeframe M5` - within `--poll-seconds`
+either way. What the M1 trigger adds is a **once-a-minute heartbeat**
+(`exported_at_utc` in the manifest proves the exporter is alive) and, if
+you want minute-level data, a current M1 file: add it with
+`--timeframes M1,M5,M15,H1` (writes an extra `XAUUSD_M1.csv`, refreshed
+every minute).
 
-With `--upload-drive` that's 4 small file updates a minute - far inside
-the Drive API's free per-minute quota; Google Drive for Desktop (Option A
-below) simply syncs whatever changed.
+With `--upload-drive`, a file is only re-uploaded when its content changed:
+the manifest every minute, `XAUUSD_M5.csv` every 5 minutes, M15 every 15,
+H1 hourly - far inside the Drive API's free quota. Google Drive for
+Desktop (Option A below) likewise syncs only what changed.
 
 Useful flags: `--symbol` (default XAUUSD), `--timeframes M5,M15,H1`
 (default, all three required - XTR's HTF-alignment grading needs all of

@@ -248,6 +248,14 @@ class HistoricalGateway:
         # so there is nothing else to count regardless of what's passed here.
         return sum(1 for p in self.sim_positions if p.direction == direction)
 
+    def symbol_positions(self, symbol: str) -> list[dict]:
+        """All positions on the symbol - in a backtest, only this system's."""
+        return self.open_positions(symbol, 0)
+
+    def pending_orders(self, symbol: str) -> list[dict]:
+        """A backtest only ever places market orders - never a pending one."""
+        return []
+
     def open_positions(self, symbol: str, magic: int) -> list[dict]:
         """Mirrors mt5_gateway.open_positions()'s shape - magic accepted
         only for interface parity, same reasoning as count_same_direction()
@@ -365,10 +373,10 @@ class HistoricalGateway:
         chance to engage. Kept only so --compare has the old behavior to
         measure exit_style=sl_to_tp1 against; not used live.
         """
-        # At the reference lot (cfg.fixed_lot), exactly like the live MQL5
+        # At the reference lot (cfg.reference_lot), exactly like the live MQL5
         # managers - see _manage_sl_to_tp1's own note.
-        arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.fixed_lot)
-        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.fixed_lot)
+        arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot)
+        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot)
         if pos.direction == "buy":
             if low <= pos.sl:
                 return pos.sl, "trail" if pos.armed else "sl"
@@ -404,12 +412,12 @@ class HistoricalGateway:
         point by the time this check fires. Only on LATER bars does the SL
         continue trailing trail_dist behind new highs/lows.
         """
-        # TP1/trail are dollars at the REFERENCE lot (cfg.fixed_lot), i.e.
+        # TP1/trail are dollars at the REFERENCE lot (cfg.reference_lot), i.e.
         # fixed price distances - the same way the entry SL is sized and the
         # live MQL5 managers convert them. Converting at pos.lots would
         # shrink them as a risk-sized lot grows (risking ~$200 to lock ~$6).
-        tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.fixed_lot)
-        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.fixed_lot)
+        tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot)
+        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot)
         if pos.direction == "buy":
             if low <= pos.sl:
                 return pos.sl, "trail" if pos.armed else "sl"

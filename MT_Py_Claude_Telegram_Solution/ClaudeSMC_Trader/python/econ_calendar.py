@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +34,27 @@ log = logging.getLogger(__name__)
 
 IMPORTANCE_RANK = {"none": 0, "low": 1, "moderate": 2, "high": 3}
 _TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+_WARN_INTERVAL_SECONDS = 3600
+_last_warned: dict = {}
+
+
+def _warn_throttled(key: str, message: str, *args) -> None:
+    """At most once an hour per condition - checked every cycle, but a
+    missing/stale calendar must be loud without flooding the log."""
+    now = time.monotonic()
+    if now - _last_warned.get(key, -_WARN_INTERVAL_SECONDS - 1) >= _WARN_INTERVAL_SECONDS:
+        _last_warned[key] = now
+        log.warning(message, *args)
+
+
+def to_utc_datetime(value) -> datetime:
+    """gateway.now() is a datetime live but a pandas Timestamp in a
+    backtest - normalize to an aware UTC datetime for comparisons."""
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
 
 
 @dataclass
@@ -106,8 +128,22 @@ def load_events(gateway, cfg: AdvisorConfig) -> tuple[list[EconEvent], datetime 
                     cfg.econ_calendar_filename, exc)
         return None
     if text is None:
+        if cfg.news_auto_blackout:
+            _warn_throttled("missing",
+                            "No economic calendar export %r found - the news blackout is NOT active. "
+                            "Run UnifiedTrader_EA or ClaudeSMC_TradeManager (with EconCalendar.mqh) "
+                            "on this machine, with InpCalendarExportFile matching.",
+                            cfg.econ_calendar_filename)
         return None
-    return parse_calendar_csv(text)
+    events, exported_at = parse_calendar_csv(text)
+    if exported_at is not None and cfg.econ_calendar_max_age_minutes > 0:
+        age_min = (datetime.now(timezone.utc) - exported_at).total_seconds() / 60.0
+        if age_min > cfg.econ_calendar_max_age_minutes:
+            _warn_throttled("stale",
+                            "The economic calendar export is %.0f min old (limit %d) - is the EA "
+                            "still running? New or rescheduled events and fresh actuals are missing.",
+                            age_min, cfg.econ_calendar_max_age_minutes)
+    return events, exported_at
 
 
 def _watched(event: EconEvent, cfg: AdvisorConfig) -> bool:
@@ -192,5 +228,8 @@ def calendar_context(events: list[EconEvent], exported_at: datetime | None, now:
         "blackout_window_minutes": [cfg.news_block_before_minutes, cfg.news_block_after_minutes],
     }
     if exported_at is not None:
-        context["data_age_minutes"] = round((now - exported_at).total_seconds() / 60.0)
+        age = round((now - exported_at).total_seconds() / 60.0)
+        context["data_age_minutes"] = age
+        if cfg.econ_calendar_max_age_minutes > 0 and age > cfg.econ_calendar_max_age_minutes:
+            context["stale"] = True
     return context

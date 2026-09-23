@@ -273,10 +273,13 @@ actually placed).
 ### 2. MQL5 side
 
 1. Copy `MQL5/Experts/ClaudeSMC_TradeManager.mq5` into your MT5
-   `MQL5/Experts/` folder and compile (F7 in MetaEditor).
+   `MQL5/Experts/` folder and `../MQL5/Include/EconCalendar.mqh` into
+   `MQL5/Include/` (it exports MT5's economic calendar for the Python
+   side's news blackout), then compile (F7 in MetaEditor).
 2. Drag it onto an XAUUSD chart. In the **Inputs** tab, confirm
    `InpMagicNumber` matches `python/config.py`'s `AdvisorConfig.magic`
-   (both default to `20260921` - only change one if you change the other).
+   (both default to `20260921` - only change one if you change the other),
+   and `InpReferenceLot` matches `reference_lot` (both default `0.01`).
    If you're using `exit_style="breakeven_r_decay"`, also set
    `InpExitStyle` to `EXIT_BREAKEVEN_R_DECAY` and keep
    `InpBreakevenAtrMult`/`InpAtrPeriod`/`InpDecayWindowMinutes` (and
@@ -359,16 +362,20 @@ Two things make these numbers mean what they say:
 
 - **The 10% is a real cap, not just a trigger.** Before every new entry,
   `executor.daily_risk_budget_reason()` adds today's drawdown so far + what
-  every open position (this magic plus `shared_cap_magic_numbers`) still
-  risks down to its stop + the new trade's own risk, and refuses the trade
+  every open position *and pending order* on the symbol still risks down
+  to its stop (account-wide, any magic - Telegram trades, manual trades
+  and other EAs included) + the new trade's own risk, and refuses the trade
   if that total would exceed 10% of the day's starting equity. Without
   this, 5 concurrent 2% positions could all stop out together past the cap.
 - **SL, TP1 and trail scale together.** `sl_dollars`/`tp1_dollars`/
-  `trail_dollars` are dollars at `fixed_lot` (the reference lot, 0.01),
+  `trail_dollars` are dollars at `reference_lot` (default 0.01),
   i.e. fixed price distances. At $10k equity a 2% trade is ~0.33 lots: it
   risks ~$200 at the stop and locks ~$200 at TP1 - the same 1:1 shape as
   the original $6/$6 at 0.01 lots. `ClaudeSMC_TradeManager.mq5`'s
-  `InpReferenceLot` must equal `fixed_lot`.
+  `InpReferenceLot` must equal `reference_lot`
+  (and so must `UnifiedTrader_EA.mq5`'s `InpReferenceLot`). `--lots`
+  only changes the traded lot when risk sizing is off, never the stop
+  distance.
 
 `UnifiedTrader_EA.mq5`'s matching inputs (`InpMaxDailyLossPct`,
 `InpUseRiskPercent`, `InpRiskPercent`) ship at the same values - see
@@ -378,9 +385,9 @@ Two things make these numbers mean what they say:
 |---|---|---|
 | Daily loss circuit breaker | `max_daily_loss_pct` (default `10.0`), `use_daily_target`, `daily_target_pct` | `main.py`'s `DayRoll` tracks equity from the first cycle of each UTC day and withholds **new** entries (never touches open positions) once the day is down `max_daily_loss_pct`, or up `daily_target_pct` if `use_daily_target` is set. Mirrors `../../python/trader.py`'s own daily-loss pattern. |
 | Recent-performance feedback | (always on) | `market_intel.recent_performance_summary()` feeds Claude a win/loss/net-P&L summary of this system's own last 10 closed trades (from MT5's real deal history, not just `trades.csv`) as context - it can narrow conviction toward "partial" on a cold streak, but never raises or lowers the bar mechanically. |
-| Equity-scaled lot sizing | `use_risk_percent` (default `true`), `risk_percent` (default `2.0`), `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `sl_dollars`/`tp1_dollars`/`trail_dollars` are dollars *at `fixed_lot`* (the reference lot), i.e. fixed price distances, so a bigger risk-sized lot risks and locks proportionally more with the same shape. `ClaudeSMC_TradeManager.mq5`'s `InpReferenceLot` MUST equal `fixed_lot` (both default 0.01). |
+| Equity-scaled lot sizing | `use_risk_percent` (default `true`), `risk_percent` (default `2.0`), `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `sl_dollars`/`tp1_dollars`/`trail_dollars` are dollars *at `reference_lot`*, i.e. fixed price distances, so a bigger risk-sized lot risks and locks proportionally more with the same shape. `ClaudeSMC_TradeManager.mq5`'s and `UnifiedTrader_EA.mq5`'s `InpReferenceLot` MUST equal `reference_lot` (all default 0.01). `fixed_lot` is only the traded lot when `use_risk_percent` is off. |
 | DXY correlation context | `dxy_symbol` | Optional US Dollar Index read (no fixed broker symbol - set this to whatever your broker calls it) fed to Claude as corroborating/contradicting context for gold's usual inverse correlation with the dollar. Gracefully no-ops if the symbol isn't available. |
-| News/calendar blackout windows | `news_blackout_windows` | A hand-maintained list of UTC `(start, end)` pairs (no economic-calendar data source is wired up) - `executor.gate()` rejects any new entry whose evaluation falls inside one, checked before every other gate. |
+| News/calendar blackout windows | `news_blackout_windows` | A hand-maintained list of extra UTC `(start, end)` pairs on top of the automatic economic-calendar blackout above - `executor.gate()` rejects any new entry whose evaluation falls inside one. Checked before Claude is called, so a blocked cycle costs nothing. |
 | ATR-adaptive initial stop-loss | `sl_mode`, `sl_atr_mult`, `sl_atr_period`, `sl_atr_timeframe`, `sl_dollars_min/max` | `sl_mode="atr"` derives the entry stop from recent ATR instead of the fixed `sl_dollars`, clamped to `[sl_dollars_min, sl_dollars_max]`. Entry SL only - `tp1_dollars`/`trail_dollars` stay fixed either way, since the MQL5 trade manager only ever reads those two INPUT values. |
 | Cross-system consensus context | `consensus_magic_numbers` | Read-only buy/sell position count from another trading system on this account (e.g. `UnifiedTrader_EA.mq5`'s Telegram side) fed to Claude - purely informational, `executor.gate()` never touches it. |
 | Daily/weekly performance digest | `send_performance_digest` (on by default once alert creds are set) | A Telegram message on every UTC day roll (and, on the Sunday->Monday roll, a weekly one too) summarizing that period's closed trades - win rate, net P&L. |

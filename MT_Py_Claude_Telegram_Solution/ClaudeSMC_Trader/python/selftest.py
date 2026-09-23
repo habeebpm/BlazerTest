@@ -331,7 +331,8 @@ class FakeGateway:
     SymbolSpec = gw.SymbolSpec
 
     def __init__(self, same_dir_open: int = 0, bid: float = 2350.0, ask: float = 2350.2,
-                 equity: float = 10000.0, bars_df=None, now=None, positions=None):
+                 equity: float = 10000.0, bars_df=None, now=None, positions=None, pending=None,
+                 result=None):
         self.same_dir_open = same_dir_open
         self.bid, self.ask = bid, ask
         self.orders_sent = []
@@ -340,6 +341,8 @@ class FakeGateway:
         self.bars_df = bars_df
         self._now = now
         self.positions = positions or []
+        self.pending = pending or []
+        self.result = result
 
     def count_same_direction(self, symbol, magic, direction, additional_magics=()):
         self.last_additional_magics = additional_magics
@@ -347,6 +350,12 @@ class FakeGateway:
 
     def open_positions(self, symbol, magic):
         return self.positions
+
+    def symbol_positions(self, symbol):
+        return self.positions
+
+    def pending_orders(self, symbol):
+        return self.pending
 
     def account_equity(self):
         return self.equity
@@ -366,7 +375,9 @@ class FakeGateway:
     def place_market_order(self, spec, direction, lots, sl_price, tp_price, magic, comment,
                             deviation_points, dry_run):
         self.orders_sent.append((direction, lots, sl_price, tp_price))
-        return None if dry_run else FakeResult()
+        if dry_run:
+            return None
+        return self.result or FakeResult()
 
 
 def make_verdict(direction="buy", confluence_count=3, conviction="full") -> ConfluenceVerdict:
@@ -673,6 +684,51 @@ def test_executor() -> bool:
     d_b5 = executor.execute(fg_b5, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("no day_start_equity passed (0) skips the budget check entirely",
                 d_b5.executed, d_b5.reject_reason)
+
+    # Pending orders (e.g. UnifiedTrader's Telegram BuyLimits) count too -
+    # a fast move can fill them all at once. Each: 0.33 lot x 6.0 = $198.
+    def pending_buy(ticket):
+        return {"ticket": ticket, "magic": 20260922, "direction": "buy", "volume": 0.33,
+                "price_open": 2348.0, "sl": 2342.0}
+    fg_b6 = FakeGateway(equity=10000.0, pending=[pending_buy(i) for i in range(4)])
+    d_b6 = executor.execute(fg_b6, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("4 resting 2% limit orders + 1 new trade (~$990) still fit the $1000 budget",
+                d_b6.executed, d_b6.reject_reason)
+    fg_b7 = FakeGateway(equity=10000.0, pending=[pending_buy(i) for i in range(5)])
+    d_b7 = executor.execute(fg_b7, cfg_budget, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                            day_start_equity=10000.0)
+    ok &= check("...but 5 resting limit orders + 1 new trade (~$1188) are refused - pending "
+                "orders' risk counts toward the daily budget",
+                not d_b7.executed and d_b7.reject_reason.startswith("daily loss budget"),
+                d_b7.reject_reason)
+
+    # A live order the broker refuses must never be reported as a trade.
+    cfg_live = AdvisorConfig(dry_run=False, log_dir="/tmp/claudesmc_selftest_logs")
+    fg_rej = FakeGateway(equity=10000.0, result=FakeResult(retcode=10019, order=0))
+    d_rej = executor.execute(fg_rej, cfg_live, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("a live order rejected by the broker (10019 no money) is NOT executed",
+                not d_rej.executed and "retcode=10019" in d_rej.reject_reason, d_rej)
+    fg_ok = FakeGateway(equity=10000.0, result=FakeResult(retcode=10009, order=777))
+    d_ok = executor.execute(fg_ok, cfg_live, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("a filled live order (10009 done) is executed with its ticket",
+                d_ok.executed and d_ok.ticket == "777", d_ok)
+
+    # Trading a different fixed lot never moves the SL price distance - the
+    # $ amounts are priced at reference_lot, exactly like the EAs' lock/trail.
+    cfg_lot = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                            use_risk_percent=False, fixed_lot=0.05)
+    fg_lot = FakeGateway()
+    executor.execute(fg_lot, cfg_lot, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    sent = fg_lot.orders_sent[0]
+    ok &= check("fixed_lot=0.05 trades 0.05 lots but keeps the 6.0-price SL of the 0.01 reference "
+                "lot (so the EA's TP1 lock/trail distances still match it)",
+                sent[1] == 0.05 and abs((fg_lot.ask - sent[2]) - 6.0) < 1e-9, sent)
+
+    ok &= check("verdict_independent_block() includes the daily trade limit, so main.run_once() "
+                "can skip the paid Claude call when it's already reached",
+                executor.verdict_independent_block(FakeGateway(), AdvisorConfig(max_trades_per_day=2), 2)
+                .startswith("max trades/day"))
 
     return ok
 
@@ -1167,6 +1223,63 @@ class FakeMt5Terminal:
 
     def last_error(self):
         return "simulated terminal_info() failure"
+
+
+class FakeMt5Book:
+    """positions_get/orders_get/symbol_info for mt5_gateway's cap and fill helpers."""
+    POSITION_TYPE_BUY, POSITION_TYPE_SELL = 0, 1
+    ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT, ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP = 2, 3, 4, 5
+    ORDER_TYPE_BUY_STOP_LIMIT = 6
+    ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN = 0, 1, 2
+
+    class Obj:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    def __init__(self, positions, orders, filling_mode=2):
+        self._positions, self._orders, self._filling = positions, orders, filling_mode
+
+    def positions_get(self, symbol=None):
+        return self._positions
+
+    def orders_get(self, symbol=None):
+        return self._orders
+
+    def symbol_info(self, symbol):
+        return self.Obj(filling_mode=self._filling)
+
+
+def test_gateway_cap_and_filling() -> bool:
+    print("\n=== 8g. mt5_gateway: pending orders in the shared cap, account-wide risk, fill mode ===")
+    ok = True
+    O = FakeMt5Book.Obj
+    positions = [O(ticket=1, magic=20260921, type=0, volume=0.33, price_open=2350.0, sl=2344.0, tp=0.0),
+                 O(ticket=2, magic=555, type=0, volume=0.10, price_open=2350.0, sl=2344.0, tp=0.0)]
+    orders = [O(ticket=3, magic=20260922, type=2, volume_current=0.33, price_open=2348.0, sl=2342.0),
+              O(ticket=4, magic=20260922, type=3, volume_current=0.33, price_open=2360.0, sl=2366.0)]
+    gw._mt5 = FakeMt5Book(positions, orders)
+    try:
+        ok &= check("count_same_direction counts the shared magic's resting BUY limit too (the EA's "
+                    "shared cap already does)",
+                    gw.count_same_direction("XAUUSD", 20260921, "buy", (20260922,)) == 2)
+        ok &= check("...but not orders of magics outside the shared set",
+                    gw.count_same_direction("XAUUSD", 20260921, "buy") == 1)
+        ok &= check("symbol_positions() returns every magic (the budget is account-wide)",
+                    {p["magic"] for p in gw.symbol_positions("XAUUSD")} == {20260921, 555})
+        ok &= check("pending_orders() maps limit types to directions",
+                    [o["direction"] for o in gw.pending_orders("XAUUSD")] == ["buy", "sell"])
+        m = gw._mt5
+        ok &= check("fill mode: IOC when the symbol allows it",
+                    gw._filling_mode(m, "XAUUSD") == m.ORDER_FILLING_IOC)
+        m._filling = 1
+        ok &= check("fill mode: FOK when only FOK is allowed (a fixed IOC would be rejected, 10030)",
+                    gw._filling_mode(m, "XAUUSD") == m.ORDER_FILLING_FOK)
+        m._filling = 0
+        ok &= check("fill mode: RETURN when neither is offered",
+                    gw._filling_mode(m, "XAUUSD") == m.ORDER_FILLING_RETURN)
+    finally:
+        gw._mt5 = None
+    return ok
 
 
 def test_write_common_file() -> bool:
@@ -1760,6 +1873,26 @@ def test_day_roll_daily_limits() -> bool:
                 "nothing in between is silently dropped",
                 outage_gap == (long_ago, today - timedelta(days=1)), outage_gap)
 
+    # Persistence: a restart later the same UTC day keeps its anchor and latch.
+    import tempfile, json
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "day_state.json")
+        d1 = main_mod.DayRoll(state_path=path)
+        d1.roll(10000.0)
+        d1.check_daily_limits(AdvisorConfig(max_daily_loss_pct=3.0), 9690.0)
+        d1.trades_today = 2
+        d1.save()
+        d2 = main_mod.DayRoll(state_path=path)
+        ok &= check("a restart the same day restores day-start equity, the TRIGGERED breaker and "
+                    "the trade count (no fresh daily budget from a reduced equity)",
+                    d2.day_start_equity == 10000.0 and d2.daily_loss_hit and d2.trades_today == 2,
+                    vars(d2))
+        with open(path, "w") as f:
+            json.dump({"date": "2000-01-01", "day_start_equity": 1.0, "daily_loss_hit": True}, f)
+        d3 = main_mod.DayRoll(state_path=path)
+        ok &= check("state saved on an earlier day is ignored",
+                    d3.day_start_equity == 0.0 and not d3.daily_loss_hit, vars(d3))
+
     return ok
 
 
@@ -1897,7 +2030,7 @@ def test_main_cli_config() -> bool:
     ok &= check("an explicit --lots alone means 'trade exactly this lot' (risk sizing off)",
                 not cfg.use_risk_percent and cfg.fixed_lot == 0.05, cfg)
     cfg = cfg_for("--lots", "0.05", "--risk-percent", "1")
-    ok &= check("--lots with --risk-percent keeps risk sizing, --lots only sets the reference lot",
+    ok &= check("--lots with --risk-percent keeps risk sizing (--lots is then only the fallback lot)",
                 cfg.use_risk_percent and cfg.risk_percent == 1.0 and cfg.fixed_lot == 0.05, cfg)
     cfg = cfg_for("--risk-percent", "0", "--max-daily-loss", "0")
     ok &= check("--risk-percent 0 / --max-daily-loss 0 turn both features off",
@@ -2285,6 +2418,7 @@ def main() -> int:
         test_consensus_context(),
         test_mt5_gateway_recent_closed_trades(),
         test_write_common_file(),
+        test_gateway_cap_and_filling(),
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),
         test_backtest_exit_simulation_sl_to_tp1(),

@@ -29,12 +29,20 @@ mid-cycle, only the files it never got to are re-created next run; a
 file it already created keeps its id and gets updated in place instead of
 duplicated.
 
+UNCHANGED FILES ARE SKIPPED: the cache also remembers the sha256 of the
+content last uploaded for each file, and a file whose content hasn't
+changed since is not re-sent. With the M1 trigger the manifest (its
+exported_at_utc is a heartbeat) goes up every minute, but XAUUSD_M5.csv
+only when an M5 bar actually closed, M15 every 15 minutes, H1 hourly -
+instead of re-uploading identical bytes 4 times a minute.
+
 Lazy-imports the google-api-python-client/google-auth packages, same
 convention as MetaTrader5 elsewhere in this repo, so exporter.py and
 xtr_export.py --once (without --upload-drive) never need them installed.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -43,6 +51,18 @@ _MIMETYPES = {".csv": "text/csv", ".json": "application/json"}
 
 def _cache_key(folder_id: str, filename: str) -> str:
     return f"{folder_id}::{filename}"
+
+
+def _hash_key(folder_id: str, filename: str) -> str:
+    return f"sha256::{folder_id}::{filename}"
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _mimetype(path: str) -> str:
@@ -93,7 +113,8 @@ def _build_media(local_path: str):
 def upload_or_update(service, folder_id: str, local_path: str, cache: dict, cache_path: str,
                      media_factory=_build_media):
     """Creates the file on Drive the first time, updates its content (same
-    file id, same shareable link) on every call after that. Mutates
+    file id, same shareable link) on every later call whose content
+    differs from the last upload, and does nothing when it doesn't. Mutates
     `cache` and persists it to `cache_path` immediately after a successful
     create - not batched until the whole sync_paths() cycle finishes - so
     a crash right after this call still keeps the new file's id instead of
@@ -107,15 +128,20 @@ def upload_or_update(service, folder_id: str, local_path: str, cache: dict, cach
     """
     name = os.path.basename(local_path)
     key = _cache_key(folder_id, name)
-    media = media_factory(local_path)
+    hkey = _hash_key(folder_id, name)
+    digest = _file_sha256(local_path)
     file_id = cache.get(key)
+    if file_id and cache.get(hkey) == digest:
+        return file_id  # same bytes already on Drive - nothing to send
+    media = media_factory(local_path)
     if file_id:
         service.files().update(fileId=file_id, media_body=media).execute()
     else:
         created = service.files().create(
             body={"name": name, "parents": [folder_id]}, media_body=media, fields="id").execute()
         cache[key] = created["id"]
-        _save_cache(cache_path, cache)
+    cache[hkey] = digest
+    _save_cache(cache_path, cache)
     return cache[key]
 
 

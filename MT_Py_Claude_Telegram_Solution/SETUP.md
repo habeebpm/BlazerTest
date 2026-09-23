@@ -230,7 +230,7 @@ reasoning) and `logs/trades.csv` (every order sent), both tagged
 
 Defaults (see `python main.py --help` for every override): 2% of equity
 risked per trade (`risk_percent`), 10% daily loss cap (`max_daily_loss_pct`,
-also enforced as a budget across open positions), reference `fixed_lot=0.01`,
+also enforced as a budget across open positions), `reference_lot=0.01`,
 `max_open_positions_per_direction=5`, `sl_dollars=6.0`, `tp1_dollars=6.0`,
 `trail_dollars=3.0` (dollars at the reference lot, scaled with the traded
 lot), `magic=20260921`, `min_confluence_count=2` of 3,
@@ -252,7 +252,7 @@ position's exit tick-by-tick.
    compile.
 2. Drag onto an XAUUSD chart. Confirm `InpMagicNumber` (default
    `20260921`) matches `config.py`'s `AdvisorConfig.magic`, and
-   `InpReferenceLot` (default `0.01`) matches `fixed_lot`. Tick "Allow
+   `InpReferenceLot` (default `0.01`) matches `reference_lot`. Tick "Allow
    Algo Trading".
 3. Leave `InpDryRun=true` until you trust the logged SL modifications.
 4. **Both halves must run together** - Python places no broker
@@ -311,7 +311,9 @@ python xtr_export.py --check    # connect, export once, exit
 python xtr_export.py            # loop: export on every new M1 close
 ```
 Writes `XAUUSD_M5.csv`/`_M15.csv`/`_H1.csv` (true UTC) and
-`XAUUSD_manifest.json` to `--out-dir` (default `xtr_data/`).
+`XAUUSD_manifest.json` to `--out-dir` (default `xtr_data/`). Add
+`--timeframes M1,M5,M15,H1` for a minute-by-minute `XAUUSD_M1.csv` too.
+Only files whose content changed are re-uploaded.
 
 **Get the files onto Drive - pick one:**
 - MT5 machine has a desktop: install Google Drive for Desktop, point it at
@@ -342,7 +344,7 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
    `20260921`), keep `python main.py` running - this EA only manages
    those exits, never opens them.
 5. Defaults: `InpRiskPercent=2.0` (risk-sized lots), `InpMaxDailyLossPct=10.0`
-   (also a budget across open positions), reference `InpFixedLot=0.01`,
+   (also a budget across open positions), `InpReferenceLot=0.01` (must equal Python's `reference_lot`),
    `InpMaxPositionsPerDirection=5` (combined across both magics),
    `InpSlDollars=6.0`, `InpTp1Dollars=6.0`, `InpTrailDollars=3.0` (dollars at
    the reference lot, scaled with the traded lot).

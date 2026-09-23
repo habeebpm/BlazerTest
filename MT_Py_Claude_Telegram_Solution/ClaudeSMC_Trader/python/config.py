@@ -91,22 +91,30 @@ class AdvisorConfig:
     news_min_importance: str = "high"      # "low", "moderate" or "high"
     news_block_before_minutes: int = 15
     news_block_after_minutes: int = 15
+    econ_calendar_max_age_minutes: int = 30   # warn when the EA's export is older than this
 
     # --- Execution rules (requested, fixed) ---
-    fixed_lot: float = 0.01
+    fixed_lot: float = 0.01          # the traded lot when use_risk_percent is off (and the fallback lot)
+    # sl_dollars/tp1_dollars/trail_dollars are dollar amounts AT this lot,
+    # i.e. fixed PRICE distances, whatever lot is actually traded. MUST equal
+    # ClaudeSMC_TradeManager.mq5's / UnifiedTrader_EA.mq5's InpReferenceLot,
+    # which convert TP1/trail the same way - kept separate from fixed_lot so
+    # trading a different fixed lot never shifts the SL against the EA's
+    # lock/trail distances.
+    reference_lot: float = 0.01
     max_open_positions_per_direction: int = 5
 
     # --- Equity-scaled lot sizing (ports ../../python/mt5_client.py's
     #     position_size()/TradeConfig.use_risk_percent pattern) - when
     #     use_risk_percent is set, executor.execute() sizes each trade from
-    #     current equity instead of always using fixed_lot. fixed_lot then
-    #     acts as the REFERENCE lot: sl_dollars/tp1_dollars/trail_dollars are
-    #     dollar amounts at fixed_lot, i.e. fixed PRICE distances, and the
+    #     current equity instead of always using fixed_lot.
+    #     sl_dollars/tp1_dollars/trail_dollars are dollar amounts at
+    #     reference_lot, i.e. fixed PRICE distances, and the
     #     traded lot is solved so the SL distance risks exactly risk_percent%
     #     of equity, then clamped to [volume_min, volume_max, max_lot_size]
     #     and rounded down to the broker's volume_step. Because TP1/trail
-    #     are the same fixed price distances (ClaudeSMC_TradeManager.mq5's
-    #     InpReferenceLot MUST equal fixed_lot), a bigger lot risks AND locks
+    #     are the same fixed price distances (the EAs' InpReferenceLot MUST
+    #     equal reference_lot), a bigger lot risks AND locks
     #     proportionally more money with an unchanged SL : TP1 : trail shape.
     # On by default at 2.0% (= max_daily_loss_pct 10% / 5): the conventional
     # 1-2%-per-trade band, and ~5 full losses before the daily breaker

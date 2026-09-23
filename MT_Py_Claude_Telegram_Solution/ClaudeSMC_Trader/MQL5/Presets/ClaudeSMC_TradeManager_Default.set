@@ -17,7 +17,7 @@
 ; raw ENUM_TIMEFRAMES value), matching config.py's default breakeven ATR
 ; timeframe - the MetaTrader Inputs dialog itself will show it as "M5".
 ;
-; InpReferenceLot MUST match AdvisorConfig.fixed_lot (default 0.01): TP1 and
+; InpReferenceLot MUST match AdvisorConfig.reference_lot (default 0.01): TP1 and
 ; trail are dollar amounts at that lot, i.e. fixed price distances, so a
 ; risk-sized (bigger) lot locks/trails at the same prices as its stop scales.
 ;

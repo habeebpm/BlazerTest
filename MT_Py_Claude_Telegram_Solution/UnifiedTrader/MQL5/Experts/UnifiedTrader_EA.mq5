@@ -59,9 +59,9 @@
 //| derived every tick from whether a position's OWN current SL has    |
 //| already reached the lock level, never stored - this EA needs no    |
 //| memory across ticks or restarts and stays correct even if          |
-//| reattached mid-trade. Dollar amounts are USD AT InpFixedLot (the   |
-//| reference lot), converted with the symbol's live tick value/size   |
-//| (price_distance = dollars * tick_size / (tick_value * InpFixedLot))|
+//| reattached mid-trade. Dollar amounts are USD AT InpReferenceLot,   |
+//| converted with the symbol's live tick value/size                   |
+//| (price_distance = dollars * tick_size / (tick_value * ref lot))    |
 //| - never an assumed contract size. SL, TP1 and trail are therefore  |
 //| fixed price distances whatever lot is traded, so risk-% sizing     |
 //| scales risk and locked profit together. This is                    |
@@ -235,6 +235,10 @@
 #define GV_LAST_UPDATE_ID "UnifiedTrader_EA_LastUpdateId"
 #define GV_TELEGRAM_PAUSED "UnifiedTrader_EA_TelegramPaused"
 #define GV_CLAUDE_PAUSED   "UnifiedTrader_EA_ClaudePaused"
+#define GV_DAY_ANCHOR      "UnifiedTrader_EA_DayAnchor"
+#define GV_DAY_START_EQ    "UnifiedTrader_EA_DayStartEquity"
+#define GV_DAY_LOSS_HIT    "UnifiedTrader_EA_DailyLossHit"
+#define GV_DAY_TRADES      "UnifiedTrader_EA_TradesToday"
 
 // Deliberately NOT TelegramSMC_Common.mqh's TSMC_SIGNAL_SOURCE ("Telegram_Sig")
 // - that constant's own doc comment reserves it for TelegramSMC_Copier.mq5
@@ -253,14 +257,15 @@ input bool    InpEnableTelegramSignals = false;   // Poll Telegram and execute s
 input bool    InpEnableClaudeManagement = false;  // Manage exits for ClaudeSMC_Trader's Python-opened positions
 
 input group "=== Shared business rules - apply to BOTH sources ==="
-input double  InpFixedLot               = 0.01;   // Reference lot: SL/TP1/trail dollars are priced at this lot (MUST match python AdvisorConfig.fixed_lot); also the traded lot when InpUseRiskPercent=false
+input double  InpFixedLot               = 0.01;   // Traded lot for Telegram entries when InpUseRiskPercent=false
+input double  InpReferenceLot           = 0.01;   // SL/TP1/trail dollars are priced at this lot, i.e. fixed PRICE distances - MUST match python AdvisorConfig.reference_lot
 input bool    InpUseRiskPercent         = true;    // Size Telegram-sourced entries from equity instead of always InpFixedLot
 input double  InpRiskPercent            = 2.0;     // InpUseRiskPercent only: risk this % of equity per trade (recommended: InpMaxDailyLossPct / 5)
 input double  InpMaxLotSize             = 5.0;     // InpUseRiskPercent only: hard cap on a risk-sized lot
 input int     InpMaxPositionsPerDirection = 5;     // SHARED cap, counted across BOTH magics together
-input double  InpSlDollars              = 6.0;     // Initial stop-loss (USD at InpFixedLot = a fixed price distance)
-input double  InpTp1Dollars             = 6.0;     // Profit (USD at InpFixedLot) that locks the SL in here (exact, no buffer)
-input double  InpTrailDollars           = 3.0;     // Trailing distance (USD at InpFixedLot) once locked/armed
+input double  InpSlDollars              = 6.0;     // Initial stop-loss (USD at InpReferenceLot = a fixed price distance)
+input double  InpTp1Dollars             = 6.0;     // Profit (USD at InpReferenceLot) that locks the SL in here (exact, no buffer)
+input double  InpTrailDollars           = 3.0;     // Trailing distance (USD at InpReferenceLot) once locked/armed
 
 input group "=== Identification ==="
 input long    InpTelegramMagicNumber = 20260922;   // This EA's own Telegram-sourced trades
@@ -365,6 +370,7 @@ double   PipSize();
 bool     IsAllowedChat(long chatId);
 datetime DateToDay(datetime t);
 void     UpdateDailyTracking();
+void     SaveDayState();
 bool     DailyLossBreakerActive();
 bool     IsDigitCh(ushort ch);
 bool     IsLetterCh(ushort ch);
@@ -389,7 +395,7 @@ int      CloseAllClaudeMine();
 void     SetTelegramPaused(bool paused);
 void     SetClaudePaused(bool paused);
 void     WriteClaudePauseFile();
-void     SendControlReply(const string &summary);
+void     SendControlReply(const string summary);
 string   ReadLastVerdictFile();
 void     ClosedStats(datetime fromServer, long magic, ClosedStatsT &st);
 string   StatsLine(const string label, const ClosedStatsT &st);
@@ -406,7 +412,7 @@ bool     TelegramGetUpdates(string &jsonOut);
 void     ExtractUpdates(const string &json, TgUpdate &updates[]);
 void     TelegramPoll();
 string   JsonEscape(const string &s);
-bool     TelegramSendMessage(long chatId, const string &text);
+bool     TelegramSendMessage(long chatId, const string text);
 void     StripUnicodeEscapes(string &s);
 string   DirToStr(int dir);
 void     LogSignalRow(long chatId, const string &action, const string &direction, bool symbolOk,
@@ -433,9 +439,11 @@ int OnInit()
             "InpCalendarRefreshMin >= 1.");
       return(INIT_PARAMETERS_INCORRECT);
    }
-   if(InpSlDollars <= 0.0 || InpTp1Dollars <= 0.0 || InpTrailDollars <= 0.0 || InpFixedLot <= 0.0)
+   if(InpSlDollars <= 0.0 || InpTp1Dollars <= 0.0 || InpTrailDollars <= 0.0 || InpFixedLot <= 0.0
+      || InpReferenceLot <= 0.0)
    {
-      Print("UnifiedTrader_EA: InpFixedLot, InpSlDollars, InpTp1Dollars and InpTrailDollars must all be positive.");
+      Print("UnifiedTrader_EA: InpFixedLot, InpReferenceLot, InpSlDollars, InpTp1Dollars and "
+            "InpTrailDollars must all be positive.");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpTelegramMagicNumber == InpClaudeMagicNumber)
@@ -532,15 +540,15 @@ int OnInit()
    if(tickValue > 0.0 && tickSize > 0.0)
    {
       // Exact for every position, whatever its volume: TP1/trail are fixed
-      // price distances (dollars at InpFixedLot - see ManagePositionExit).
-      double sampleTrailDist = InpTrailDollars * tickSize / (tickValue * InpFixedLot);
+      // price distances (dollars at InpReferenceLot - see ManagePositionExit).
+      double sampleTrailDist = InpTrailDollars * tickSize / (tickValue * InpReferenceLot);
       if(sampleTrailDist < stopsLevelPrice)
          PrintFormat("UnifiedTrader_EA: WARNING - InpTrailDollars=%.2f at the %.2f reference lot is a "
                      "%.5f price distance, tighter than this symbol's broker minimum stop distance "
                      "(%.5f). Once locked, the trailing stop may never be able to move - it will sit "
                      "at the InpTp1Dollars lock level instead, which is still a valid, protected exit, "
                      "just not a trailing one.",
-                     InpTrailDollars, InpFixedLot, sampleTrailDist, stopsLevelPrice);
+                     InpTrailDollars, InpReferenceLot, sampleTrailDist, stopsLevelPrice);
 
       // Risk audit: how many losing Telegram-sourced trades does
       // InpMaxDailyLossPct actually absorb at the lot size that will really
@@ -553,7 +561,7 @@ int OnInit()
       if(equity > 0.0 && InpMaxDailyLossPct > 0.0)
       {
          double auditLots = PositionSizeLots();
-         double slDistAudit = DollarsToPrice(InpSlDollars, InpFixedLot);
+         double slDistAudit = DollarsToPrice(InpSlDollars, InpReferenceLot);
          double riskMoney = auditLots * (slDistAudit / tickSize) * tickValue;
          double riskPct   = 100.0 * riskMoney / equity;
          double capMoney  = equity * InpMaxDailyLossPct / 100.0;
@@ -608,10 +616,28 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.LogLevel(LOG_LEVEL_ERRORS);
 
-   g_currentDay  = DateToDay(TimeCurrent());
-   g_tradesToday = 0;
-   g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-   g_dailyLossHit   = false;
+   // Restore today's anchor/latch/counter if this is a re-init on the same
+   // trading day (timeframe switch, input edit, terminal restart) - resetting
+   // them would re-anchor the 10% cap to an already-reduced equity and clear
+   // a triggered breaker mid-day.
+   g_currentDay = DateToDay(TimeCurrent());
+   double gvDay, gvEq, gvHit, gvTrades;
+   if(GlobalVariableGet(GV_DAY_ANCHOR, gvDay) && (datetime)(long)gvDay == g_currentDay
+      && GlobalVariableGet(GV_DAY_START_EQ, gvEq) && gvEq > 0.0)
+   {
+      g_dayStartEquity = gvEq;
+      g_dailyLossHit   = GlobalVariableGet(GV_DAY_LOSS_HIT, gvHit) && gvHit != 0.0;
+      g_tradesToday    = GlobalVariableGet(GV_DAY_TRADES, gvTrades) ? (int)gvTrades : 0;
+      PrintFormat("UnifiedTrader_EA: restored today's day-start equity %.2f%s (re-init on the same day).",
+                  g_dayStartEquity, g_dailyLossHit ? " and the TRIGGERED daily loss breaker" : "");
+   }
+   else
+   {
+      g_tradesToday    = 0;
+      g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+      g_dailyLossHit   = false;
+      SaveDayState();
+   }
 
    // Only reset the one-shot startup-message flag when InpControlChatId
    // actually differs from whichever chat it was last sent to THIS
@@ -633,11 +659,13 @@ int OnInit()
    if(InpEnableTelegramSignals || InpControlChatId != 0)
       EventSetTimer(MathMax(1, InpPollSeconds));
 
-   PrintFormat("UnifiedTrader_EA: ready. symbol=%s lot=%.2f max_per_direction=%d (shared) "
+   PrintFormat("UnifiedTrader_EA: ready. symbol=%s lot=%s ref_lot=%.2f max_per_direction=%d (shared) "
                "telegram=%s (magic=%I64d, paused=%s) claude=%s (magic=%I64d, exit_style=%s "
                "breakeven_atr_mult=%.2f atr_period=%d decay_window_minutes=%.1f) sl=$%.2f tp1=$%.2f "
                "trail=$%.2f dryrun=%s control_chat=%s",
-               _Symbol, InpFixedLot, InpMaxPositionsPerDirection,
+               _Symbol, InpUseRiskPercent ? StringFormat("%.1f%% risk", InpRiskPercent)
+                                          : StringFormat("%.2f", InpFixedLot),
+               InpReferenceLot, InpMaxPositionsPerDirection,
                InpEnableTelegramSignals ? "ON" : "off", InpTelegramMagicNumber,
                g_telegramPaused ? "true" : "false",
                InpEnableClaudeManagement ? "ON" : "off", InpClaudeMagicNumber,
@@ -730,12 +758,22 @@ void UpdateDailyTracking()
       g_tradesToday = 0;
       g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
       g_dailyLossHit   = false;
+      SaveDayState();
       Print("UnifiedTrader_EA: new day - Telegram trade counter and daily loss breaker reset.");
    }
 }
 
+void SaveDayState()
+{
+   GlobalVariableSet(GV_DAY_ANCHOR, (double)(long)g_currentDay);
+   GlobalVariableSet(GV_DAY_START_EQ, g_dayStartEquity);
+   GlobalVariableSet(GV_DAY_LOSS_HIT, g_dailyLossHit ? 1.0 : 0.0);
+   GlobalVariableSet(GV_DAY_TRADES, (double)g_tradesToday);
+   GlobalVariablesFlush();
+}
+
 // InpMaxDailyLossPct==0 disables the check outright. Otherwise latches
-// g_dailyLossHit for the rest of the UTC day once equity has dropped this
+// g_dailyLossHit for the rest of the broker server day once equity has dropped this
 // many percent below g_dayStartEquity - existing open positions are left
 // alone (this only ever withholds NEW Telegram-sourced entries, exactly
 // like InpMaxTradesPerDay just above it in ProcessSignal), mirroring
@@ -753,8 +791,9 @@ bool DailyLossBreakerActive()
    if(-movePct >= InpMaxDailyLossPct)
    {
       g_dailyLossHit = true;
+      SaveDayState();
       PrintFormat("UnifiedTrader_EA: daily loss breaker triggered (%.2f%% <= -%.2f%%) - no new "
-                  "Telegram entries until the next UTC day.", movePct, InpMaxDailyLossPct);
+                  "Telegram entries until the next server day.", movePct, InpMaxDailyLossPct);
       return(true);
    }
    return(false);
@@ -972,9 +1011,9 @@ double DollarsToPrice(double dollars, double volume)
 //| InpFixedLot, or a size derived from current equity when            |
 //| InpUseRiskPercent is set - mirrors ClaudeSMC_Trader/python/         |
 //| executor.py's position_size(). The price distance InpSlDollars      |
-//| implies at the REFERENCE lot InpFixedLot is held fixed (same value  |
+//| implies at InpReferenceLot is held fixed (same value                |
 //| PlaceCopiedOrder() already computes via DollarsToPrice(InpSlDollars,|
-//| InpFixedLot)), and the lot is solved for so that distance times     |
+//| InpReferenceLot)), and the lot is solved for so that distance times |
 //| that lot risks exactly InpRiskPercent% of current equity, then      |
 //| clamped to [SYMBOL_VOLUME_MIN, SYMBOL_VOLUME_MAX, InpMaxLotSize]    |
 //| and rounded down to the broker's own volume step.                   |
@@ -985,7 +1024,7 @@ double PositionSizeLots()
       return(InpFixedLot);
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double slDist = DollarsToPrice(InpSlDollars, InpFixedLot);
+   double slDist = DollarsToPrice(InpSlDollars, InpReferenceLot);
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(equity <= 0.0 || slDist <= 0.0 || tickValue <= 0.0 || tickSize <= 0.0)
@@ -1025,12 +1064,14 @@ double PositionSizeLots()
 }
 
 //+------------------------------------------------------------------+
-//| Money still at risk across BOTH magics on this symbol: every open |
-//| position from the current price to its stop, plus every pending  |
-//| order from its entry to its stop. A stop already locked beyond    |
-//| the current price (profit protected) contributes 0; orders with   |
-//| no stop can't be priced and are skipped (this EA always sets one).|
-//| Mirrors ClaudeSMC_Trader/python/executor.py's open_risk_dollars().|
+//| Money still at risk on this symbol, whatever placed it (Telegram, |
+//| Claude, another EA, a manual trade) - the 10% cap is an ACCOUNT    |
+//| cap: every open position from the current price to its stop, plus |
+//| every pending order from its entry to its stop. A stop already    |
+//| locked beyond the current price (profit protected) contributes 0; |
+//| orders with no stop can't be priced and are skipped (this EA and  |
+//| ClaudeSMC_Trader always set one). Mirrors ClaudeSMC_Trader/python/ |
+//| executor.py's open_risk_dollars().                                 |
 //+------------------------------------------------------------------+
 double OpenRiskMoney()
 {
@@ -1046,9 +1087,6 @@ double OpenRiskMoney()
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
-      long magic = PositionGetInteger(POSITION_MAGIC);
-      if(magic != InpTelegramMagicNumber && magic != InpClaudeMagicNumber)
-         continue;
       double sl = PositionGetDouble(POSITION_SL);
       if(sl <= 0.0)
          continue;
@@ -1060,9 +1098,6 @@ double OpenRiskMoney()
    {
       ulong oticket = OrderGetTicket(j);
       if(oticket == 0 || OrderGetString(ORDER_SYMBOL) != _Symbol)
-         continue;
-      long omagic = OrderGetInteger(ORDER_MAGIC);
-      if(omagic != InpTelegramMagicNumber && omagic != InpClaudeMagicNumber)
          continue;
       double osl = OrderGetDouble(ORDER_SL);
       if(osl <= 0.0)
@@ -1088,7 +1123,7 @@ string DailyRiskBudgetReason(double newLots)
       return("");
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double slDist    = DollarsToPrice(InpSlDollars, InpFixedLot);
+   double slDist    = DollarsToPrice(InpSlDollars, InpReferenceLot);
    if(tickValue <= 0.0 || tickSize <= 0.0 || slDist <= 0.0)
       return("");
 
@@ -1196,6 +1231,10 @@ void ExpirePendingOrders()
 int ClosePositionsByMagic(long magic, const string &label)
 {
    int closed = 0;
+   // The exit deal carries CTrade's magic - without this a Claude position
+   // would close under the Telegram magic (the last one set), and Python's
+   // magic-filtered closed-trade history (digests, ML labels) would lose it.
+   trade.SetExpertMagicNumber(magic);
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -1286,6 +1325,7 @@ void SetTelegramPaused(bool paused)
       return;
    }
    GlobalVariableSet(GV_TELEGRAM_PAUSED, paused ? 1.0 : 0.0);
+   GlobalVariablesFlush();
 }
 
 //+------------------------------------------------------------------+
@@ -1300,7 +1340,10 @@ void SetClaudePaused(bool paused)
       PrintFormat("UnifiedTrader_EA: [DRY-RUN] claude-paused=%s for this run only - not persisted, "
                   "so a restart/reattach starts unpaused.", paused ? "true" : "false");
    else
+   {
       GlobalVariableSet(GV_CLAUDE_PAUSED, paused ? 1.0 : 0.0);
+      GlobalVariablesFlush();   // survive a crash/VPS reboot, not just a clean exit
+   }
    WriteClaudePauseFile();
 }
 
@@ -1313,7 +1356,11 @@ void SetClaudePaused(bool paused)
 //+------------------------------------------------------------------+
 void WriteClaudePauseFile()
 {
-   if(StringLen(InpClaudePauseFilename) == 0)
+   // Never from the Strategy Tester/optimizer: FILE_COMMON there is the REAL
+   // shared folder, so a test pass (which never sees the live pause) would
+   // write "running" and silently lift a live PauseClaudeHab.
+   if(StringLen(InpClaudePauseFilename) == 0 || MQLInfoInteger(MQL_TESTER)
+      || MQLInfoInteger(MQL_OPTIMIZATION))
       return;
    int handle = FileOpen(InpClaudePauseFilename, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(handle == INVALID_HANDLE)
@@ -1335,7 +1382,7 @@ void WriteClaudePauseFile()
 //| between branches (e.g. one gaining a retry or rate-limit guard      |
 //| the others don't).                                                  |
 //+------------------------------------------------------------------+
-void SendControlReply(const string &summary)
+void SendControlReply(const string summary)
 {
    Print("UnifiedTrader_EA: " + summary);
    TelegramSendMessage(InpControlChatId, summary);
@@ -1524,9 +1571,22 @@ void FlushNotifyQueue()
    int n = ArraySize(g_notifyQueue);
    if(n == 0)
       return;
+   // ONE message per timer tick, however many trades closed: each
+   // WebRequest blocks this thread (OnTick's trailing waits behind it), so
+   // a burst of stop-outs must not become a burst of sequential sends.
+   string combined = "";
    for(int i = 0; i < n; i++)
-      TelegramSendMessage(InpControlChatId, g_notifyQueue[i]);
+   {
+      string part = (StringLen(combined) > 0 ? "\n\n" : "") + g_notifyQueue[i];
+      if(StringLen(combined) + StringLen(part) > 3500)
+      {
+         combined += StringFormat("\n\n(+%d more - tap Stats for totals)", n - i);
+         break;
+      }
+      combined += part;
+   }
    ArrayResize(g_notifyQueue, 0);
+   TelegramSendMessage(InpControlChatId, combined);
 }
 
 //+------------------------------------------------------------------+
@@ -1697,7 +1757,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    }
 
    orderPrice = NormalizeDouble(orderPrice, digits);
-   double slDist = DollarsToPrice(InpSlDollars, InpFixedLot);
+   double slDist = DollarsToPrice(InpSlDollars, InpReferenceLot);
    if(slDist <= 0.0)
    {
       // DollarsToPrice() returns 0.0 if the broker isn't fully quoting tick
@@ -1743,6 +1803,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    if(ok)
    {
       g_tradesToday++;
+      SaveDayState();
       PrintFormat("UnifiedTrader_EA: %s %s placed - %.2f lots @ %.2f sl=%.2f ticket=%I64u",
                   isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", outLots, orderPrice, sl,
                   outTicket);
@@ -1774,14 +1835,14 @@ void ManagePositionExit(ulong ticket, long magic)
    if(PositionGetString(POSITION_SYMBOL) != _Symbol)
       return;
 
-   // At the REFERENCE lot (InpFixedLot), not this position's own volume -
+   // At the REFERENCE lot (InpReferenceLot), not this position's own volume -
    // the SL is already a fixed price distance (InpSlDollars at
-   // InpFixedLot); converting TP1/trail at a risk-sized position's real
+   // InpReferenceLot); converting TP1/trail at a risk-sized position's real
    // volume would shrink them as the lot grows (risking e.g. $200 at the
    // stop to lock only $6). Fixed price distances keep the SL : TP1 : trail
    // shape identical at every lot size, for both sources.
-   double tp1Dist = DollarsToPrice(InpTp1Dollars, InpFixedLot);
-   double trailDist = DollarsToPrice(InpTrailDollars, InpFixedLot);
+   double tp1Dist = DollarsToPrice(InpTp1Dollars, InpReferenceLot);
+   double trailDist = DollarsToPrice(InpTrailDollars, InpReferenceLot);
    if(tp1Dist <= 0.0 || trailDist <= 0.0)
       return;
 
@@ -2223,7 +2284,7 @@ string JsonEscape(const string &s)
 //| never affect whether a pause/close actually happened, only whether |
 //| the operator sees a Telegram confirmation of it.                   |
 //+------------------------------------------------------------------+
-bool TelegramSendMessage(long chatId, const string &text)
+bool TelegramSendMessage(long chatId, const string text)
 {
    // A fixed, short cap - not InpHttpTimeoutMs - on purpose: MQL5's
    // WebRequest is synchronous and this EA's OnTick() (where
@@ -2568,9 +2629,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    all.pnl    = tel.pnl + cla.pnl;
 
    // A closing SELL deal closes a BUY position, and vice versa.
-   string msgText = StringFormat("Closed %s %s %.2f lot @ %.2f: %+.2f %s
-Equity %.2f
-%s",
+   string msgText = StringFormat("Closed %s %s %.2f lot @ %.2f: %+.2f %s\nEquity %.2f\n%s",
                                  source, dealType == DEAL_TYPE_SELL ? "BUY" : "SELL", volume, price,
                                  net, AccountInfoString(ACCOUNT_CURRENCY),
                                  AccountInfoDouble(ACCOUNT_EQUITY), StatsLine("Today", all));

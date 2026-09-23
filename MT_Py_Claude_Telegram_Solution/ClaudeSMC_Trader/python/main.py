@@ -15,7 +15,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -114,12 +116,44 @@ class DayRoll:
     without executor.py or mt5_gateway.py needing to know about calendar
     days at all - same separation as ../../python/trader.py's Bot.roll_day().
     """
-    def __init__(self):
+    def __init__(self, state_path: str | None = None):
         self.date = datetime.now(timezone.utc).date()
         self.trades_today = 0
         self.day_start_equity = 0.0
         self.daily_loss_hit = False
         self.daily_target_hit = False
+        # Persisted so a restart later the same UTC day keeps its anchor,
+        # latched breaker and trade count - re-anchoring on every restart
+        # would hand a down-9% day a fresh 10% budget.
+        self.state_path = state_path
+        if state_path and os.path.exists(state_path):
+            try:
+                with open(state_path) as f:
+                    saved = json.load(f)
+                if saved.get("date") == self.date.isoformat():
+                    self.trades_today = int(saved.get("trades_today", 0))
+                    self.day_start_equity = float(saved.get("day_start_equity", 0.0))
+                    self.daily_loss_hit = bool(saved.get("daily_loss_hit", False))
+                    self.daily_target_hit = bool(saved.get("daily_target_hit", False))
+                    log.info("Restored today's state: day-start equity %.2f, %d trade(s)%s.",
+                             self.day_start_equity, self.trades_today,
+                             ", daily loss breaker TRIGGERED" if self.daily_loss_hit else "")
+            except (OSError, ValueError) as exc:
+                log.warning("Could not read %s (%s) - starting today's state fresh.", state_path, exc)
+
+    def save(self) -> None:
+        if not self.state_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
+            with open(self.state_path, "w") as f:
+                json.dump({"date": self.date.isoformat(), "trades_today": self.trades_today,
+                           "day_start_equity": self.day_start_equity,
+                           "daily_loss_hit": self.daily_loss_hit,
+                           "daily_target_hit": self.daily_target_hit}, f)
+        except OSError as exc:
+            log.warning("Could not save %s (%s) - a restart today would re-anchor the daily cap.",
+                        self.state_path, exc)
 
     def roll(self, equity: float):
         """Returns the (gap_start, gap_end) INCLUSIVE UTC date range that
@@ -332,24 +366,36 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
             and cfg.telegram_alert_chat_id:
         send_performance_digests(cfg, gap[0], gap[1], equity)
     day.check_daily_limits(cfg, equity)
-    if claude_paused(cfg):
-        # Checked before building the snapshot or calling Claude - a pause
-        # costs nothing. Open positions keep being managed by the EA.
-        log.info(CLAUDE_PAUSED_TEXT)
+    day.save()
+    # Everything that doesn't depend on Claude's answer is checked BEFORE
+    # the snapshot and the paid Claude call: a pause, the daily breaker/
+    # target, a news blackout, the daily trade limit. Open positions keep
+    # being managed by the EA either way.
+    skip_reason = (CLAUDE_PAUSED_TEXT if claude_paused(cfg) else
+                   day.block_reason() or executor.verdict_independent_block(gw, cfg, day.trades_today))
+    if skip_reason:
+        log.info("No evaluation this cycle (no Claude call): %s", skip_reason)
         if cfg.last_verdict_filename:
             try:
-                gw.write_common_file(cfg.last_verdict_filename, CLAUDE_PAUSED_TEXT)
+                gw.write_common_file(cfg.last_verdict_filename,
+                                     f"No evaluation this cycle: {skip_reason}")
             except Exception:
-                log.debug("Could not update the last-verdict file while paused.", exc_info=True)
+                log.debug("Could not update the last-verdict file.", exc_info=True)
         return
     features = market_intel.build_feature_snapshot(gw, cfg)
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
               verdict.direction, verdict.conviction, verdict.confluence_count, verdict.reasoning)
-    decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, day.block_reason(),
+    # Re-checked right before ordering: the Claude call takes seconds, and a
+    # PauseClaudeHab/PauseHab tapped meanwhile must still stop this entry.
+    block = day.block_reason() or (
+        "paused from Telegram (PauseClaudeHab/PauseHab) during this evaluation"
+        if claude_paused(cfg) else "")
+    decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, block,
                                 day_start_equity=day.day_start_equity)
     if decision.executed:
         day.trades_today += 1
+        day.save()
     if decision.executed and decision.ticket:
         # Feeds train_model()/train_ml_model.py's offline training later.
         # Only LIVE trades carry a broker ticket that MT5's deal history can
@@ -396,9 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", help="override the traded symbol (default XAUUSD)")
     parser.add_argument("--lots", type=float,
                         help="trade this fixed lot instead of risk-%% sizing (default: risk-sized, "
-                             "see --risk-percent). Combined with --risk-percent it only sets the "
-                             "reference lot the $ SL/TP1/trail distances are priced at (default 0.01; "
-                             "must equal the MQL5 manager's InpReferenceLot)")
+                             "see --risk-percent; with --risk-percent too, it is only the fallback "
+                             "lot). The $ SL/TP1/trail stay priced at config.py's reference_lot "
+                             "either way, so this never changes those price distances")
     parser.add_argument("--max-positions", type=int, dest="max_positions",
                         help="max concurrent same-direction positions (default 5)")
     parser.add_argument("--shared-cap-magic", dest="shared_cap_magic",
@@ -514,8 +560,9 @@ def main(argv: list | None = None) -> int:
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
                   "min_confluence=%d/3 require_full=%s max_daily_loss=%s daily_target=%s model=%s "
                   "dry_run=%s telegram_alerts=%s performance_digest=%s heartbeat=%s stale_alert=%s",
-                  f"risk {cfg.risk_percent:g}% of equity (max {cfg.max_lot_size:g})"
-                  if cfg.use_risk_percent else f"fixed {cfg.fixed_lot:g}",
+                  (f"risk {cfg.risk_percent:g}% of equity (max {cfg.max_lot_size:g})"
+                   if cfg.use_risk_percent else f"fixed {cfg.fixed_lot:g}")
+                  + f", $ distances at reference lot {cfg.reference_lot:g}",
                   cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
                   f"atr(x{cfg.sl_atr_mult:g})" if cfg.sl_mode == "atr" else "fixed",
                   cfg.sl_dollars, cfg.tp1_dollars, cfg.trail_dollars, cfg.exit_style,
@@ -537,7 +584,7 @@ def main(argv: list | None = None) -> int:
         log.info("Running in DRY-RUN - no real orders will be sent. Pass --live to trade for real.")
 
     client = claude_advisor.build_client()
-    day = DayRoll()
+    day = DayRoll(state_path=os.path.join(cfg.log_dir, "day_state.json"))
 
     if args.once:
         run_once(client, cfg, spec, day)

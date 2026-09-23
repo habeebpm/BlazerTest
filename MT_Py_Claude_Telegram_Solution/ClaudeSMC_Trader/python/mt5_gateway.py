@@ -224,6 +224,35 @@ def open_positions(symbol: str, magic: int) -> list:
     return out
 
 
+def symbol_positions(symbol: str) -> list:
+    """EVERY open position on `symbol`, whatever placed it (any magic, or
+    a manual trade) - for the account-level daily risk budget."""
+    m = mt5()
+    positions = m.positions_get(symbol=symbol)
+    if positions is None:
+        return []
+    return [{"ticket": p.ticket, "magic": p.magic,
+             "direction": "buy" if p.type == m.POSITION_TYPE_BUY else "sell",
+             "volume": p.volume, "price_open": p.price_open, "sl": p.sl, "tp": p.tp}
+            for p in positions]
+
+
+def pending_orders(symbol: str) -> list:
+    """Every pending (limit/stop) order on `symbol`, any magic. Their risk
+    counts toward the daily budget, and orders under counted magics toward
+    the same-direction cap - a fast move can fill several at once."""
+    m = mt5()
+    orders = m.orders_get(symbol=symbol)
+    if orders is None:
+        return []
+    buy_types = {m.ORDER_TYPE_BUY_LIMIT, m.ORDER_TYPE_BUY_STOP,
+                 getattr(m, "ORDER_TYPE_BUY_STOP_LIMIT", m.ORDER_TYPE_BUY_STOP)}
+    return [{"ticket": o.ticket, "magic": o.magic,
+             "direction": "buy" if o.type in buy_types else "sell",
+             "volume": o.volume_current, "price_open": o.price_open, "sl": o.sl}
+            for o in orders]
+
+
 def count_same_direction(symbol: str, magic: int, direction: str, additional_magics=()) -> int:
     """Same-direction open positions under `magic`, plus (if given) any of
     `additional_magics` too - so a shared position cap (see AdvisorConfig.
@@ -234,8 +263,14 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
     never drift apart on what counts as "this magic's position" or how a
     position's direction is derived.
     """
-    return sum(1 for magic_id in {magic, *additional_magics}
-              for p in open_positions(symbol, magic_id) if p["direction"] == direction)
+    magics = {magic, *additional_magics}
+    positions = sum(1 for magic_id in magics
+                    for p in open_positions(symbol, magic_id) if p["direction"] == direction)
+    # Pending orders count too, exactly as UnifiedTrader_EA's own shared cap
+    # counts them - otherwise resting Telegram limits are invisible here.
+    pending = sum(1 for o in pending_orders(symbol)
+                  if o["magic"] in magics and o["direction"] == direction)
+    return positions + pending
 
 
 def recent_closed_trades(symbol: str, magic: int, count: int = 10,
@@ -283,6 +318,19 @@ def price_distance_for_dollars(spec: SymbolSpec, dollars: float, lots: float) ->
     return dollars * spec.tick_size / (spec.tick_value * lots)
 
 
+def _filling_mode(m, symbol: str):
+    """The fill policy this symbol actually allows - a hard-coded IOC is
+    rejected outright (retcode 10030) by brokers that only offer FOK or
+    RETURN for XAUUSD market orders."""
+    info = m.symbol_info(symbol)
+    allowed = getattr(info, "filling_mode", 0) if info is not None else 0
+    if allowed & 2:        # SYMBOL_FILLING_IOC
+        return m.ORDER_FILLING_IOC
+    if allowed & 1:        # SYMBOL_FILLING_FOK
+        return m.ORDER_FILLING_FOK
+    return m.ORDER_FILLING_RETURN
+
+
 def place_market_order(spec: SymbolSpec, direction: str, lots: float, sl_price: float,
                         tp_price: float, magic: int, comment: str, deviation_points: int,
                         dry_run: bool):
@@ -309,7 +357,7 @@ def place_market_order(spec: SymbolSpec, direction: str, lots: float, sl_price: 
         "magic": magic,
         "comment": comment,
         "type_time": m.ORDER_TIME_GTC,
-        "type_filling": m.ORDER_FILLING_IOC,
+        "type_filling": _filling_mode(m, spec.name),
     }
     result = m.order_send(request)
     if result is None:

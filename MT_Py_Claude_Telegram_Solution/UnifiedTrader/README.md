@@ -208,11 +208,11 @@ either input to `0`/`false` to opt back out; neither is required:
 
 - **Daily loss circuit breaker** (`InpMaxDailyLossPct`, default `10.0`,
   `0` = disabled): withholds new Telegram-sourced entries once the account
-  is down this many percent on the UTC day, latched until the next day.
+  is down this many percent on the broker's server day (Python's breaker uses the UTC day), latched until the next day.
   Existing open positions are never touched. It is also a real **budget**,
   not just a trigger: a new Telegram entry is skipped if today's drawdown +
-  what every open position/pending order of *both* magics still risks to
-  its stop + the new trade's own risk would exceed the cap - so several
+  what every open position/pending order on the symbol (any magic -
+  Claude's, manual trades, other EAs) still risks to its stop + the new trade's own risk would exceed the cap - so several
   concurrent trades can't jointly stop out past it. Mirrors
   `ClaudeSMC_Trader`'s own `max_daily_loss_pct` (Python side).
 - **Equity-scaled lot sizing** (`InpUseRiskPercent` default `true`,
@@ -223,7 +223,10 @@ either input to `0`/`false` to opt back out; neither is required:
   trades before halting, and sits inside the conventional 1-2%-per-trade
   risk-management band. `InpSlDollars`, `InpTp1Dollars` and
   `InpTrailDollars` are all dollar amounts *at the reference lot*
-  `InpFixedLot`, i.e. fixed price distances - only the traded volume
+  `InpReferenceLot` (default `0.01`, MUST equal `ClaudeSMC_Trader`'s
+  `reference_lot`), i.e. fixed price distances. `InpFixedLot` is only the
+  traded lot when `InpUseRiskPercent=false`, and changing it never moves
+  the stop - only the traded volume
   changes, so a risk-sized lot risks and locks proportionally more money
   with the same SL : TP1 : trail shape (e.g. at 0.33 lots: ~$200 risked,
   ~$200 locked at TP1). If the risk-sized lot would round below the

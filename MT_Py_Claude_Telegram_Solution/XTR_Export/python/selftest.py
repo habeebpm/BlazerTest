@@ -287,14 +287,27 @@ def test_drive_uploader() -> bool:
                     and svc._files.updated == [] and ids1["M5"] == "file1", svc._files.created)
         cache_on_disk = json.load(open(cache_path))
         ok &= check("the returned file id is persisted to the cache file, keyed by folder+filename",
-                    cache_on_disk == {"folder123::XAUUSD_M5.csv": "file1"}, cache_on_disk)
+                    cache_on_disk.get("folder123::XAUUSD_M5.csv") == "file1", cache_on_disk)
 
+        ids_same = drive_uploader.sync_paths(svc, "folder123", {"M5": local_path}, cache_path,
+                                             media_factory=fake_media)
+        ok &= check("a later sync with UNCHANGED content sends nothing (no create, no update)",
+                    svc._files.created == [("XAUUSD_M5.csv", ["folder123"])]
+                    and svc._files.updated == [] and ids_same["M5"] == "file1",
+                    (svc._files.created, svc._files.updated))
+
+        with open(local_path, "a") as f:
+            f.write("2026-09-22 12:00:00,2650.10\n")
         ids2 = drive_uploader.sync_paths(svc, "folder123", {"M5": local_path}, cache_path,
                                          media_factory=fake_media)
-        ok &= check("a later sync UPDATEs the same file id instead of creating a new one",
+        ok &= check("a later sync with CHANGED content UPDATEs the same file id instead of creating a new one",
                     svc._files.created == [("XAUUSD_M5.csv", ["folder123"])]  # unchanged
                     and svc._files.updated == ["file1"] and ids2["M5"] == "file1",
                     (svc._files.created, svc._files.updated))
+        drive_uploader.sync_paths(svc, "folder123", {"M5": local_path}, cache_path,
+                                  media_factory=fake_media)
+        ok &= check("...and the new content's hash is remembered, so the next unchanged sync is skipped again",
+                    svc._files.updated == ["file1"], svc._files.updated)
 
         # Switching --drive-folder-id with the same --out-dir/cache must
         # start a fresh file in the new folder, not keep silently updating
@@ -306,9 +319,10 @@ def test_drive_uploader() -> bool:
                     svc._files.created == [("XAUUSD_M5.csv", ["folder123"]), ("XAUUSD_M5.csv", ["folder456"])]
                     and ids3["M5"] == "file2", (svc._files.created, ids3))
         cache_after_switch = json.load(open(cache_path))
+        ids_only = {k: v for k, v in cache_after_switch.items() if not k.startswith("sha256::")}
         ok &= check("both folders' file ids are retained in the cache, under distinct keys",
-                    cache_after_switch == {"folder123::XAUUSD_M5.csv": "file1",
-                                           "folder456::XAUUSD_M5.csv": "file2"},
+                    ids_only == {"folder123::XAUUSD_M5.csv": "file1",
+                                 "folder456::XAUUSD_M5.csv": "file2"},
                     cache_after_switch)
 
         # The cache must be written via a temp file + atomic rename, not a

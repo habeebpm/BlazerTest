@@ -42,7 +42,6 @@ README's "Honest limitations" section.
 from __future__ import annotations
 
 import logging
-from datetime import timezone
 
 import numpy as np
 import pandas as pd
@@ -437,11 +436,7 @@ def economic_calendar_context(gateway, cfg: AdvisorConfig) -> dict | None:
             return None
         events, exported_at = calendar
         now_fn = getattr(gateway, "now", None)
-        now = now_fn() if now_fn else pd.Timestamp.utcnow()
-        if hasattr(now, "to_pydatetime"):
-            now = now.to_pydatetime()
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
+        now = econ_calendar.to_utc_datetime(now_fn() if now_fn else pd.Timestamp.utcnow())
         return econ_calendar.calendar_context(events, exported_at, now, cfg)
     except ValueError:
         raise   # a misconfigured news_min_importance must be seen, not swallowed
