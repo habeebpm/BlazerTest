@@ -37,7 +37,7 @@ SOURCE_TAG = "Claude_Sig"
 
 DECISION_FIELDS = ["time", "source", "direction", "confluence_count", "conviction",
                     "trend", "momentum", "strength", "smc_alignment",
-                    "executed", "reject_reason", "reasoning"]
+                    "executed", "reject_reason", "reasoning", "ticket"]
 TRADE_FIELDS = ["time", "source", "direction", "lots", "entry_price", "sl", "tp",
                  "mode", "retcode", "ticket"]
 
@@ -63,7 +63,14 @@ def _append_row(path: str, fieldnames: list, row: dict) -> None:
 
 
 def log_decision(cfg: AdvisorConfig, verdict: ConfluenceVerdict, executed: bool,
-                  reject_reason: str = "") -> None:
+                  reject_reason: str = "", ticket="") -> None:
+    """ticket (blank for a rejected decision, or a dry-run trade with no
+    real broker ticket) lets calibration_report.py join this row to its
+    exact trades.csv counterpart instead of relying on row order, which
+    would silently misalign every later pair if the process ever died
+    between this call and execute()'s log_trade() call for one signal in
+    the middle of the log.
+    """
     def leg(l):
         return f"{l.direction}/pass={l.passes}/confirmed={l.confirmed}"
 
@@ -78,6 +85,7 @@ def log_decision(cfg: AdvisorConfig, verdict: ConfluenceVerdict, executed: bool,
         "executed": executed,
         "reject_reason": reject_reason,
         "reasoning": verdict.reasoning,
+        "ticket": ticket,
     }
     _append_row(_csv_path(cfg, "decisions.csv"), DECISION_FIELDS, row)
 
@@ -255,7 +263,7 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
               verdict.direction.upper(), lots, fill_price, sl_price, tp_desc,
               verdict.conviction, verdict.confluence_count)
-    log_decision(cfg, verdict, executed=True)
+    log_decision(cfg, verdict, executed=True, ticket=ticket)
     log_trade(cfg, verdict.direction, lots, fill_price, sl_price, tp_price,
               "dry-run" if cfg.dry_run else "live", retcode, ticket)
     return Decision(executed=True)

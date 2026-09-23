@@ -16,12 +16,15 @@ conviction="full" trades, split by confluence_count (2/3 vs 3/3). Running
 some evaluation with --allow-partial-conviction (see main.py) is the only
 way to get real outcome data for "partial" calls too.
 
-The decisions<->trades join relies on a property of executor.execute(): it
-calls log_decision(executed=True) then log_trade() as the only two writers
-to these two files, always in that order, always in a 1:1 pairing - so the
-Nth executed=True row in decisions.csv is the Nth row in trades.csv. This
-breaks if either CSV is hand-edited or trimmed independently; a length
-mismatch is reported rather than silently misaligning rows.
+The decisions<->trades join matches by ticket (executor.log_decision()
+records the same ticket log_trade() does, for every executed row) rather
+than row order, so a process killed mid-execute() between those two calls
+for one signal doesn't misalign every pair after it. Dry-run trades and
+decisions.csv rows written before the ticket field existed have no ticket
+to match on and fall back to being paired positionally among themselves -
+fine for counting, since neither ever has real MT5 P&L to grade anyway.
+Any executed decision that still can't be matched to a trade row is
+reported, not silently dropped or misaligned.
 
 Usage:
     python calibration_report.py                          # uses logs/decisions.csv, logs/trades.csv
@@ -61,16 +64,52 @@ def load_csv(path: str) -> list[dict]:
 
 
 def join_decisions_and_trades(decisions: list[dict], trades: list[dict]) -> tuple[list[tuple[dict, dict]], int]:
-    """Pairs each executed decision with the trade it produced, by row
-    order (see module docstring for why this is a valid join here).
-    Returns (pairs, mismatch_count) - mismatch_count is how many rows had
-    to be dropped because the two files' executed-row counts didn't match
-    (0 in the normal case).
+    """Pairs each executed decision with the trade it produced.
+
+    Matched by ticket where both rows have one (every LIVE trade - see
+    executor.log_decision()'s own ticket parameter) rather than row order:
+    a plain positional zip silently misaligns every pair after the point
+    where the process died between log_decision(executed=True) and
+    log_trade() for one signal in the middle of the log, not just the
+    trailing rows a naive length check would suggest.
+
+    Rows with no ticket (dry-run trades, or decisions.csv rows written
+    before this field existed) have no real P&L to grade anyway, so they
+    fall back to being paired in the order they appear among themselves -
+    good enough for counting purposes, never used for outcome grading
+    since dry-run tickets never appear in MT5's real deal history either.
+
+    Returns (pairs, unmatched_count) - unmatched_count is how many
+    executed decisions had no trade row to pair with at all (0 in the
+    normal case; a mismatched ticket or truncated trades.csv can produce
+    this).
     """
     executed = [d for d in decisions if str(d.get("executed", "")).strip() == "True"]
-    n = min(len(executed), len(trades))
-    mismatch = abs(len(executed) - len(trades))
-    return list(zip(executed[:n], trades[:n])), mismatch
+
+    trades_by_ticket: dict[str, list[dict]] = {}
+    fallback_trades = []
+    for t in trades:
+        ticket = str(t.get("ticket", "")).strip()
+        if ticket:
+            trades_by_ticket.setdefault(ticket, []).append(t)
+        else:
+            fallback_trades.append(t)
+    fallback_iter = iter(fallback_trades)
+
+    pairs = []
+    unmatched = 0
+    for d in executed:
+        ticket = str(d.get("ticket", "")).strip()
+        bucket = trades_by_ticket.get(ticket) if ticket else None
+        if bucket:
+            pairs.append((d, bucket.pop(0)))
+            continue
+        t = next(fallback_iter, None)
+        if t is not None:
+            pairs.append((d, t))
+        else:
+            unmatched += 1
+    return pairs, unmatched
 
 
 def summarize_by_bucket(pairs: list[tuple[dict, dict]], pnl_by_ticket: dict[str, float]) -> dict[tuple, Bucket]:
@@ -106,7 +145,7 @@ def conviction_frequency(decisions: list[dict]) -> dict[str, int]:
     return freq
 
 
-def format_report(buckets: dict[tuple, Bucket], freq: dict[str, int], mismatch: int) -> str:
+def format_report(buckets: dict[tuple, Bucket], freq: dict[str, int], unmatched: int) -> str:
     lines = ["Conviction calibration report", "=" * 30, ""]
     lines.append("How often each conviction level was called (executed or not):")
     for conviction, count in sorted(freq.items(), key=lambda kv: -kv[1]):
@@ -126,12 +165,13 @@ def format_report(buckets: dict[tuple, Bucket], freq: dict[str, int], mismatch: 
             f"win_rate={win_rate if win_rate is not None else 'n/a'}%  "
             f"net_pnl=${b.net_pnl:+.2f}  avg_pnl={f'${avg:+.2f}' if avg is not None else 'n/a'}"
         )
-    if mismatch:
+    if unmatched:
         lines.append("")
-        lines.append(f"WARNING: decisions.csv/trades.csv row-count mismatch of {mismatch} - "
-                     "one of the files may have been hand-edited or truncated independently of "
-                     f"the other; {mismatch} trailing row(s) were dropped from the join rather "
-                     "than risk misaligning them.")
+        lines.append(f"WARNING: {unmatched} executed decision(s) in decisions.csv had no matching "
+                     "row in trades.csv (by ticket, or by position for dry-run/legacy rows) - one "
+                     "of the files may have been hand-edited or truncated independently of the "
+                     "other; those decisions were excluded from the outcome buckets above rather "
+                     "than risk pairing them with the wrong trade.")
     return "\n".join(lines)
 
 
@@ -157,7 +197,7 @@ def main(argv: list | None = None) -> int:
         print(f"No decisions found at {args.decisions} - nothing to report.")
         return 0
 
-    pairs, mismatch = join_decisions_and_trades(decisions, trades)
+    pairs, unmatched = join_decisions_and_trades(decisions, trades)
 
     pnl_by_ticket: dict[str, float] = {}
     if not args.no_mt5:
@@ -170,7 +210,7 @@ def main(argv: list | None = None) -> int:
 
     buckets = summarize_by_bucket(pairs, pnl_by_ticket)
     freq = conviction_frequency(decisions)
-    print(format_report(buckets, freq, mismatch))
+    print(format_report(buckets, freq, unmatched))
     return 0
 
 

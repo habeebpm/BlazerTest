@@ -244,25 +244,47 @@ def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end) -> None:
     the full-conviction alert just above - a slow/unreachable Telegram API
     must never delay the next poll cycle, but the local MT5 IPC call is
     fast and must never race with the rest of this cycle's own MT5 calls.
+
+    By the time this is called, DayRoll.roll() has already advanced
+    day.date - there is no way to retry this specific gap on the next
+    cycle if the MT5 query below fails, so (unlike leaving it to the
+    generic except-Exception path several frames up, which would also
+    abort this cycle's Claude evaluation/trade execution that runs right
+    after run_once() calls this) a transient MT5 hiccup here is caught and
+    logged, same reasoning as dxy_context()/consensus_context()/
+    recent_performance_summary() - the digest for this gap is lost either
+    way, but nothing else about the cycle should be.
     """
-    # count=500*however many days are 5000 are generous ceilings, not real
-    # limits - a manual trading system won't produce anywhere near that
-    # many trades; lookback_days needs to reach back far enough to cover
-    # gap_start even after a multi-day process outage (exactly the
-    # scenario the heartbeat/stale-cycle alert exists to catch) - the
-    # exact date-range filters below do the real work either way, this
-    # just has to fetch far ENOUGH history to include what they filter.
-    lookback_days = digest_lookback_days(gap_start) + 2
-    gap_days = (gap_end - gap_start).days + 1
-    all_trades = gw.recent_closed_trades(cfg.symbol, cfg.magic, count=max(500, 500 * gap_days),
-                                         lookback_days=lookback_days)
+    try:
+        # A week can start well before gap_start (e.g. a Sunday gap needs
+        # the preceding Monday too), so the lookback has to reach back to
+        # whichever is earlier - gap_start, or the start of the earliest
+        # week being reported on - not gap_start alone.
+        sundays = sundays_in_range(gap_start, gap_end)
+        earliest_needed = min(gap_start, sundays[0] - timedelta(days=6)) if sundays else gap_start
+        # count=500*however many days are generous ceilings, not real
+        # limits - a manual trading system won't produce anywhere near
+        # that many trades; lookback_days needs to reach back far enough
+        # to cover earliest_needed even after a multi-day process outage
+        # (exactly the scenario the heartbeat/stale-cycle alert exists to
+        # catch) - the exact date-range filters below do the real work
+        # either way, this just has to fetch far ENOUGH history.
+        lookback_days = digest_lookback_days(earliest_needed) + 2
+        gap_days = (gap_end - gap_start).days + 1
+        all_trades = gw.recent_closed_trades(cfg.symbol, cfg.magic, count=max(500, 500 * gap_days),
+                                             lookback_days=lookback_days)
+    except Exception as exc:
+        log.warning("send_performance_digests: could not read trade history for %s to %s (%s) - "
+                    "this digest is lost, but the rest of the cycle continues.",
+                    gap_start, gap_end, exc)
+        return
 
     gap_trades = [t for t in all_trades if gap_start <= t["time"].date() <= gap_end]
     period_label = "Daily" if gap_start == gap_end else f"{gap_start} to {gap_end}"
     daily_msg = telegram_alert.format_performance_digest(cfg.symbol, period_label, gap_trades)
 
     weekly_msgs = []
-    for week_end in sundays_in_range(gap_start, gap_end):
+    for week_end in sundays:
         week_start = week_end - timedelta(days=6)
         weekly_trades = [t for t in all_trades if week_start <= t["time"].date() <= week_end]
         weekly_msgs.append(telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades))

@@ -1529,26 +1529,43 @@ def test_calibration_report() -> bool:
     ok = True
 
     decisions = [
-        {"executed": "True", "conviction": "full", "confluence_count": "3"},
-        {"executed": "False", "conviction": "partial", "confluence_count": "2"},
-        {"executed": "True", "conviction": "full", "confluence_count": "2"},
-        {"executed": "True", "conviction": "full", "confluence_count": "3"},
+        {"executed": "True", "conviction": "full", "confluence_count": "3", "ticket": "101"},
+        {"executed": "False", "conviction": "partial", "confluence_count": "2", "ticket": ""},
+        {"executed": "True", "conviction": "full", "confluence_count": "2", "ticket": "102"},
+        {"executed": "True", "conviction": "full", "confluence_count": "3", "ticket": "103"},
     ]
     trades = [
         {"ticket": "101"},
         {"ticket": "102"},
         {"ticket": "103"},
     ]
-    pairs, mismatch = calibration_report.join_decisions_and_trades(decisions, trades)
-    ok &= check("only executed=True rows are joined, in order, skipping rejected rows",
-                len(pairs) == 3 and mismatch == 0, pairs)
-    ok &= check("row order pairing is correct (1st executed decision <-> 1st trade)",
-                pairs[0][1]["ticket"] == "101" and pairs[1][1]["ticket"] == "102", pairs)
+    pairs, unmatched = calibration_report.join_decisions_and_trades(decisions, trades)
+    ok &= check("only executed=True rows are joined, by ticket, skipping rejected rows",
+                len(pairs) == 3 and unmatched == 0, pairs)
+    ok &= check("each decision is paired with the trade sharing its OWN ticket",
+                pairs[0][1]["ticket"] == "101" and pairs[1][1]["ticket"] == "102"
+                and pairs[2][1]["ticket"] == "103", pairs)
 
     short_trades = trades[:2]
-    pairs2, mismatch2 = calibration_report.join_decisions_and_trades(decisions, short_trades)
-    ok &= check("a decisions/trades length mismatch is reported, not silently misaligned",
-                mismatch2 == 1 and len(pairs2) == 2, (mismatch2, len(pairs2)))
+    pairs2, unmatched2 = calibration_report.join_decisions_and_trades(decisions, short_trades)
+    ok &= check("an executed decision whose ticket has no matching trade row is reported as "
+                "unmatched, not silently misaligned",
+                unmatched2 == 1 and len(pairs2) == 2, (unmatched2, len(pairs2)))
+
+    # The whole point of matching by ticket instead of row order: a process
+    # killed between log_decision() and log_trade() for the MIDDLE signal
+    # (ticket 102's trade never got written) must not shift every pair
+    # after it - a naive positional zip would have paired decision 103
+    # with a two-trade list's [1] entry (nonexistent) or, worse, with
+    # whatever the next trade in the file happened to be.
+    trades_missing_middle = [{"ticket": "101"}, {"ticket": "103"}]
+    pairs3, unmatched3 = calibration_report.join_decisions_and_trades(decisions, trades_missing_middle)
+    ok &= check("a trade missing from the MIDDLE of the file (not just the tail) still pairs every "
+                "OTHER decision with its own correct ticket, rather than shifting them all by one",
+                len(pairs3) == 2 and unmatched3 == 1
+                and pairs3[0] == (decisions[0], trades_missing_middle[0])
+                and pairs3[1] == (decisions[3], trades_missing_middle[1]),
+                pairs3)
 
     pnl_by_ticket = {"101": 5.0, "102": -3.0, "103": 4.0}
     buckets = calibration_report.summarize_by_bucket(pairs, pnl_by_ticket)
@@ -1575,17 +1592,17 @@ def test_calibration_report() -> bool:
     ok &= check("conviction_frequency() counts EVERY decision, executed or not",
                 freq == {"full": 3, "partial": 1}, freq)
 
-    report_text = calibration_report.format_report(buckets, freq, mismatch=0)
+    report_text = calibration_report.format_report(buckets, freq, unmatched=0)
     ok &= check("format_report() names every bucket and the frequency table, with no warning "
-                "when mismatch=0",
+                "when unmatched=0",
                 "conviction=full" in report_text and "confluence=3/3" in report_text
                 and "partial" in report_text and "WARNING" not in report_text, report_text)
 
-    report_with_mismatch = calibration_report.format_report(buckets, freq, mismatch=1)
-    ok &= check("format_report() surfaces a mismatch warning with the actual count substituted in "
-                "(not a literal '{mismatch}')",
-                "WARNING" in report_with_mismatch and "mismatch of 1" in report_with_mismatch
-                and "{mismatch}" not in report_with_mismatch, report_with_mismatch)
+    report_with_unmatched = calibration_report.format_report(buckets, freq, unmatched=1)
+    ok &= check("format_report() surfaces an unmatched-decisions warning with the actual count "
+                "substituted in",
+                "WARNING" in report_with_unmatched and "1 executed decision" in report_with_unmatched,
+                report_with_unmatched)
 
     ok &= check("load_csv() on a nonexistent path returns an empty list, not an error",
                 calibration_report.load_csv("/tmp/definitely_does_not_exist_12345.csv") == [])
