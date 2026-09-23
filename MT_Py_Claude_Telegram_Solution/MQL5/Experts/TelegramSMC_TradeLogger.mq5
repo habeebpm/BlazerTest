@@ -34,6 +34,10 @@
 //| the original signal text next to its eventual result - nothing     |
 //| here does that merge automatically.                                 |
 //|                                                                    |
+//| UnifiedTrader_EA (Telegram 20260922 + Claude 20260921): set         |
+//| InpMagicNumber2/InpSourceLabel2 too (or load                        |
+//| TelegramSMC_TradeLogger_Unified.set) - one logger, both sources.   |
+//|                                                                    |
 //| HONEST LIMITATIONS                                                  |
 //| ------------------------------------------------------------------ |
 //| No OPEN row is written for a position that was already open        |
@@ -46,7 +50,7 @@
 //+------------------------------------------------------------------+
 #property copyright "TelegramSMC_TradeLogger"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 #property description "Standalone trade journal: logs every open/close of a position tagged with InpMagicNumber to TelegramSMC_Results.csv, independent of whatever EA (or manual trading) actually places the orders."
 
@@ -56,6 +60,8 @@ input group "=== What to log ==="
 input string InpSymbol          = "XAUUSD";     // Symbol to log (match the trading EA's symbol)
 input ulong  InpMagicNumber     = 20260918;     // Magic number to log (match the trading EA's)
 input string InpSourceLabel     = "Telegram_Sig"; // Free-text tag written to every row's source column - this EA is generic (see header), so re-point it at a different system's magic number (e.g. the Claude-SMC Trader's 20260921) and set this to "Claude_Sig" to keep that log distinguishable too
+input ulong  InpMagicNumber2    = 0;            // Optional 2nd magic to log into the same file (0 = off), e.g. 20260921 for UnifiedTrader's Claude trades
+input string InpSourceLabel2    = "Claude_Sig"; // Source tag for InpMagicNumber2's rows
 input bool   InpUseCommonFolder = false;        // Write to the shared Common\Files folder instead of this terminal's Files
 
 //+------------------------------------------------------------------+
@@ -63,9 +69,17 @@ input bool   InpUseCommonFolder = false;        // Write to the shared Common\Fi
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   if(InpMagicNumber2 != 0 && InpMagicNumber2 == InpMagicNumber)
+   {
+      Print("TelegramSMC_TradeLogger: InpMagicNumber2 equals InpMagicNumber - set it to 0 or a different magic.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
    PrintFormat("TelegramSMC_TradeLogger: watching symbol=%s magic=%I64u source=%s -> %s\\%s",
                InpSymbol, InpMagicNumber, InpSourceLabel,
                InpUseCommonFolder ? "Common\\Files" : "MQL5\\Files", TSMC_RESULTS_FILE);
+   if(InpMagicNumber2 != 0)
+      PrintFormat("TelegramSMC_TradeLogger: also watching magic=%I64u source=%s (same file)",
+                  InpMagicNumber2, InpSourceLabel2);
    PrintFormat("TelegramSMC_TradeLogger: note - positions already open before this EA was attached "
                "get no OPEN row, but their CLOSE row will still be complete.");
    return(INIT_SUCCEEDED);
@@ -99,7 +113,8 @@ bool FindPositionOpenDeal(long positionId, double &openPrice, datetime &openTime
 //+------------------------------------------------------------------+
 //| Appends one row to TelegramSMC_Results.csv.                       |
 //+------------------------------------------------------------------+
-void LogResultRow(const string &event, long positionId, long orderTicket, const string &direction,
+void LogResultRow(long magic, const string &source, const string &event, long positionId,
+                   long orderTicket, const string &direction,
                    double volume, double price, double sl, double tp, double profit, double swap,
                    double commission, const string &closeReason, double durationMin,
                    double priceMove, const string &comment)
@@ -114,7 +129,7 @@ void LogResultRow(const string &event, long positionId, long orderTicket, const 
                  IntegerToString(positionId) + "," +
                  IntegerToString(orderTicket) + "," +
                  TsmcCsvField(InpSymbol) + "," +
-                 IntegerToString((long)InpMagicNumber) + "," +
+                 IntegerToString(magic) + "," +
                  TsmcCsvField(direction) + "," +
                  DoubleToString(volume, 2) + "," +
                  DoubleToString(price, 2) + "," +
@@ -128,7 +143,7 @@ void LogResultRow(const string &event, long positionId, long orderTicket, const 
                  DoubleToString(durationMin, 1) + "," +
                  DoubleToString(priceMove, 2) + "," +
                  TsmcCsvField(comment) + "," +
-                 TsmcCsvField(InpSourceLabel);
+                 TsmcCsvField(source);
 
    FileWriteString(handle, line + "\r\n");
    FileClose(handle);
@@ -150,7 +165,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
    if(symbol != InpSymbol) return;
    long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
-   if((ulong)magic != InpMagicNumber) return;
+   string source;
+   if((ulong)magic == InpMagicNumber)
+      source = InpSourceLabel;
+   else if(InpMagicNumber2 != 0 && (ulong)magic == InpMagicNumber2)
+      source = InpSourceLabel2;
+   else
+      return;
 
    long   entryType   = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
    long   positionId  = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
@@ -171,7 +192,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       }
       PrintFormat("TelegramSMC_TradeLogger: OPEN position %I64d (%s) order %I64d - %.2f lots @ %.2f",
                   positionId, direction, orderTicket, volume, price);
-      LogResultRow("OPEN", positionId, orderTicket, direction, volume, price, sl, tp,
+      LogResultRow(magic, source, "OPEN", positionId, orderTicket, direction, volume, price, sl, tp,
                    0.0, 0.0, 0.0, "", 0.0, 0.0, comment);
       return;
    }
@@ -200,7 +221,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
                   "net=%.2f reason=%s duration=%.1fmin",
                   positionId, direction, volume, price, profit + swap + commission, reason, durationMin);
 
-      LogResultRow("CLOSE", positionId, orderTicket, direction, volume, price, 0.0, 0.0,
+      LogResultRow(magic, source, "CLOSE", positionId, orderTicket, direction, volume, price, 0.0, 0.0,
                    profit, swap, commission, reason, durationMin, priceMove, comment);
    }
 }

@@ -209,7 +209,10 @@ number and appends CSV rows.
 1. Copy `MQL5/Experts/TelegramSMC_TradeLogger.mq5` into `Experts/`,
    compile, attach to any chart.
 2. Set `InpSymbol`/`InpMagicNumber` to match the EA you're watching (see
-   the magic table in § 7).
+   the magic table in § 7). With `UnifiedTrader_EA`, load
+   `MQL5/Presets/TelegramSMC_TradeLogger_Unified.set` instead: it logs both
+   sources (`InpMagicNumber=20260922` Telegram, `InpMagicNumber2=20260921`
+   Claude) into the same file, each row tagged in the `source` column.
 3. Writes to `TelegramSMC_Results.csv`.
 
 ### 3g. Dashboard (optional, ASP.NET)

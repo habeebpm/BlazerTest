@@ -156,12 +156,12 @@ python xtr_export.py --check
 ## 9. Optional - Trade Logger (trade journal CSV)
 
 1. Copy `MQL5/Experts/TelegramSMC_TradeLogger.mq5` -> `MQL5/Experts/`,
-   `MQL5/Presets/TelegramSMC_TradeLogger_Default.set` -> `MQL5/Presets/`.
+   `MQL5/Presets/TelegramSMC_TradeLogger_Unified.set` -> `MQL5/Presets/`.
 2. MetaEditor -> open it -> **F7** -> 0 errors.
 3. Open a **second** XAUUSD chart -> drag `TelegramSMC_TradeLogger` onto it
-   -> **Inputs** -> **Load** the preset.
-4. Set `InpMagicNumber` = `20260922` -> **OK**.
-5. Output: `MQL5\Files\TelegramSMC_Results.csv`.
+   -> **Inputs** -> **Load** -> `TelegramSMC_TradeLogger_Unified.set` -> **OK**
+   (logs Telegram trades 20260922 **and** Claude trades 20260921).
+4. Output: `MQL5\Files\TelegramSMC_Results.csv`.
 
 ## 10. Optional - Web dashboard (Windows IIS)
 
