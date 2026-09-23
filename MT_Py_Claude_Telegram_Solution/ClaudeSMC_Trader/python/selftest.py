@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 
 import backtest
+import calibration_report
 import claude_advisor
 import executor
 import main as main_mod
@@ -1387,6 +1388,75 @@ def test_day_roll_daily_limits() -> bool:
     return ok
 
 
+def test_calibration_report() -> bool:
+    print("\n=== 15. calibration_report.py: decisions/trades join and bucketing ===")
+    ok = True
+
+    decisions = [
+        {"executed": "True", "conviction": "full", "confluence_count": "3"},
+        {"executed": "False", "conviction": "partial", "confluence_count": "2"},
+        {"executed": "True", "conviction": "full", "confluence_count": "2"},
+        {"executed": "True", "conviction": "full", "confluence_count": "3"},
+    ]
+    trades = [
+        {"ticket": "101"},
+        {"ticket": "102"},
+        {"ticket": "103"},
+    ]
+    pairs, mismatch = calibration_report.join_decisions_and_trades(decisions, trades)
+    ok &= check("only executed=True rows are joined, in order, skipping rejected rows",
+                len(pairs) == 3 and mismatch == 0, pairs)
+    ok &= check("row order pairing is correct (1st executed decision <-> 1st trade)",
+                pairs[0][1]["ticket"] == "101" and pairs[1][1]["ticket"] == "102", pairs)
+
+    short_trades = trades[:2]
+    pairs2, mismatch2 = calibration_report.join_decisions_and_trades(decisions, short_trades)
+    ok &= check("a decisions/trades length mismatch is reported, not silently misaligned",
+                mismatch2 == 1 and len(pairs2) == 2, (mismatch2, len(pairs2)))
+
+    pnl_by_ticket = {"101": 5.0, "102": -3.0, "103": 4.0}
+    buckets = calibration_report.summarize_by_bucket(pairs, pnl_by_ticket)
+    b_full_3 = buckets[("full", 3)]
+    ok &= check("conviction=full/confluence=3 bucket aggregates its 2 trades correctly",
+                b_full_3.n_trades == 2 and b_full_3.wins == 2 and b_full_3.losses == 0
+                and abs(b_full_3.net_pnl - 9.0) < 1e-9, b_full_3)
+    b_full_2 = buckets[("full", 2)]
+    ok &= check("conviction=full/confluence=2 bucket is kept separate from confluence=3",
+                b_full_2.n_trades == 1 and b_full_2.losses == 1 and b_full_2.net_pnl == -3.0, b_full_2)
+    ok &= check("win_rate_pct()/avg_pnl() compute correctly",
+                b_full_3.win_rate_pct() == 100.0 and abs(b_full_3.avg_pnl() - 4.5) < 1e-9,
+                (b_full_3.win_rate_pct(), b_full_3.avg_pnl()))
+
+    no_pnl_bucket = calibration_report.summarize_by_bucket(pairs, {})
+    ok &= check("a ticket with no matching MT5 P&L (e.g. dry-run trades) counts toward n_trades "
+                "but never n_with_pnl, and win_rate_pct()/avg_pnl() report None rather than "
+                "dividing by zero",
+                no_pnl_bucket[("full", 3)].n_with_pnl == 0
+                and no_pnl_bucket[("full", 3)].win_rate_pct() is None
+                and no_pnl_bucket[("full", 3)].avg_pnl() is None)
+
+    freq = calibration_report.conviction_frequency(decisions)
+    ok &= check("conviction_frequency() counts EVERY decision, executed or not",
+                freq == {"full": 3, "partial": 1}, freq)
+
+    report_text = calibration_report.format_report(buckets, freq, mismatch=0)
+    ok &= check("format_report() names every bucket and the frequency table, with no warning "
+                "when mismatch=0",
+                "conviction=full" in report_text and "confluence=3/3" in report_text
+                and "partial" in report_text and "WARNING" not in report_text, report_text)
+
+    report_with_mismatch = calibration_report.format_report(buckets, freq, mismatch=1)
+    ok &= check("format_report() surfaces a mismatch warning with the actual count substituted in "
+                "(not a literal '{mismatch}')",
+                "WARNING" in report_with_mismatch and "mismatch of 1" in report_with_mismatch
+                and "{mismatch}" not in report_with_mismatch, report_with_mismatch)
+
+    ok &= check("load_csv() on a nonexistent path returns an empty list, not an error",
+                calibration_report.load_csv("/tmp/definitely_does_not_exist_12345.csv") == [])
+
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -1409,6 +1479,7 @@ def main() -> int:
         test_backtest_end_to_end_mechanical(),
         test_telegram_alert(),
         test_day_roll_daily_limits(),
+        test_calibration_report(),
     ]
     print()
     if all(results):
