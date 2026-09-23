@@ -52,11 +52,16 @@ def child_env() -> dict:
 EXIT_NOT_LOGGED_IN = 2   # must match telegram_relay_bridge.EXIT_NOT_LOGGED_IN
 EXIT_CONFIG = 3          # must match telegram_relay_bridge.EXIT_CONFIG
 
-_FATAL_TEXT = {
+RELAY_FATAL = {
     EXIT_NOT_LOGGED_IN: "not logged in to Telegram - double-click relay_login.bat once",
     EXIT_CONFIG: "configuration problem (TELEGRAM_API_ID/HASH, TELEGRAM_SOURCE_CHANNELS, "
                  "TELEGRAM_RELAY_GROUP or telethon) - see the lines above",
 }
+
+
+def relay_command(extra_args=()) -> list:
+    """The bridge in background mode (never prompts for a login)."""
+    return [sys.executable, BRIDGE_SCRIPT, "--no-login", *extra_args]
 
 
 def bridge_path(bridge_dir: str = BRIDGE_DIR) -> str:
@@ -147,15 +152,3 @@ class ChildSupervisor:
             if self._stop.wait(delay):
                 return
             delay = min(delay * 2, self.max_delay)
-
-
-class RelaySupervisor(ChildSupervisor):
-    """The Telegram relay bridge (see the module docstring)."""
-
-    def __init__(self, bridge_dir: str = BRIDGE_DIR, extra_args=(), on_fatal=None,
-                 first_delay: float = 30.0, max_delay: float = 600.0, healthy_after: float = 600.0,
-                 command=None):
-        super().__init__("Telegram relay bridge",
-                         command or [sys.executable, BRIDGE_SCRIPT, "--no-login", *extra_args],
-                         bridge_dir, fatal=_FATAL_TEXT, on_fatal=on_fatal, first_delay=first_delay,
-                         max_delay=max_delay, healthy_after=healthy_after)

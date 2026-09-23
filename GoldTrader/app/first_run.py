@@ -6,7 +6,7 @@ does, so it survives a restart), then main.py carries on in the same run.
     - runs by itself on the first start of main.py (and again whenever
       ANTHROPIC_API_KEY is missing), only when someone is at the keyboard -
       a scheduled/background start never waits for input, it just logs;
-    - `python main.py --setup` (or keys.bat) runs it again at any time;
+    - `python main.py --setup` (settings.bat) runs it again at any time;
     - Enter keeps the current value (secrets shown masked), "-" skips;
     - a value that does not look right (key prefix, numeric id, ...) is
       questioned once - never silently accepted, never refused outright;

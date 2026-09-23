@@ -1,9 +1,8 @@
 """
-Self-contained MetaTrader 5 wrapper for this solution.
+MetaTrader 5 wrapper for the trading program.
 
-Self-contained - no other folder of the package is imported. The MetaTrader5
-package is Windows-only and imported lazily, same convention as the rest of
-this repo: everything except live MT5 calls stays importable/testable on
+No other folder of the package is imported. The MetaTrader5 package is
+Windows-only and imported lazily: everything except live MT5 calls stays importable/testable on
 any platform (see selftest.py, which mocks this module entirely).
 """
 from __future__ import annotations

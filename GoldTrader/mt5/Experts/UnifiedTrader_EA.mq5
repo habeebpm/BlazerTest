@@ -1,218 +1,75 @@
 //+------------------------------------------------------------------+
 //|                                         UnifiedTrader_EA.mq5       |
+//|                                      part of the GoldTrader package|
 //|                                                                    |
-//| One EA, two independent trade SOURCES, ONE shared risk model.     |
-//| Toggle InpEnableTelegramSignals / InpEnableClaudeManagement        |
-//| separately - run either alone, or both together on the same       |
-//| chart/account. Both flags gate NEW ENTRIES ONLY (Telegram polling/ |
-//| signal execution). EXIT MANAGEMENT IS NEVER GATED BY THEM: once a  |
-//| position exists under InpTelegramMagicNumber or                    |
-//| InpClaudeMagicNumber, this EA keeps protecting it (lock-then-trail |
-//| below) for as long as it's running, even if the corresponding flag |
-//| is later turned off - turning a source off only stops it from      |
-//| taking NEW signals, it never abandons a position already open      |
-//| under that source's magic number. See ManageAllPositions().        |
+//| One EA, two trade sources, one shared risk model.                  |
 //|                                                                    |
-//| SOURCE 1 - TELEGRAM (InpEnableTelegramSignals): this EA polls the |
-//| Telegram Bot API itself (WebRequest, same mechanism as             |
-//| the original copier EA) and EXECUTES A SIGNAL   |
-//| AS SOON AS IT PARSES, WITH NO SMC VALIDATION AND NO USE OF THE     |
-//| MESSAGE'S OWN STOP-LOSS. This is a deliberate, documented          |
-//| simplification from the original copier EA, not an oversight - it  |
-//| drops that EA's liquidity-sweep/premium-discount SMC gate AND its  |
-//| SL-sanity checks (min/max SL distance) entirely, because this EA   |
-//| never uses the message's own SL/TP numbers at all: every position, |
-//| regardless of source, gets the SAME fixed risk (InpSlDollars/      |
-//| InpTp1Dollars/InpTrailDollars below) - so a message's own stated   |
-//| stop has nothing to sanity-check against. What IS still checked,   |
-//| because it doesn't depend on the message's own numbers: the chat   |
-//| is on the allow-list, the signal isn't stale (InpMaxSignalAgeSec), |
-//| the current price hasn't run away from the signaled zone           |
-//| (InpMaxEntryDeviationPips), and the shared position cap/daily-trade|
-//| cap below. The message is used ONLY for direction (buy/sell) and   |
-//| an entry zone (which edge of the zone price reaches first decides  |
-//| pending vs market, exactly like the original copier EA).           |
+//| SOURCE 1 - TELEGRAM (InpEnableTelegramSignals): polls the Telegram |
+//| Bot API (WebRequest) for up to three channels (InpChannelId1..3),  |
+//| reads TRADE messages only (TsmcClassifyMessage - greetings, mood    |
+//| posts, long messages, media and notices are omitted) and executes a|
+//| parsed signal under InpTelegramMagicNumber. The message is used for|
+//| direction and entry zone only - never its own SL/TP: every position|
+//| gets the same fixed risk below. Still checked: chat allow-list,    |
+//| signal age, price run-away from the zone, the XTR M15/H1 filter,   |
+//| the news blackout, the position cap and the daily caps. CLOSE /    |
+//| CANCEL messages act on this EA's own Telegram positions only.      |
 //|                                                                    |
-//| SOURCE 2 - CLAUDE (InpEnableClaudeManagement): unlike Telegram,    |
-//| this EA does NOT decide Claude-driven entries itself - MQL5 has no |
-//| practical way to call the Claude API (no JSON library, and         |
-//| reimplementing app/market_intel.py's     |
-//| full indicator/SMC-structure stack in MQL5 just to ask an LLM a    |
-//| question is not a reasonable trade). GoldTrader's          |
-//| app/main.py keeps deciding those entries exactly as it does     |
-//| today, opening positions under InpClaudeMagicNumber. This EA's     |
-//| only job for that magic number is EXIT management - tick-by-tick,  |
-//| which Python's poll loop is too coarse-grained to do reliably,     |
-//| identical in mechanism to the original trade-manager EA     |
-//| (not part of GoldTrader) (this file's ManagePositionExit() is    |
-//| that EA's ManagePosition(), reused verbatim). InpClaudeMagicNumber |
-//| MUST match app/config.py's AdvisorConfig.magic (both default    |
-//| 20260921) or this EA will simply never see the positions Python    |
-//| opens.                                                              |
+//| SOURCE 2 - CLAUDE (InpEnableClaudeManagement): GoldTrader's        |
+//| app/main.py decides and opens these entries (InpClaudeMagicNumber, |
+//| must equal app/config.py AdvisorConfig.magic). This EA manages     |
+//| their exits tick by tick.                                          |
 //|                                                                    |
-//| SHARED EXIT DESIGN, BOTH SOURCES: no broker take-profit is ever    |
-//| placed. The stop-loss is the only exit mechanism. Once floating    |
-//| profit reaches InpTp1Dollars, the SL moves to EXACTLY that price - |
-//| locking in that much profit, no more no less, in one deterministic |
-//| step - then trails InpTrailDollars behind new highs/lows from      |
-//| there, tightening only. "Armed" (locked vs. still trailing) is     |
-//| derived every tick from whether a position's OWN current SL has    |
-//| already reached the lock level, never stored - this EA needs no    |
-//| memory across ticks or restarts and stays correct even if          |
-//| reattached mid-trade. Dollar amounts are USD AT InpReferenceLot,   |
-//| converted with the symbol's live tick value/size                   |
-//| (price_distance = dollars * tick_size / (tick_value * ref lot))    |
-//| - never an assumed contract size. SL, TP1 and trail are therefore  |
-//| fixed price distances whatever lot is traded, so risk-% sizing     |
-//| scales risk and locked profit together. This is                    |
-//| InpExitStyle=EXIT_SL_TO_TP1 (the default) and it's                 |
-//| the ONLY style Telegram-sourced positions ever use.                |
+//| Exit management never depends on those two flags: any position     |
+//| under either magic keeps being protected while the EA runs.        |
 //|                                                                    |
-//| InpExitStyle=EXIT_BREAKEVEN_R_DECAY adds one earlier protective    |
-//| step before the above, and applies ONLY to InpClaudeMagicNumber    |
-//| positions (mirrors app/config.py AdvisorConfig.exit_style -     |
-//| keep the two in sync by hand): once floating profit reaches         |
-//| InpBreakevenAtrMult x this position's own InpAtrPeriod-bar ATR on   |
-//| InpAtrTimeframe, OR InpDecayWindowMinutes have passed since the     |
-//| position opened (whichever happens first) - and only if price has  |
-//| actually moved far enough into profit to place a valid stop there  |
-//| - the SL moves to EXACTLY the entry price (breakeven). A fast move |
-//| can still jump straight past this step to the full TP1 lock in one |
-//| tick (the lock check always runs first). See                       |
-//| the original trade-manager EA's   |
-//| own file header for the full design rationale - this EA's copy is  |
-//| identical logic, just scoped to InpClaudeMagicNumber only.          |
+//| EXITS (both sources): no broker take-profit. At +InpTp1Dollars the |
+//| SL moves exactly to that level (locked profit), then trails        |
+//| InpTrailDollars behind new highs/lows, tightening only. Dollars are|
+//| at InpReferenceLot, converted with the live tick value/size, so    |
+//| they are fixed price distances whatever lot is traded. Whether a   |
+//| position is "locked" is derived from its own SL every tick - no    |
+//| memory needed across restarts. InpExitStyle=EXIT_BREAKEVEN_R_DECAY |
+//| (Claude positions only, keep in sync with AdvisorConfig.exit_style)|
+//| adds a breakeven step at InpBreakevenAtrMult x ATR or after        |
+//| InpDecayWindowMinutes, whichever comes first.                      |
 //|                                                                    |
-//| SHARED POSITION CAP: InpMaxPositionsPerDirection (default 5) is a  |
-//| SINGLE combined ceiling counted across BOTH InpTelegramMagicNumber |
-//| and InpClaudeMagicNumber together, always - not 5 each. This is    |
-//| enforced from THIS EA's side for new Telegram entries; the Python  |
-//| side has its own equivalent, separately-configured cap via         |
-//| AdvisorConfig.shared_cap_magic_numbers (see                        |
-//| docs/REFERENCE.md) - set that to                    |
-//| [InpTelegramMagicNumber] so Python's OWN gate also backs off once   |
-//| Telegram-sourced positions fill the shared cap; without that, this |
-//| EA still won't let Telegram open past the shared cap, but Python   |
-//| could still open Claude-sourced trades past it independently,      |
-//| since this EA cannot intercept orders Python places directly.      |
+//| SHARED CAP: InpMaxPositionsPerDirection counts BOTH magics         |
+//| together. main.py applies the same combined cap with               |
+//| --shared-cap-magic 20260922 (start.bat does this).                 |
 //|                                                                    |
-//| WHAT'S DELIBERATELY OUT OF SCOPE (vs. the original copier EA):      |
-//| the SMC filter, SL-distance sanity checks (nothing to check - see  |
-//| above), and the "move SL to breakeven" text command (the automatic |
-//| lock-then-trail exit already gets every position to at least       |
-//| breakeven-or-better once InpTp1Dollars is reached, faster and more |
-//| consistently than a manual per-message command could). CLOSE/      |
-//| CANCEL are still supported and act on this EA's own                |
-//| InpTelegramMagicNumber positions/pending orders only - never on    |
-//| InpClaudeMagicNumber ones, which are Python's to manage.            |
+//| REMOTE CONTROL (InpControlChatId - your private chat with the bot):|
+//| reply-keyboard buttons, matched by exact text:                     |
+//|   PauseHab / ResumeHab             all trades (pause closes them)  |
+//|   PauseTelHab / ResumeTelHab       Telegram trades only            |
+//|   PauseClaudeHab / ResumeClaudeHab Claude trades only - written to |
+//|                    InpClaudePauseFilename in Common\Files, which   |
+//|                    main.py reads every cycle (same PC required)    |
+//|   Stats   equity, P/L, win % today / 7 / 30 days, daily budget     |
+//|   News    economic calendar with gold impact                       |
+//|   Why     Claude's last reasoning (InpLastVerdictFilename)         |
+//| Pause states survive restarts (terminal Global Variables). With    |
+//| InpControlChatId=0 remote control is off and a saved pause is not  |
+//| enforced. InpNotifyTradeClosed messages every closed trade.        |
+//| Position commands act on this chart's symbol only. Run ONE         |
+//| instance per terminal (Telegram offset and pause state are         |
+//| terminal-wide).                                                    |
 //|                                                                    |
-//| REMOTE CONTROL (InpControlChatId, optional): nine plain-text        |
-//| commands, DM'd to this bot from InpControlChatId ONLY (a private    |
-//| 1:1 chat, never the signal channel/group) - a completely separate   |
-//| command path from trading-signal parsing, matched by EXACT text     |
-//| (trimmed, case-insensitive), not substring, since these close real  |
-//| positions. Shown as a Telegram reply-keyboard (tappable buttons     |
-//| under the message box) rather than requiring you to type them:      |
-//| TelegramSendMessage() attaches the keyboard once, on the first poll |
-//| tick after this EA starts (from TelegramPoll(), not OnInit() -      |
-//| keeps EA attach/reattach fast and network-independent), and again   |
-//| on every command's confirmation reply. A button tap is delivered by |
-//| Telegram as an ordinary text message equal to the button's label,   |
-//| so it reaches ProcessControlCommand() exactly like typing the same  |
-//| text would; nothing about the matching logic below                  |
-//| knows or cares whether a command was tapped or typed.               |
-//|   PauseHab        - closes every open position on THIS CHART'S       |
-//|                      SYMBOL under both magics, and cancels Telegram   |
-//|                      pending orders there, then blocks new Telegram   |
-//|                      AND new Claude entries until ResumeHab.         |
-//|   ResumeHab        - re-enables new Telegram and Claude entries.     |
-//|                      Reopens nothing.                                |
-//|   PauseTelHab      - closes this symbol's Telegram-sourced           |
-//|                      positions/orders only and blocks new Telegram   |
-//|                      entries until ResumeTelHab/ResumeHab.           |
-//|   ResumeTelHab     - re-enables new Telegram entries only.           |
-//|   PauseClaudeHab   - closes this symbol's Claude-sourced             |
-//|                      (InpClaudeMagicNumber) positions and blocks new |
-//|                      Claude entries until ResumeClaudeHab/ResumeHab. |
-//|   ResumeClaudeHab  - re-enables new Claude entries only.             |
-//|   Stats            - equity, balance, open P/L, closed P/L and win%  |
-//|                      for today / 7 / 30 days (per source), and how   |
-//|                      much of the daily loss budget is used.          |
-//|   News             - economic calendar: recent releases (actual vs   |
-//|                      forecast, what it means for gold) and upcoming  |
-//|                      events (see ECONOMIC CALENDAR below).           |
-//|  InpNotifyTradeClosed also sends a message to InpControlChatId for    |
-//|  every closed trade: its net P/L, current equity and today's win%.   |
-//|  Claude pause mechanics: this EA can't place or refuse Python's       |
-//|  orders directly, so it writes "paused"/"running" to the shared       |
-//|  Common\Files text file InpClaudePauseFilename (MUST match config.py's|
-//|  claude_pause_filename); app/main.py reads it every cycle and      |
-//|  skips its whole evaluation (no Claude call, no order) while paused.  |
-//|   Why              - echoes the latest Claude verdict's reasoning,   |
-//|                      read from the shared Common\Files text file      |
-//|                      app/main.py writes it to (see ReadLastVerdict|
-//|                      File(), InpLastVerdictFilename - MUST match     |
-//|                      config.py's last_verdict_filename). Read-only:  |
-//|                      never touches a position or the pause state.    |
-//|                      "No Claude verdict on file yet" if main.py       |
-//|                      hasn't run a cycle, or the filenames don't match.|
-//| SCOPE: like every other position-management function in this file    |
-//| (CloseAllMine/CancelAllPendingMine/ManageAllPositions), the four      |
-//| position-affecting commands only ever touch positions/orders on the  |
-//| symbol of the chart this EA instance is attached to - a position     |
-//| opened by hand on a different symbol is untouched. RUN ONLY ONE       |
-//| INSTANCE OF THIS EA PER                                               |
-//| TERMINAL, on any symbol - this was already true before remote        |
-//| control existed (GV_LAST_UPDATE_ID is a terminal-wide Global          |
-//| Variable, not scoped per chart) and remains true for the new pause    |
-//| state too (GV_TELEGRAM_PAUSED, same mechanism): a second running      |
-//| instance, even on a different symbol or with its own InpBotToken,     |
-//| shares BOTH of those with this one and will corrupt them - including  |
-//| silently pausing/resuming a chart nobody sent a command to. (This     |
-//| does NOT affect g_currentDay/g_tradesToday - those are plain          |
-//| per-instance memory, never written to a Global Variable.)              |
-//| Claude entries are blocked through the pause file above, which only  |
-//| works when app/main.py runs on the SAME machine as this terminal  |
-//| (the same requirement as the Why button). The pause states           |
-//| (Telegram / Claude entries blocked or not) are saved to terminal Global|
-//| Variable, the same mechanism InpControlChatId=0 already uses for     |
-//| g_lastUpdateId, so it survives a restart/reattach rather than        |
-//| silently resetting to "resumed". Leaving InpControlChatId=0 (the     |
-//| default) disables this feature entirely - no behavior change - this  |
-//| holds even if a REAL pause was set during an earlier session with    |
-//| remote control enabled: that pause goes dormant (never enforced,     |
-//| never logged) while InpControlChatId=0, rather than silently         |
-//| blocking every Telegram entry forever with no ResumeHab reachable    |
-//| to clear it. Setting InpControlChatId back to a real chat restores   |
-//| whatever pause was last actually set, unchanged.                     |
+//| ECONOMIC CALENDAR (EconCalendar.mqh, MT5's own): new Telegram      |
+//| entries are skipped around InpNewsMinImportance+ events for        |
+//| InpNewsCurrencies; the calendar is exported to                     |
+//| InpCalendarExportFile (Common\Files) for main.py's own blackout.   |
 //|                                                                    |
-//| ECONOMIC CALENDAR (EconCalendar.mqh - MT5's own calendar, no API   |
-//| key): with InpNewsFilter (default on) a new Telegram entry is       |
-//| skipped from InpNewsBlockBeforeMin before to InpNewsBlockAfterMin   |
-//| after any InpNewsMinImportance+ event for InpNewsCurrencies (USD by |
-//| default). The calendar is also exported every InpCalendarRefreshMin |
-//| to InpCalendarExportFile in the shared Common\Files folder, where   |
-//| GoldTrader's app/econ_calendar.py applies the same blackout|
-//| to Claude's entries and shows the events to Claude.                 |
+//| PRICE FILES (XtrBarExport.mqh, InpXtrExport): closed M5/M15/H1     |
+//| bars in UTC to Common\Files\XTR_Data every M1 close, optionally    |
+//| copied to InpXtrExportCopyTo (e.g. a Google Drive folder; needs    |
+//| Allow DLL imports).                                                |
 //|                                                                    |
-//| TELEGRAM SETUP (only if InpEnableTelegramSignals): identical to    |
-//| the original copier EA's - @BotFather /newbot for InpBotToken, add  |
-//| that bot to the channel as admin, Tools > Options > Expert Advisors|
-//| > allow WebRequest for https://api.telegram.org, leave              |
-//| InpChannelId1..3 at 0 for the first run to discover chat ids from   |
-//| the log, then set up to THREE of them and restart. Only TRADE       |
-//| messages are read (TsmcClassifyMessage in TelegramSMC_Common.mqh):  |
-//| greetings, mood posts, long messages, videos, audio, voice notes,   |
-//| stickers and pinned-message notices are omitted before parsing.     |
-//|                                                                    |
-//| IMPORTANT DISCLAIMER: with InpEnableTelegramSignals on, this EA     |
-//| executes real orders from Telegram text messages with NO liquidity- |
-//| sweep/structure validation and NO check on the message's own SL -   |
-//| a materially higher-risk configuration than the original copier EA. |
-//| Demo-test with InpDryRun=true until you trust the channel AND this  |
-//| EA's logged behavior for every message it sees, in that order.      |
-//| Runs with InpDryRun=true until you turn it off; nothing above this  |
-//| line touches an order or a position.                                |
+//| SETUP: GoldTrader/README.md. Allow WebRequest for                  |
+//| https://api.telegram.org; with channel ids at 0 the Experts tab    |
+//| shows each chat's id. Runs with InpDryRun=true until you turn it   |
+//| off - demo-test first: Telegram signals are executed without any   |
+//| structure validation of the message itself.                        |
 //+------------------------------------------------------------------+
 #property copyright "UnifiedTrader_EA"
 #property link      ""
@@ -247,14 +104,8 @@
 #define GV_DAY_LOSS_HIT    "UnifiedTrader_EA_DailyLossHit"
 #define GV_DAY_TRADES      "UnifiedTrader_EA_TradesToday"
 
-// Deliberately NOT TelegramSMC_Common.mqh's TSMC_SIGNAL_SOURCE ("Telegram_Sig")
-// - that constant's own doc comment reserves it for the original copier EA
-// specifically. This EA's Telegram side has a materially different (lower)
-// validation bar - no SMC filter, no use of the message's own SL (see file
-// header) - so if both EAs ever ran in the same terminal, sharing one tag
-// would make their very-different-risk-profile rows indistinguishable in
-// TelegramSMC_Signals.csv/the ASPX dashboard. Still lands in the SAME file
-// (TSMC_SIGNALS_FILE below) for one unified view - just tagged separately.
+// Source tag for this EA's Telegram rows (signal log, order comments) and
+// the Trade Logger preset's InpSourceLabel - one name for the same trades.
 #define UNIFIED_TELEGRAM_SOURCE "Telegram_Sig_Unified"
 
 //================================= INPUTS ====================================
@@ -819,9 +670,8 @@ bool XtrHtfOpposes(int dir, string &reason)
 }
 
 //+------------------------------------------------------------------+
-//| EXIT_BREAKEVEN_R_DECAY only (InpClaudeMagicNumber positions) -    |
-//| identical to the original trade-manager EA's own copy of these two   |
-//| functions; see that file for the full design rationale.           |
+//| EXIT_BREAKEVEN_R_DECAY only (InpClaudeMagicNumber positions):      |
+//| the ATR breakeven distance and whether the breakeven step is due.  |
 //+------------------------------------------------------------------+
 double BreakevenAtrDistance()
 {
@@ -844,22 +694,6 @@ bool BreakevenDue(double profit)
 
 //+------------------------------------------------------------------+
 //| Small helpers                                                     |
-//|                                                                    |
-//| NOTE ON DUPLICATION: everything from here down through             |
-//| ParseSignalText/TelegramGetUpdates/ExtractUpdates/TelegramPoll is   |
-//| copied, not shared, from the original copier EA |
-//| - deliberately, not an oversight. Factoring it into a shared .mqh   |
-//| (the way TelegramSMC_Common.mqh already does for CSV logging)      |
-//| would mean editing that already-shipped, independently-deployed EA |
-//| just to extract code for this one - real regression risk to a       |
-//| production file for a change with zero runtime behavior difference,|
-//| and there's no MQL5 compiler in this environment to verify either   |
-//| file still builds afterward. The tradeoff: a future fix to this     |
-//| parser (this repo's history already has one - a hyphenated-label    |
-//| bug once missed in exactly this kind of duplicated code) must be    |
-//| applied to BOTH this file and the original copier EA by hand, or    |
-//| the two EAs' signal interpretation will silently diverge on the     |
-//| same input text. Check both whenever you touch parsing here.       |
 //+------------------------------------------------------------------+
 double PipSize() { return(SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10.0); }
 
@@ -1041,9 +875,8 @@ bool MentionsGold(const string &upperText)
 }
 
 //+------------------------------------------------------------------+
-//| Best-effort parse - identical shape to the original copier EA's   |
-//| parser, kept for logging fidelity even though hasSl/sl/tps are    |
-//| never used to size or place an order in THIS EA - see file header.|
+//| Best-effort parse. hasSl/sl/tps are logged only - never used to   |
+//| size or place an order (fixed risk - see file header).            |
 //+------------------------------------------------------------------+
 void ParseSignalText(const string &rawText, SignalMsg &msg)
 {
@@ -1279,8 +1112,7 @@ string DailyRiskBudgetReason(double newLots)
 //| positions alone would let far more than InpMaxPositionsPerDirection|
 //| land simultaneously - the cap needs to bound WORST-CASE exposure   |
 //| (positions + still-pending commitments), not just what's already   |
-//| filled right now. Matches the original copier EA|
-//| own CountActiveSlots()'s reasoning for counting both together.     |
+//| filled right now.                                                  |
 //+------------------------------------------------------------------+
 int CountSameDirection(int direction)
 {
@@ -1826,7 +1658,7 @@ void ProcessControlCommand(const string &rawText)
 //+------------------------------------------------------------------+
 //| Places a Telegram-sourced order: LIMIT if price hasn't reached    |
 //| the zone, MARKET if already inside it, skipped if already through |
-//| it (identical zone logic to the original copier EA's). SL is the  |
+//| it. SL is the                                                      |
 //| FIXED InpSlDollars distance, never the message's own SL. No       |
 //| broker TP (tp=0.0, sl_to_tp1 exit design - see file header).      |
 //+------------------------------------------------------------------+
@@ -1942,12 +1774,9 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
 }
 
 //+------------------------------------------------------------------+
-//| Lock-then-trail exit for one position - reused verbatim from      |
-//| the original trade-manager EA's  |
-//| ManagePosition(), generalized to take the expected magic number   |
-//| as a parameter so the identical logic serves both sources - see   |
-//| file header's "SHARED EXIT DESIGN". The one difference from that   |
-//| file: EXIT_BREAKEVEN_R_DECAY's extra breakeven step only ever      |
+//| Lock-then-trail exit for one position of either source (see the   |
+//| file header's EXITS). EXIT_BREAKEVEN_R_DECAY's extra breakeven step|
+//| only ever                                                          |
 //| applies when magic == InpClaudeMagicNumber (see useBreakevenDecay  |
 //| below) - Telegram-sourced positions always use plain lock-then-    |
 //| trail, regardless of InpExitStyle.                                  |
@@ -2064,8 +1893,8 @@ void ManagePositionExit(ulong ticket, long magic)
 
    // No managed position should ever carry a broker take-profit under this
    // exit design - clear any leftover unconditionally, even on a tick where
-   // the SL itself isn't changing yet (see the original trade-manager EA's own
-   // header for the race condition this avoids).
+   // the SL itself isn't changing yet (a standing broker TP would race the
+   // lock/trail and win).
    if(changeSl || currentTp != 0.0)
    {
       double slToSend = changeSl ? newSl : currentSl;
@@ -2086,10 +1915,7 @@ void ManagePositionExit(ulong ticket, long magic)
 //| never whether a position already open under that source's magic   |
 //| number keeps being protected. Gating exit management on the same   |
 //| flag that gates new entries would orphan every already-open        |
-//| position the instant an operator flips a source off mid-trade -    |
-//| neither the original copier EA nor the original trade-manager EA has   |
-//| an "off" switch that can abandon a live position's stop-loss like  |
-//| that, and this EA shouldn't either.                                |
+//| position the instant an operator flips a source off mid-trade.     |
 //+------------------------------------------------------------------+
 void ManageAllPositions()
 {
@@ -2115,11 +1941,7 @@ string DirToStr(int dir)
 
 //+------------------------------------------------------------------+
 //| Appends one row to TelegramSMC_Signals.csv per Telegram message   |
-//| evaluated - same file/header as the original copier EA, so the    |
-//| ASPX dashboard reads either EA's output without changes, but the   |
-//| "source" column is UNIFIED_TELEGRAM_SOURCE, not that EA's          |
-//| "Telegram_Sig", so rows from the two remain distinguishable if      |
-//| both ever log to the same file (see that constant's own comment).  |
+//| evaluated (read by the dashboard); "source" = UNIFIED_TELEGRAM_SOURCE.|
 //| SMC columns are always "not applicable" here - this EA never runs  |
 //| an SMC check (see file header).                                    |
 //+------------------------------------------------------------------+
@@ -2359,7 +2181,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 
 //+------------------------------------------------------------------+
 //| Telegram Bot API: getUpdates (short poll, timeout=0) + a minimal  |
-//| field scraper - identical mechanism to the original copier EA.     |
+//| field scraper.                                                     |
 //+------------------------------------------------------------------+
 bool TelegramGetUpdates(string &jsonOut)
 {

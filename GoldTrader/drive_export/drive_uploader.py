@@ -37,7 +37,7 @@ only when an M5 bar actually closed, M15 every 15 minutes, H1 hourly -
 instead of re-uploading identical bytes 4 times a minute.
 
 Lazy-imports the google-api-python-client/google-auth packages, same
-convention as MetaTrader5 elsewhere in this repo, so exporter.py and
+convention as MetaTrader5 in mt5_bars.py, so exporter.py and
 xtr_export.py --once (without --upload-drive) never need them installed.
 """
 from __future__ import annotations
@@ -121,7 +121,7 @@ def upload_or_update(service, folder_id: str, local_path: str, cache: dict, cach
     creating a duplicate on the next run.
 
     `media_factory` defaults to the real googleapiclient MediaFileUpload
-    (lazy-imported, same convention as MetaTrader5 elsewhere in this repo)
+    (lazy-imported, same convention as MetaTrader5 in mt5_bars.py)
     but is a parameter so selftest.py can exercise the create-vs-update/
     cache logic above with a fake, without needing google-api-python-client
     installed just to run the offline test suite.

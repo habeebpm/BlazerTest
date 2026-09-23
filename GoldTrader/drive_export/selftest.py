@@ -1,7 +1,7 @@
 """
 Offline self-test - runs anywhere, no MT5 terminal, no MetaTrader5 package,
-no Google credentials and no network needed. Mirrors the testing
-philosophy of the rest of this repo: every piece of logic is pure or
+no Google credentials and no network needed. Same testing approach
+as app/selftest.py: every piece of logic is pure or
 dependency-injected, so it's exercised here with synthetic data and fakes.
 
 Covers:

@@ -9,8 +9,7 @@ in):
   - one CSV per timeframe: datetime,open,high,low,close,volume
   - only CLOSED bars (the still-forming bar is always dropped - same
     convention get_bars() itself documents, and the one
-    app/market_intel.py already relies on elsewhere in
-    this repo)
+    app/market_intel.py relies on)
   - `datetime` is GENUINE UTC, not broker-server wall clock. MT5's own
     `copy_rates_*` returns bar times as the BROKER SERVER's wall clock,
     encoded as if it were a UTC epoch - which is almost never actually

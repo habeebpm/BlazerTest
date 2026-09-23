@@ -7,36 +7,14 @@
 //| InpUseCommonFolder is set) - one row per OPEN event and one row    |
 //| per CLOSE event, linked by position_id and order_ticket.           |
 //|                                                                    |
-//| DELIBERATELY A SEPARATE EA from the original copier EA: it never   |
-//| places, modifies, or closes a single order, and it never talks to  |
-//| Telegram. It only WATCHES trade history for the given magic number |
-//| via OnTradeTransaction, so it keeps recording results (or can be   |
-//| attached/removed) independently of whatever is actually trading -  |
-//| the Copier EA, a different EA, or a person clicking buttons with   |
-//| the same magic number and symbol.                                  |
-//|                                                                    |
-//| To pair it with the original copier EA, set InpMagicNumber and     |
-//| InpSymbol to match that EA's inputs (20260918 / XAUUSD by          |
-//| default) and leave InpSourceLabel at its default "Telegram_Sig" -   |
-//| or point this same EA at a different system's magic/symbol (e.g.   |
-//| the Claude-SMC Trader's 20260921) and set InpSourceLabel to         |
-//| "Claude_Sig", so every row's source column still says which system |
-//| actually opened the trade, whichever one you're watching. The close |
-//| reason comes straight from MT5's own deal                          |
-//| history (SL / TP / client / expert / stop-out, via DEAL_REASON) -   |
-//| this EA never has to guess it from price. Duration and price move  |
-//| are computed by looking up the position's own opening deal in      |
-//| history, which works correctly even for a position that was        |
-//| already open before this EA was attached.                          |
-//|                                                                    |
-//| Pairs with TelegramSMC_Signals.csv (written by                     |
-//| the original copier EA): join the two on order_ticket if you want   |
-//| the original signal text next to its eventual result - nothing     |
-//| here does that merge automatically.                                 |
-//|                                                                    |
-//| UnifiedTrader_EA (Telegram 20260922 + Claude 20260921): set         |
-//| InpMagicNumber2/InpSourceLabel2 too (or load                        |
-//| TelegramSMC_TradeLogger_Unified.set) - one logger, both sources.   |
+//| A watcher only: it never places, modifies or closes an order and   |
+//| never talks to Telegram - it reads trade history (DEAL_REASON gives|
+//| the close reason: SL / TP / client / expert / stop-out). Defaults  |
+//| = GoldTrader: Telegram trades (20260922, "Telegram_Sig_Unified")   |
+//| and Claude trades (20260921, "Claude_Sig") into one file, the one  |
+//| the dashboard reads. Duration and price move come from the         |
+//| position's opening deal, so they are right even for a position     |
+//| opened before the logger was attached.                             |
 //|                                                                    |
 //| HONEST LIMITATIONS                                                  |
 //| ------------------------------------------------------------------ |
@@ -52,15 +30,15 @@
 #property link      ""
 #property version   "1.10"
 #property strict
-#property description "Standalone trade journal: logs every open/close of a position tagged with InpMagicNumber to TelegramSMC_Results.csv, independent of whatever EA (or manual trading) actually places the orders."
+#property description "GoldTrader trade journal: logs every open/close of the Telegram (20260922) and Claude (20260921) positions to TelegramSMC_Results.csv. Never trades."
 
 #include <TelegramSMC_Common.mqh>
 
 input group "=== What to log ==="
 input string InpSymbol          = "XAUUSD";     // Symbol to log (match the trading EA's symbol)
-input ulong  InpMagicNumber     = 20260918;     // Magic number to log (match the trading EA's)
-input string InpSourceLabel     = "Telegram_Sig"; // Free-text tag written to every row's source column - this EA is generic (see header), so re-point it at a different system's magic number (e.g. the Claude-SMC Trader's 20260921) and set this to "Claude_Sig" to keep that log distinguishable too
-input ulong  InpMagicNumber2    = 0;            // Optional 2nd magic to log into the same file (0 = off), e.g. 20260921 for UnifiedTrader's Claude trades
+input ulong  InpMagicNumber     = 20260922;     // Magic number to log (GoldTrader Telegram trades)
+input string InpSourceLabel     = "Telegram_Sig_Unified"; // Source tag for InpMagicNumber's rows
+input ulong  InpMagicNumber2    = 20260921;     // 2nd magic logged into the same file (GoldTrader Claude trades; 0 = off)
 input string InpSourceLabel2    = "Claude_Sig"; // Source tag for InpMagicNumber2's rows
 input bool   InpUseCommonFolder = false;        // Write to the shared Common\Files folder instead of this terminal's Files
 

@@ -2,8 +2,7 @@
 //|                                          EconCalendar.mqh         |
 //|                                                                    |
 //| MT5's built-in economic calendar (MetaQuotes data - no API key, no |
-//| extra download) for UnifiedTrader_EA.mq5 and                       |
-//| the original trade-manager EA:                                        |
+//| extra download) for UnifiedTrader_EA.mq5:                          |
 //|   EconMaybeExport() - every few minutes, writes the recent and     |
 //|     upcoming events for the watched currencies to a CSV in the     |
 //|     shared Common\Files folder. GoldTrader's                 |

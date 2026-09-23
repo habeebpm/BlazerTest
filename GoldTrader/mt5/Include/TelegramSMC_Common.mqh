@@ -1,25 +1,17 @@
 //+------------------------------------------------------------------+
 //|                                   TelegramSMC_Common.mqh          |
 //|                                                                    |
-//| Shared CSV-logging helpers for the original copier EA and          |
-//| TelegramSMC_TradeLogger.mq5 - two independent EAs. This header is  |
-//| a code-sharing convenience only, not a runtime link between them:  |
-//| either can run without the other. The Copier writes one row per    |
-//| Telegram message it evaluates to TSMC_SIGNALS_FILE; the Logger      |
-//| writes one row per position open/close to TSMC_RESULTS_FILE. The   |
-//| two are joined, if you want to, by matching order_ticket between   |
-//| them - nothing here merges them automatically.                     |
+//| Shared by UnifiedTrader_EA.mq5 and TelegramSMC_TradeLogger.mq5     |
+//| (GoldTrader): CSV logging, the Telegram update reader and the      |
+//| trade-only message filter. UnifiedTrader_EA writes one row per     |
+//| Telegram message to TSMC_SIGNALS_FILE; the Trade Logger one row    |
+//| per position open/close to TSMC_RESULTS_FILE (join on order_ticket |
+//| if needed). Either EA runs without the other.                      |
 //+------------------------------------------------------------------+
 #property strict
 
 #define TSMC_SIGNALS_FILE   "TelegramSMC_Signals.csv"
 #define TSMC_RESULTS_FILE   "TelegramSMC_Results.csv"
-
-// This EA (the original copier EA) only ever copies Telegram signals, so its
-// own order comment and Signals-log rows always carry this literal tag - see
-// TelegramSMC_TradeLogger.mq5's InpSourceLabel for the reusable-EA case,
-// where the source isn't fixed at compile time.
-#define TSMC_SIGNAL_SOURCE  "Telegram_Sig"
 
 // "source" is deliberately the LAST column in both headers, not inserted
 // after time_utc: an already-running deployment's log file keeps whatever
@@ -61,8 +53,7 @@ int TsmcOpenCsvForAppend(const string filename, const string header, bool useCom
    // evaluated, every position open/close), so the stale-header warning
    // below must only ever print once per filename per EA run - a "|"-
    // delimited list of filenames already warned about, remembered across
-   // calls via `static`, is what makes that "once" instead of "every row"
-   // (mirrors the original Python copier's _warned_stale_signal_log_header flag).
+   // calls via `static`, is what makes that "once" instead of "every row".
    static string warnedFiles = "|";
 
    int flags = FILE_READ | FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_READ;
@@ -107,8 +98,7 @@ int TsmcOpenCsvForAppend(const string filename, const string header, bool useCom
 //| signal, can't replay that signal as a new trade. Media posts       |
 //| (video, audio, voice, sticker, document, poll, ...) and service    |
 //| messages are marked skipped; a photo's caption is read only when   |
-//| acceptPhotoCaptions is true. Shared by UnifiedTrader_EA.mq5 and    |
-//| the original copier EA.                                            |
+//| acceptPhotoCaptions is true.                                       |
 //+------------------------------------------------------------------+
 struct TsmcTgUpdate
 {

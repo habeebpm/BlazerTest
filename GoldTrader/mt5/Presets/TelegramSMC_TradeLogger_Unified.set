@@ -3,7 +3,7 @@
 ; (20260922) and Claude's trades (20260921), each row tagged by source.
 InpSymbol=XAUUSD
 InpMagicNumber=20260922
-InpSourceLabel=Telegram_Sig
+InpSourceLabel=Telegram_Sig_Unified
 InpMagicNumber2=20260921
 InpSourceLabel2=Claude_Sig
 InpUseCommonFolder=false

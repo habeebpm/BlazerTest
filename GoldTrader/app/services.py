@@ -212,9 +212,8 @@ def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
     relay = preset.relay_bridge
     if relay.enabled or force_relay:
         if os.path.exists(relay_supervisor.bridge_path()):
-            sup = supervisor_cls("Telegram relay bridge",
-                                 [py, relay_supervisor.BRIDGE_SCRIPT, "--no-login", *relay.args],
-                                 relay_supervisor.BRIDGE_DIR, fatal=relay_supervisor._FATAL_TEXT,
+            sup = supervisor_cls("Telegram relay bridge", relay_supervisor.relay_command(relay.args),
+                                 relay_supervisor.BRIDGE_DIR, fatal=relay_supervisor.RELAY_FATAL,
                                  on_fatal=fatal_alert("Telegram relay bridge"))
             sup.start()
             started.append(sup)

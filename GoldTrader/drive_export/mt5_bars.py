@@ -1,14 +1,11 @@
 """
-Minimal, self-contained MetaTrader 5 wrapper for the Drive price export - deliberately
-NOT importing app/mt5_gateway.py or any other folder
-mt5_client.py, matching this repo's convention of independent solutions
-that don't reach across directories for code built for a different tool
-(see mt5_gateway.py's own docstring). This one only needs three things:
-connect, read the symbol spec (for quote precision), and read bars - no
-order placement, no trailing, no position management.
+Minimal MetaTrader 5 wrapper for the Drive price export. It does not import
+app/mt5_gateway.py, so drive_export/ runs on its own (e.g. on a VPS). It only
+needs three things: connect, read the symbol spec (for quote precision), and
+read bars - no order placement, no trailing, no position management.
 
-The MetaTrader5 package is Windows-only and imported lazily, same
-convention as the rest of this repo, so this module (and exporter.py,
+The MetaTrader5 package is Windows-only and imported lazily, as in app/,
+so this module (and exporter.py,
 which only depends on this file's return types) stays importable and
 testable on any platform - only the live export loop needs a real
 terminal.

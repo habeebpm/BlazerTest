@@ -3331,7 +3331,8 @@ def test_relay_supervisor() -> bool:
         return cond()
 
     fatal = []
-    sup = relay_supervisor.RelaySupervisor(command=[py, "-c", "raise SystemExit(2)"],
+    sup = relay_supervisor.ChildSupervisor("relay", [py, "-c", "raise SystemExit(2)"], ".",
+                                           fatal=relay_supervisor.RELAY_FATAL,
                                            on_fatal=fatal.append, first_delay=0.05)
     sup.start()
     ok &= check("exit 2 (not logged in): no restart, on_fatal called once with the login hint",
@@ -3339,7 +3340,8 @@ def test_relay_supervisor() -> bool:
                 and "relay_login.bat" in fatal[0], (sup.starts, fatal))
     sup.stop()
 
-    crash = relay_supervisor.RelaySupervisor(command=[py, "-c", "raise SystemExit(1)"],
+    crash = relay_supervisor.ChildSupervisor("relay", [py, "-c", "raise SystemExit(1)"], ".",
+                                             fatal=relay_supervisor.RELAY_FATAL,
                                              first_delay=0.05, max_delay=0.1)
     crash.start()
     ok &= check("a crash (exit 1) is restarted with backoff", wait_until(lambda: crash.starts >= 3),
@@ -3349,7 +3351,7 @@ def test_relay_supervisor() -> bool:
     _time.sleep(0.3)
     ok &= check("stop() ends the restart loop", crash.starts == n, (n, crash.starts))
 
-    longrun = relay_supervisor.RelaySupervisor(command=[py, "-c", "import time; time.sleep(60)"])
+    longrun = relay_supervisor.ChildSupervisor("relay", [py, "-c", "import time; time.sleep(60)"], ".")
     longrun.start()
     ok &= check("the bridge keeps running while healthy", wait_until(longrun.running))
     longrun.stop(timeout=10)
@@ -3360,7 +3362,9 @@ def test_relay_supervisor() -> bool:
     saved = {k: os.environ.pop(k, None) for k in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH")}
     try:
         cfg_fatal = []
-        real = relay_supervisor.RelaySupervisor(on_fatal=cfg_fatal.append, first_delay=0.05)
+        real = relay_supervisor.ChildSupervisor("relay", relay_supervisor.relay_command(),
+                                                relay_supervisor.BRIDGE_DIR, fatal=relay_supervisor.RELAY_FATAL,
+                                                on_fatal=cfg_fatal.append, first_delay=0.05)
         real.start()
         ok &= check("the real bridge without credentials stops for good as a configuration problem",
                     wait_until(lambda: len(cfg_fatal) == 1, 30) and "configuration" in cfg_fatal[0]
