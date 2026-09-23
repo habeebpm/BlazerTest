@@ -100,28 +100,33 @@ python main.py --once -v
 
 ## 7. Optional - Relay bridge (not admin of the signal channel)
 
+Runs inside the Claude program (`--relay`) - no extra window.
+
 1. Create a private Telegram group -> add your bot as admin.
 2. <https://my.telegram.org> -> API development tools -> copy `api_id`, `api_hash`.
 3. ```bat
-   cd MT_Py_Claude_Telegram_Solution\python
-   pip install -r requirements.txt
    setx TELEGRAM_API_ID <api_id>
    setx TELEGRAM_API_HASH <api_hash>
    ```
-4. New Command Prompt:
+4. New Command Prompt (enter phone number + login code when asked):
    ```bat
-   cd MT_Py_Claude_Telegram_Solution\python
-   python telegram_relay_bridge.py --check
+   cd MT_Py_Claude_Telegram_Solution\ClaudeSMC_Trader\python
+   pip install -r requirements.txt
+   python main.py --relay-login
+   ```
+   Copy the source channel and relay group ids it prints.
+5. ```bat
    setx TELEGRAM_SOURCE_CHANNELS @channel1,@channel2,@channel3
    setx TELEGRAM_RELAY_GROUP <relay group id>
    ```
-5. New Command Prompt:
+6. New Command Prompt -> run `python main.py --relay-login` again ->
+   both chats must resolve.
+7. Add `--relay` to the step 6 command:
    ```bat
-   cd MT_Py_Claude_Telegram_Solution\python
-   python telegram_relay_bridge.py
+   python main.py --live --relay --xtr-gate require_alignment --shared-cap-magic 20260922
    ```
-   Leave it running.
-6. EA `InpChannelId1` = the relay group id.
+8. EA `InpChannelId1` = the relay group id.
+9. Never also run `telegram_relay_bridge.py` on its own (double relaying).
 
 ## 8. Optional - Price export to Google Drive
 
@@ -229,8 +234,7 @@ python backtest.py --from-mt5 --start 2026-08-01 --end 2026-09-23 --mechanical -
 | Window | Needed |
 |---|---|
 | MT5 + `UnifiedTrader_EA` (+ Trade Logger chart, step 9) | Always |
-| `python main.py --live --xtr-gate require_alignment --shared-cap-magic 20260922` | Always |
-| `python telegram_relay_bridge.py` | Step 7 only |
+| `python main.py --live [--relay] --xtr-gate require_alignment --shared-cap-magic 20260922` | Always (`--relay` = step 7, bridge runs inside it) |
 | `python xtr_export.py ...` | Step 8 option B only |
 | IIS | Step 10 only (runs as a Windows service) |
 

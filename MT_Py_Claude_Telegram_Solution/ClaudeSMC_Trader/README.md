@@ -455,6 +455,22 @@ formula (sizing here already risks 2% of equity via the broker's tick
 value). The spec's own sample is small (59 trades over 8 days; 13 since its
 last rule change) - treat the dry-run weeks as its real test.
 
+### 5b. Telegram relay bridge inside this program (`--relay`)
+
+`python main.py --relay ...` also runs `../../python/telegram_relay_bridge.py`
+(for a signal channel you are not admin of) as a supervised child process -
+one command, one window. `relay_supervisor.py` starts it with `--no-login`
+(it never waits for a phone code in the background), restarts it after a
+crash or disconnect (30s doubling to 10 min), stops it for good after "not
+logged in" (exit 2) or a configuration problem (exit 3) with one Telegram
+alert, and stops it when this program exits. A child process rather than an
+import: the two folders share module names (`config.py`, ...), and a bridge
+failure can never stop trading. Log in once with `python main.py
+--relay-login` (same saved session as the standalone script). Needs
+`telethon` (in `requirements.txt`) and the `TELEGRAM_API_ID`/`_HASH`,
+`TELEGRAM_SOURCE_CHANNELS`, `TELEGRAM_RELAY_GROUP` environment variables.
+Never run the standalone bridge at the same time.
+
 ### 6. Further optional enhancements
 
 Everything below is off by default (or takes effect only once the Telegram

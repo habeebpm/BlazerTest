@@ -51,6 +51,7 @@ import main as main_mod
 import market_intel
 import ml_advisor
 import news_check
+import relay_supervisor
 import telegram_alert
 import xtr_logic
 import mt5_gateway as gw
@@ -3312,6 +3313,80 @@ def test_xtr_logic() -> bool:
                 .xtr_gate == "require_alignment" and AdvisorConfig().xtr_gate == "block_opposed")
     return ok
 
+def test_relay_supervisor() -> bool:
+    print("\n=== relay_supervisor: telegram_relay_bridge.py as main.py's supervised child ===")
+    import sys as _sys
+    import time as _time
+    ok = True
+    py = _sys.executable
+
+    def wait_until(cond, timeout=10.0):
+        end = _time.monotonic() + timeout
+        while _time.monotonic() < end:
+            if cond():
+                return True
+            _time.sleep(0.05)
+        return cond()
+
+    fatal = []
+    sup = relay_supervisor.RelaySupervisor(command=[py, "-c", "raise SystemExit(2)"],
+                                           on_fatal=fatal.append, first_delay=0.05)
+    sup.start()
+    ok &= check("exit 2 (not logged in): no restart, on_fatal called once with the login hint",
+                wait_until(lambda: len(fatal) == 1) and sup.starts == 1
+                and "--relay-login" in fatal[0], (sup.starts, fatal))
+    sup.stop()
+
+    crash = relay_supervisor.RelaySupervisor(command=[py, "-c", "raise SystemExit(1)"],
+                                             first_delay=0.05, max_delay=0.1)
+    crash.start()
+    ok &= check("a crash (exit 1) is restarted with backoff", wait_until(lambda: crash.starts >= 3),
+                crash.starts)
+    crash.stop()
+    n = crash.starts
+    _time.sleep(0.3)
+    ok &= check("stop() ends the restart loop", crash.starts == n, (n, crash.starts))
+
+    longrun = relay_supervisor.RelaySupervisor(command=[py, "-c", "import time; time.sleep(60)"])
+    longrun.start()
+    ok &= check("the bridge keeps running while healthy", wait_until(longrun.running))
+    longrun.stop(timeout=10)
+    ok &= check("stop() terminates a running bridge", not longrun.running())
+
+    # The real bridge with no Telegram credentials in its environment exits 3
+    # (configuration) - fatal, not restarted.
+    saved = {k: os.environ.pop(k, None) for k in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH")}
+    try:
+        cfg_fatal = []
+        real = relay_supervisor.RelaySupervisor(on_fatal=cfg_fatal.append, first_delay=0.05)
+        real.start()
+        ok &= check("the real bridge without credentials stops for good as a configuration problem",
+                    wait_until(lambda: len(cfg_fatal) == 1, 30) and "configuration" in cfg_fatal[0]
+                    and real.starts == 1, (real.starts, cfg_fatal))
+        real.stop()
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+    started = []
+
+    class FakeSup:
+        def __init__(self, on_fatal=None):
+            self.on_fatal = on_fatal
+
+        def start(self):
+            started.append(self)
+
+    sup2 = main_mod.start_relay(AdvisorConfig(), supervisor_cls=FakeSup)
+    ok &= check("main.start_relay() starts the supervisor with a fatal-alert callback",
+                started == [sup2] and callable(sup2.on_fatal))
+    args = main_mod.build_parser().parse_args(["--relay"])
+    ok &= check("--relay / --relay-login parse", args.relay and not args.relay_login
+                and main_mod.build_parser().parse_args(["--relay-login"]).relay_login)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3346,6 +3421,7 @@ def main() -> int:
         test_breaking_news_check(),
         test_entry_levels_and_alert(),
         test_xtr_logic(),
+        test_relay_supervisor(),
     ]
     print()
     if all(results):

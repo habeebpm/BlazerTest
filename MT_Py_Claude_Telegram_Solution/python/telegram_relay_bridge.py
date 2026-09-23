@@ -53,6 +53,11 @@ Setup:
     6. Put the id --check printed for the relay group into
        TelegramSMC_Copier.mq5's InpChannelId1.
 
+Or let the Claude program run it for you: `python main.py --relay ...`
+(ClaudeSMC_Trader/python) starts this script as a supervised background
+process, restarts it after a crash or disconnect, and stops it on exit.
+Log in once first with `python main.py --relay-login` (or --check here).
+
 Keep this running continuously (same machine as MT5, or anywhere with
 network access) - if it stops, nothing new reaches the relay group and the
 EA sees no signals, same as if the source channel went quiet.
@@ -74,6 +79,12 @@ import message_filter
 from signal_parser import parse_signal
 
 log = logging.getLogger("telegram_relay_bridge")
+
+
+# Exit codes a supervisor (ClaudeSMC_Trader/python/relay_supervisor.py) acts
+# on: restart after anything else, stop for good after these two.
+EXIT_NOT_LOGGED_IN = 2   # --no-login and no saved session: run --check once
+EXIT_CONFIG = 3          # missing credentials / channels / telethon
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -147,7 +158,16 @@ def relay_decision(message, text: str, relay_everything: bool, filter_signals: b
 async def amain(client, args, sources: list, dest: str | None, filter_signals: bool) -> int:
     from telethon import events
 
-    await client.start()
+    if args.no_login:
+        # Background mode: never prompt for a phone number/code (nobody is
+        # there to answer, and a blocked input() would hang forever).
+        await client.connect()
+        if not await client.is_user_authorized():
+            log.error("Relay bridge is not logged in to Telegram yet - run once, interactively: "
+                      "python main.py --relay-login  (or: python telegram_relay_bridge.py --check)")
+            return EXIT_NOT_LOGGED_IN
+    else:
+        await client.start()
     me = await client.get_me()
     log.info("Logged in to Telegram as %s (id=%s)",
              getattr(me, "username", None) or me.first_name, me.id)
@@ -170,10 +190,10 @@ async def amain(client, args, sources: list, dest: str | None, filter_signals: b
 
     if not sources:
         log.error("No source channel(s) configured - set TELEGRAM_SOURCE_CHANNELS or pass --sources.")
-        return 1
+        return EXIT_CONFIG
     if not dest:
         log.error("No relay group configured - set TELEGRAM_RELAY_GROUP or pass --dest.")
-        return 1
+        return EXIT_CONFIG
 
     dest_entity = await client.get_entity(dest)
     dest_title = getattr(dest_entity, "title", None) or dest
@@ -220,6 +240,9 @@ def main(argv: list | None = None) -> int:
                              "(default: trade messages only; media is always dropped unless this is set)")
     parser.add_argument("--accept-photo-captions", action="store_true", dest="accept_photo_captions",
                         help="also relay photos whose caption is a trade message")
+    parser.add_argument("--no-login", action="store_true", dest="no_login",
+                        help="never prompt for a login (background use): exit with code 2 if no "
+                             "saved session exists yet")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -231,13 +254,13 @@ def main(argv: list | None = None) -> int:
         message_filter.check_channel_limit(sources, "source channels")
     except ValueError as exc:
         log.error("%s - the EAs read at most 3 channels (InpChannelId1..3).", exc)
-        return 1
+        return EXIT_CONFIG
 
     try:
         from telethon import TelegramClient
     except ImportError:
         log.error("The 'telethon' package is required for this bridge: pip install telethon")
-        return 1
+        return EXIT_CONFIG
 
     api_id = _env_int("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
@@ -247,7 +270,7 @@ def main(argv: list | None = None) -> int:
         log.error("TELEGRAM_API_ID and TELEGRAM_API_HASH are required - get them from "
                   "https://my.telegram.org (API development tools). This is your personal API "
                   "app credential, not a bot token.")
-        return 1
+        return EXIT_CONFIG
 
 
     client = TelegramClient(session, api_id, api_hash)

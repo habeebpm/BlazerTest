@@ -28,6 +28,7 @@ import market_intel
 import ml_advisor
 import mt5_gateway as gw
 import news_check
+import relay_supervisor
 import telegram_alert
 import xtr_logic
 from config import AdvisorConfig
@@ -593,6 +594,28 @@ def send_test_alert(cfg: AdvisorConfig, spec) -> int:
     return 1
 
 
+def start_relay(cfg: AdvisorConfig, supervisor_cls=None):
+    """--relay: the Telegram relay bridge as a supervised child process (see
+    relay_supervisor.py). A bridge that stops for good (not logged in, bad
+    configuration) is reported once over the Telegram alert, if set up;
+    trading is never affected either way."""
+    if not os.path.exists(relay_supervisor.bridge_path()):
+        log.error("--relay: %s not found - keep this folder inside the full solution folder.",
+                  relay_supervisor.bridge_path())
+        return None
+
+    def on_fatal(reason: str) -> None:
+        if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
+            telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
+                                      f"Telegram relay bridge stopped: {reason}. Trading continues; "
+                                      "no new signals reach the relay group until it is fixed.")
+
+    sup = (supervisor_cls or relay_supervisor.RelaySupervisor)(on_fatal=on_fatal)
+    sup.start()
+    log.info("Telegram relay bridge: running as a supervised background process.")
+    return sup
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -712,6 +735,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "price (one Claude call, no order) and print the result, then exit")
     parser.add_argument("--check", action="store_true",
                         help="connect to MT5, print the symbol spec, exit - no Claude call")
+    parser.add_argument("--relay", action="store_true",
+                        help="also run the Telegram relay bridge (../../python/telegram_relay_bridge.py) "
+                             "as a supervised background process - restarted after a crash or "
+                             "disconnect, stopped with this program; needs TELEGRAM_API_ID/HASH, "
+                             "TELEGRAM_SOURCE_CHANNELS, TELEGRAM_RELAY_GROUP and a one-time --relay-login")
+    parser.add_argument("--relay-login", action="store_true", dest="relay_login",
+                        help="log the relay bridge in to Telegram once (asks for your phone number and "
+                             "code) and print the source/relay chat ids, then exit")
     parser.add_argument("--login", type=int, help="MT5 account login (optional, if not already logged in)")
     parser.add_argument("--password", help="MT5 account password (safer: set the MT5_PASSWORD "
                                            "environment variable instead)")
@@ -738,6 +769,8 @@ def main(argv: list | None = None) -> int:
 
     if args.test_feeds:
         return report_feeds(cfg)
+    if args.relay_login:
+        return relay_supervisor.login()
 
     # MT5_PASSWORD keeps the password out of the process list / shell
     # history; normally neither is needed (MT5 already logged in).
@@ -801,6 +834,9 @@ def main(argv: list | None = None) -> int:
     if args.once:
         run_once(client, cfg, spec, day, xtr_state)
         return 0
+
+    if args.relay:
+        start_relay(cfg)
 
     log.info("Watching %s for a new closed %s candle every %ds - Ctrl+C to stop.",
               cfg.symbol, cfg.primary_timeframe, cfg.poll_seconds)

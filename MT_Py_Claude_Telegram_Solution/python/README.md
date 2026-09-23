@@ -472,6 +472,11 @@ python telegram_relay_bridge.py --check     # log in, resolve/list chats, exit -
 python telegram_relay_bridge.py             # relay live (Ctrl+C to stop)
 ```
 
+Or let the Claude program run it: `python main.py --relay ...` in
+`ClaudeSMC_Trader/python` (log in once with `python main.py --relay-login`)
+starts this bridge as a supervised background process - see
+`ClaudeSMC_Trader/README.md` "Telegram relay bridge inside this program".
+
 Setup:
 
 1. Create a new **private group** in Telegram (any name) - just for this.
