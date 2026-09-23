@@ -136,6 +136,20 @@ def get_tick(symbol: str):
     return tick
 
 
+def now() -> datetime:
+    """The gateway's own notion of "now" - real wall-clock time here, but
+    backtest.HistoricalGateway overrides this with its simulated replay
+    clock instead. executor.gate() calls THIS (via `gateway.now()`) rather
+    than datetime.now() directly, specifically so a backtest replaying
+    historical data checks config.py's news_blackout_windows against the
+    bar being evaluated, not against the real date the backtest happens to
+    be run on - the same no-lookahead principle every other gateway call
+    here already follows (get_bars/get_tick never leak future/real-time
+    data into a simulated evaluation).
+    """
+    return datetime.now(timezone.utc)
+
+
 def account_equity() -> float:
     m = mt5()
     info = m.account_info()

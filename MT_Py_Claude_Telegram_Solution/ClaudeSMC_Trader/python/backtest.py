@@ -144,7 +144,7 @@ class HistoricalGateway:
         self.starting_equity = starting_equity
         self.primary_timeframe = None
         self.cursor = 0
-        self.open_positions: list = []
+        self.sim_positions: list = []
         self.closed_trades: list = []
         self._next_ticket = 1
 
@@ -182,6 +182,15 @@ class HistoricalGateway:
     @property
     def current_bar(self) -> pd.Series:
         return self.bars[self.primary_timeframe].iloc[self.cursor]
+
+    def now(self) -> pd.Timestamp:
+        """The simulated replay clock (self.current_time) - executor.gate()
+        calls this (via `gateway.now()`) instead of the real wall clock, so
+        config.py's news_blackout_windows is judged against the bar being
+        evaluated rather than whatever real date the backtest happens to
+        run on (mirrors mt5_gateway.now()'s own docstring/reasoning).
+        """
+        return self.current_time
 
     def advance(self) -> bool:
         """Moves to the next primary-timeframe bar. Returns False once the
@@ -235,9 +244,22 @@ class HistoricalGateway:
     def count_same_direction(self, symbol: str, magic: int, direction: str, additional_magics=()) -> int:
         # additional_magics accepted only for interface parity with the real
         # mt5_gateway.count_same_direction() - a backtest run only ever
-        # simulates one system's own position book (self.open_positions),
+        # simulates one system's own position book (self.sim_positions),
         # so there is nothing else to count regardless of what's passed here.
-        return sum(1 for p in self.open_positions if p.direction == direction)
+        return sum(1 for p in self.sim_positions if p.direction == direction)
+
+    def open_positions(self, symbol: str, magic: int) -> list[dict]:
+        """Mirrors mt5_gateway.open_positions()'s shape - magic accepted
+        only for interface parity, same reasoning as count_same_direction()
+        above: a backtest run only ever simulates ONE system's own position
+        book (self.sim_positions), so there's nothing else to report
+        regardless of which magic is asked for. Needed so market_intel.
+        consensus_context() (consensus_magic_numbers) works against this
+        gateway instead of raising AttributeError.
+        """
+        return [{"ticket": p.ticket, "direction": p.direction, "volume": p.lots,
+                 "price_open": p.entry_price, "sl": p.sl, "tp": p.tp}
+                for p in self.sim_positions]
 
     def recent_closed_trades(self, symbol: str, magic: int, count: int) -> list[dict]:
         """Mirrors mt5_gateway.recent_closed_trades()'s shape from this
@@ -273,7 +295,7 @@ class HistoricalGateway:
         price = tick.ask if direction == "buy" else tick.bid
         ticket = self._next_ticket
         self._next_ticket += 1
-        self.open_positions.append(SimPosition(
+        self.sim_positions.append(SimPosition(
             ticket=ticket, direction=direction, lots=lots, entry_time=self.current_time,
             entry_price=price, sl=sl_price, tp=tp_price,
         ))
@@ -311,13 +333,13 @@ class HistoricalGateway:
                 f"backtest.py has no simulation for exit_style={cfg.exit_style!r} yet - only "
                 f"'sl_to_tp1' and 'fixed_tp' are supported here.")
         still_open = []
-        for pos in self.open_positions:
+        for pos in self.sim_positions:
             exit_price, exit_reason = manage_one(cfg, pos, high, low, min_stop_dist)
             if exit_price is None:
                 still_open.append(pos)
                 continue
             self._close_position(pos, exit_price, exit_reason, self.current_time)
-        self.open_positions = still_open
+        self.sim_positions = still_open
 
     def _manage_fixed_tp(self, cfg: AdvisorConfig, pos: SimPosition, high: float, low: float,
                           min_stop_dist: float):
@@ -407,14 +429,14 @@ class HistoricalGateway:
         what signals "no more bars" to the caller) - going through the
         normal cursor-based accessors here would index out of bounds.
         """
-        if not self.open_positions:
+        if not self.sim_positions:
             return
         primary = self.bars[self.primary_timeframe]
         last_close = float(primary["close"].iloc[-1])
         last_time = primary["time"].iloc[-1] + TIMEFRAME_DURATIONS[self.primary_timeframe]
-        for pos in self.open_positions:
+        for pos in self.sim_positions:
             self._close_position(pos, last_close, reason, last_time)
-        self.open_positions = []
+        self.sim_positions = []
 
     def _close_position(self, pos: SimPosition, exit_price: float, reason: str,
                          exit_time: pd.Timestamp) -> None:

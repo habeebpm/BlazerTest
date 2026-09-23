@@ -328,13 +328,14 @@ class FakeGateway:
     SymbolSpec = gw.SymbolSpec
 
     def __init__(self, same_dir_open: int = 0, bid: float = 2350.0, ask: float = 2350.2,
-                 equity: float = 10000.0, bars_df=None):
+                 equity: float = 10000.0, bars_df=None, now=None):
         self.same_dir_open = same_dir_open
         self.bid, self.ask = bid, ask
         self.orders_sent = []
         self.last_additional_magics = None
         self.equity = equity
         self.bars_df = bars_df
+        self._now = now
 
     def count_same_direction(self, symbol, magic, direction, additional_magics=()):
         self.last_additional_magics = additional_magics
@@ -342,6 +343,9 @@ class FakeGateway:
 
     def account_equity(self):
         return self.equity
+
+    def now(self):
+        return self._now or gw.now()
 
     def get_bars(self, symbol, timeframe_name, count):
         return self.bars_df.tail(count).reset_index(drop=True)
@@ -486,6 +490,32 @@ def test_executor() -> bool:
     d9 = executor.execute(fg9, cfg_blackout_now, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("gate() actually rejects a trade evaluated inside a currently-active blackout window",
                 not d9.executed and "news blackout" in d9.reject_reason, d9.reject_reason)
+
+    # gate() must source "now" from gateway.now() - NOT the real wall clock
+    # directly - so a backtest run (HistoricalGateway.now() == the
+    # simulated replay clock) judges news_blackout_windows against the bar
+    # being evaluated, not whatever real date the test/backtest happens to
+    # run on. A window that only matches a historical date the real clock
+    # is nowhere near proves gate() actually asked the gateway, not
+    # datetime.now(), for "now".
+    cfg_blackout_historical = AdvisorConfig(
+        dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+        news_blackout_windows=[("2020-06-15T00:00:00Z", "2020-06-15T23:59:59Z")])
+    fg_real_clock = FakeGateway(same_dir_open=0)
+    d_real_clock = executor.execute(fg_real_clock, cfg_blackout_historical, make_verdict("buy", 3, "full"),
+                                    spec, trades_today=0)
+    ok &= check("a historical-only blackout window does NOT block a trade under the real gateway's "
+                "own real-wall-clock now()",
+                d_real_clock.executed, d_real_clock.reject_reason)
+
+    fg_sim_clock = FakeGateway(same_dir_open=0, now=datetime(2020, 6, 15, 12, 0, tzinfo=timezone.utc))
+    d_sim_clock = executor.execute(fg_sim_clock, cfg_blackout_historical, make_verdict("buy", 3, "full"),
+                                   spec, trades_today=0)
+    ok &= check("gate() sources 'now' from gateway.now() - a gateway simulating a historical clock "
+                "inside the same window DOES get blocked, proving gate() didn't just use the real "
+                "wall clock",
+                not d_sim_clock.executed and "news blackout" in d_sim_clock.reject_reason,
+                d_sim_clock.reject_reason)
 
     # --- ATR-adaptive initial stop-loss (sl_mode="atr") ---
     atr_bars = make_trending_df(n=40, start=2350.0, drift=0.0, noise=0.5, seed=3)
@@ -1096,11 +1126,35 @@ def test_backtest_no_lookahead_and_reset() -> bool:
                 "market_intel.dxy_context() would otherwise fall into if pointed at a backtest run)",
                 raised_wrong_symbol is not None, raised_wrong_symbol)
 
+    ok &= check("open_positions() reports no positions when none are simulated open",
+                gateway.open_positions("XAUUSD", 20260921) == [])
+    gateway.sim_positions = [backtest.SimPosition(
+        ticket=1, direction="buy", lots=0.01, entry_time=m15["time"].iloc[0], entry_price=2350.0,
+        sl=2344.0, tp=None)]
+    ok &= check("open_positions() mirrors mt5_gateway.open_positions()'s shape from the backtest's "
+                "own simulated position book - needed so market_intel.consensus_context() works "
+                "against this gateway instead of raising AttributeError",
+                gateway.open_positions("XAUUSD", 999) == [
+                    {"ticket": 1, "direction": "buy", "volume": 0.01, "price_open": 2350.0,
+                     "sl": 2344.0, "tp": None}],
+                gateway.open_positions("XAUUSD", 999))
+    gateway.sim_positions = []
+
     reset_ok = gateway.reset("M15", warmup_bars=3)
     ok &= check("reset() succeeds with enough history on every timeframe", reset_ok)
     ok &= check("reset() lands on the earliest bar where H4 (the binding constraint) has "
                 "warmup_bars closed bars, not earlier or later",
                 gateway.current_time == pd.Timestamp("2026-01-01 12:15", tz="UTC"), gateway.current_time)
+    ok &= check("now() returns the same simulated replay clock as current_time - executor.gate() "
+                "calls this instead of the real wall clock so news_blackout_windows is judged "
+                "against the bar being evaluated in a backtest, not the real run date",
+                gateway.now() == gateway.current_time, gateway.now())
+
+    real_now = gw.now()
+    ok &= check("mt5_gateway.now() returns real, current, UTC wall-clock time",
+                real_now.tzinfo is not None and abs((real_now - datetime.now(timezone.utc))
+                                                     .total_seconds()) < 5,
+                real_now)
 
     # Before the first H4 bar (00:00-04:00) has closed, it must not be
     # queryable at all - the whole point of the no-lookahead guarantee.
@@ -1147,12 +1201,12 @@ def test_backtest_exit_simulation() -> bool:
     cfg = AdvisorConfig(tp1_dollars=3.0, trail_dollars=1.0, exit_style="fixed_tp")
 
     g1 = make_gateway(spec)
-    g1.open_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
+    g1.sim_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2344.0, tp=2360.0)]
     set_bar(g1, 2350.0, 2353.5, 2349.5, 2353.0)  # profit_at_high 3.5 >= arm_dist 3.0
     g1.manage_positions(cfg)
-    pos = g1.open_positions[0]
+    pos = g1.sim_positions[0]
     ok &= check("reaching the arm threshold arms the trail and drops the fixed TP",
                 pos.armed and pos.tp is None and abs(pos.sl - 2352.5) < 1e-9,
                 (pos.sl, pos.tp, pos.armed))
@@ -1163,7 +1217,7 @@ def test_backtest_exit_simulation() -> bool:
                 and abs(g1.closed_trades[0].exit_price - 2352.5) < 1e-9, g1.closed_trades)
 
     g2 = make_gateway(spec)
-    g2.open_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
+    g2.sim_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2356.0, tp=2340.0)]
     set_bar(g2, 2350.0, 2357.0, 2349.0, 2355.0)  # high touches 2357 >= sl 2356
@@ -1174,7 +1228,7 @@ def test_backtest_exit_simulation() -> bool:
                 g2.closed_trades)
 
     g3 = make_gateway(spec)
-    g3.open_positions = [backtest.SimPosition(ticket=3, direction="buy", lots=0.01,
+    g3.sim_positions = [backtest.SimPosition(ticket=3, direction="buy", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2344.0, tp=2352.0)]  # tp closer than arm_dist (3.0)
     set_bar(g3, 2350.0, 2352.5, 2349.8, 2352.0)  # profit_at_high 2.5 < arm_dist 3.0 - never arms
@@ -1188,12 +1242,12 @@ def test_backtest_exit_simulation() -> bool:
     # once in ClaudeSMC_TradeManager.mq5's own history (see its file header).
     wide_stop_spec = _flat_spec(stops_level_points=200)  # 2.0 price units
     g4 = make_gateway(wide_stop_spec)
-    g4.open_positions = [backtest.SimPosition(ticket=4, direction="buy", lots=0.01,
+    g4.sim_positions = [backtest.SimPosition(ticket=4, direction="buy", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2344.0, tp=2360.0)]
     set_bar(g4, 2350.0, 2353.5, 2349.5, 2353.0)  # would arm, but candidate SL is only 1.0 away - too tight
     g4.manage_positions(cfg)
-    pos4 = g4.open_positions[0] if g4.open_positions else None
+    pos4 = g4.sim_positions[0] if g4.sim_positions else None
     ok &= check("a broker minimum stop distance wider than the trail keeps the fixed TP in place",
                 pos4 is not None and not pos4.armed and pos4.tp == 2360.0 and pos4.sl == 2344.0,
                 pos4)
@@ -1223,19 +1277,19 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
     # tp=0.0 mirrors exactly what executor.execute() sends under this style -
     # the position's only exit mechanism is its stop-loss.
     g1 = make_gateway(spec)
-    g1.open_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
+    g1.sim_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2344.0, tp=0.0)]
     set_bar(g1, 2350.0, 2353.5, 2349.5, 2353.0)  # profit_at_high 3.5 >= tp1_dist 3.0
     g1.manage_positions(cfg)
-    pos = g1.open_positions[0]
+    pos = g1.sim_positions[0]
     ok &= check("reaching tp1_dist locks the SL to EXACTLY entry+tp1_dist, not a trail-from-high value",
                 pos.armed and abs(pos.sl - 2353.0) < 1e-9, (pos.sl, pos.armed))
 
     set_bar(g1, 2353.0, 2355.0, 2353.5, 2354.5)  # a new high past the lock - trail should now tighten
     g1.manage_positions(cfg)
     ok &= check("once armed, later bars trail trail_dist behind new highs",
-                abs(g1.open_positions[0].sl - 2354.0) < 1e-9, g1.open_positions[0].sl)
+                abs(g1.sim_positions[0].sl - 2354.0) < 1e-9, g1.sim_positions[0].sl)
 
     set_bar(g1, 2354.5, 2354.6, 2353.5, 2354.0)  # pulls back onto the trailing SL (2354.0)
     g1.manage_positions(cfg)
@@ -1245,7 +1299,7 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
 
     # A stop-out before ever reaching tp1_dist closes at the original SL.
     g2 = make_gateway(spec)
-    g2.open_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
+    g2.sim_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2356.0, tp=0.0)]
     set_bar(g2, 2350.0, 2357.0, 2349.0, 2355.0)  # high touches 2357 >= sl 2356, well before arming
@@ -1259,12 +1313,12 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
     # current price must defer arming rather than lock a too-tight SL.
     wide_stop_spec = _flat_spec(stops_level_points=200)  # 2.0 price units
     g3 = make_gateway(wide_stop_spec)
-    g3.open_positions = [backtest.SimPosition(ticket=3, direction="buy", lots=0.01,
+    g3.sim_positions = [backtest.SimPosition(ticket=3, direction="buy", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2344.0, tp=0.0)]
     set_bar(g3, 2350.0, 2353.1, 2349.5, 2353.0)  # lock level 2353.0, high only 0.1 past it - too tight
     g3.manage_positions(cfg)
-    pos3 = g3.open_positions[0] if g3.open_positions else None
+    pos3 = g3.sim_positions[0] if g3.sim_positions else None
     ok &= check("arming is deferred when locking would violate the broker's minimum stop distance",
                 pos3 is not None and not pos3.armed and pos3.sl == 2344.0, pos3)
 

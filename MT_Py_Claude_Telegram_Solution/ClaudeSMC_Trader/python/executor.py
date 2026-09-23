@@ -116,7 +116,12 @@ def gate(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, trades_today: 
     """Returns "" if the verdict clears every gate, else the reason it didn't."""
     if daily_block_reason:
         return daily_block_reason
-    blackout = in_news_blackout(cfg)
+    # gateway.now() rather than a bare datetime.now() call - real
+    # mt5_gateway.now() is real wall-clock time, but backtest.
+    # HistoricalGateway.now() is the simulated replay clock, so a backtest
+    # judges news_blackout_windows against the bar being evaluated, not
+    # whatever real date the backtest happens to be run on.
+    blackout = in_news_blackout(cfg, now=gateway.now())
     if blackout:
         return blackout
     if verdict.direction not in ("buy", "sell"):
