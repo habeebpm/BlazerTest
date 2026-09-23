@@ -216,7 +216,12 @@ synced - no Python, no Google credentials. A timeframe's CSV is rewritten
 only when it has a new closed bar; the manifest every minute as a
 heartbeat; writes are atomic. If the broker clock vs the PC's UTC clock is
 not a clean 15-minute offset (PC clock wrong), that cycle is skipped rather
-than mislabeling timestamps. Needs `MQL5/Include/XtrBarExport.mqh`. For a
+than mislabeling timestamps. Needs `MQL5/Include/XtrBarExport.mqh`. To write
+straight into a Drive folder instead (e.g. `G:\My Drive\MyMQChartDrive`),
+set `InpXtrExportCopyTo` to it and tick **Allow DLL imports** (Common tab):
+MQL5 can't write outside its sandbox, so each file is copied there with
+Windows' own `CopyFileW`/`MoveFileExW` (kernel32 only). Without DLL
+imports the copy is skipped with a warning; the local export still runs. For a
 VPS without Drive for Desktop, use `xtr_export.py --upload-drive` instead
 and set `InpXtrExport=false`.
 

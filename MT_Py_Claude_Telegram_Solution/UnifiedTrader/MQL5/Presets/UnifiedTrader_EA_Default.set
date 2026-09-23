@@ -84,3 +84,4 @@ InpXtrExportFolder=XTR_Data
 InpXtrExportName=XAUUSD
 InpXtrExportBars=200
 InpXtrExportM1=false
+InpXtrExportCopyTo=G:\MyDrive\MyMQChartDrive

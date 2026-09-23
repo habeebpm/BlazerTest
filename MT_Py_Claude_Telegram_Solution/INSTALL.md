@@ -127,13 +127,20 @@ python main.py --once -v
 
 **A - PC with Google Drive for Desktop (the EA does it, no Python):**
 
-1. EA **Inputs** -> `InpXtrExport` = `true` (default) -> **OK**.
-2. After a minute, MT5 -> **File -> Open Data Folder** -> go up two levels
-   -> `Common\Files\XTR_Data` -> check `XAUUSD_M5.csv`, `XAUUSD_M15.csv`,
-   `XAUUSD_H1.csv`, `XAUUSD_manifest.json` exist. Copy that folder's path.
-3. Google Drive for Desktop -> **Settings (gear) -> Preferences ->
-   My Computer -> Add folder** -> paste the path -> **Sync with Google Drive** -> **Done**.
-4. Files update every minute; Drive syncs them.
+1. Windows Explorer -> open the Google Drive drive (`G:`) -> create folder
+   `MyMQChartDrive` -> copy its exact path from the address bar
+   (usually `G:\My Drive\MyMQChartDrive`).
+2. EA **Inputs**:
+
+   | Input | Value |
+   |---|---|
+   | `InpXtrExport` | `true` |
+   | `InpXtrExportCopyTo` | the path from step 1 |
+
+3. EA **Common** tab -> tick **Allow DLL imports** -> **OK**.
+4. After a minute, `XAUUSD_M5.csv`, `XAUUSD_M15.csv`, `XAUUSD_H1.csv`,
+   `XAUUSD_manifest.json` appear in that folder and update every minute.
+5. Nothing there? **Experts** tab -> look for `XtrBarExport:` messages.
 
 **B - VPS without a desktop (Python + service account):**
 

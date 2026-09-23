@@ -335,6 +335,7 @@ input string InpXtrExportFolder = "XTR_Data";  // Folder inside Common\Files - a
 input string InpXtrExportName   = "XAUUSD";    // File name prefix / manifest symbol (XAUUSD_M5.csv ...)
 input int    InpXtrExportBars   = 200;         // Closed bars per file (50-5000)
 input bool   InpXtrExportM1     = false;       // Also write <name>_M1.csv
+input string InpXtrExportCopyTo = "";          // Also copy every file to this folder, e.g. G:\My Drive\MyMQChartDrive (needs "Allow DLL imports")
 
 //================================= TYPES ====================================
 
@@ -480,6 +481,10 @@ int OnInit()
             "non-empty (or set InpXtrExport=false).");
       return(INIT_PARAMETERS_INCORRECT);
    }
+   XtrExpReset();
+   if(InpXtrExport && StringLen(InpXtrExportCopyTo) > 0 && !MQLInfoInteger(MQL_DLLS_ALLOWED))
+      PrintFormat("UnifiedTrader_EA: InpXtrExportCopyTo=%s needs \"Allow DLL imports\" (EA Common tab) - "
+                  "until then files stay in Common\\Files\\%s only.", InpXtrExportCopyTo, InpXtrExportFolder);
    ArrayInitialize(g_xtrH, INVALID_HANDLE);
    if(InpXtrHtfFilter && InpEnableTelegramSignals)
    {
@@ -2591,7 +2596,7 @@ void OnTick()
    ManageAllPositions();
    EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
    XtrExpMaybeExport(InpXtrExport, _Symbol, InpXtrExportFolder, InpXtrExportName, InpXtrExportBars,
-                     InpXtrExportM1);
+                     InpXtrExportM1, InpXtrExportCopyTo);
 }
 
 //+------------------------------------------------------------------+
@@ -2607,7 +2612,7 @@ void OnTimer()
    ExpirePendingOrders();
    EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
    XtrExpMaybeExport(InpXtrExport, _Symbol, InpXtrExportFolder, InpXtrExportName, InpXtrExportBars,
-                     InpXtrExportM1);
+                     InpXtrExportM1, InpXtrExportCopyTo);
    TelegramPoll();
    FlushNotifyQueue();
 }
