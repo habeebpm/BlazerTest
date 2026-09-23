@@ -428,7 +428,7 @@ M15 and H1 bars:
 | Bounce-failure reversal (M5 bounced against the trend in the last 6 bars and turned back) | Only once the M5 histogram has already crossed zero |
 | RSI-extreme bounce (RSI < 30 at the lower band / > 70 at the upper band, ADX < 25) | Recognised as its own setup type; RSI beyond 30/70 is flagged, never blocked |
 | Regime (M5 ADX >= 25 trending, else ranging) | Reported in the log, alert and Claude's context only |
-| 2 losses in a row on the same setup type within 1 M5 ATR | That setup stands down until an M5 close beyond the range with ADX >= 30, or an HTF turning clearly in favor (state in `logs/xtr_state.json`, learnt from real MT5 results by ticket) |
+| 2 losses in a row on the same setup type and direction within 1 M5 ATR | That setup stands down in that direction until an M5 close beyond the range with ADX >= 30, or an HTF turning clearly in favor (state in `logs/xtr_state.json`, learnt from real MT5 results by ticket) |
 
 Claude also sees the reading (`xtr` in the snapshot: each timeframe's
 class, the M5 trigger, regime and a conviction/setup preview for both

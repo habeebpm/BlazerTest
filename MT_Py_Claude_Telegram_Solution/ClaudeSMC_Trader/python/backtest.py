@@ -239,8 +239,11 @@ class HistoricalGateway:
         next_idx = self.cursor + 1
         price = float(primary["open"].iloc[next_idx]) if next_idx < len(primary) \
             else float(primary["close"].iloc[self.cursor])
+        # Bars are BID prices (as MT5's are): bid = the bar, ask = bar +
+        # spread - the same convention manage_positions() prices exits with,
+        # so a buy and a sell each pay exactly one spread per round trip.
         spread = self.spec.point * self.spread_points
-        return _FakeTick(bid=price - spread / 2, ask=price + spread / 2)
+        return _FakeTick(bid=price, ask=price + spread)
 
     def symbol_spec(self, symbol: str):
         return self.spec

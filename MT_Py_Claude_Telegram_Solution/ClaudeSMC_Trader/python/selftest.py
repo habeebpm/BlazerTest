@@ -1434,12 +1434,16 @@ def test_backtest_no_lookahead_and_reset() -> bool:
         ticket=1, direction="buy", lots=0.01, entry_time=mini_m15["time"].iloc[0],
         entry_price=2350.0, sl=2344.0, tp=None)]
     # get_tick() at cursor=0 uses the NEXT bar's open (2360.0), spread =
-    # 0.01 x 25 = 0.25 -> bid=2359.875; floating = (2359.875-2350.0)/0.01
-    # x 1.0 x 0.01 = 9.875, so equity = 10000 + 0 (no closed trades) + 9.875.
+    # bars are bid prices -> bid=2360.0 (ask = bid + 25 points); floating =
+    # (2360.0-2350.0)/0.01 x 1.0 x 0.01 = 10.0, so equity = 10000 + 0 + 10.0.
     ok &= check("account_equity() adds floating P&L on open sim_positions, priced off get_tick() "
                 "(the same one-bar-ahead, never-the-evaluated-bar's-own-close price used "
                 "everywhere else) - not just realized closed-trade P&L",
-                abs(floating_gw.account_equity() - 10009.875) < 1e-9, floating_gw.account_equity())
+                abs(floating_gw.account_equity() - 10010.0) < 1e-9, floating_gw.account_equity())
+    tick = floating_gw.get_tick("XAUUSD")
+    ok &= check("bars are bid prices: bid = next open, ask = bid + spread (buy and sell each pay "
+                "exactly one spread per round trip, matching the ask-side exits)",
+                abs(tick.bid - 2360.0) < 1e-9 and abs(tick.ask - 2360.25) < 1e-9, (tick.bid, tick.ask))
 
     raised_wrong_symbol = None
     try:
@@ -3144,18 +3148,18 @@ def test_xtr_logic() -> bool:
         sd.update_from_closed([{"ticket": 101, "pnl_dollars": -6.0, "time": t0},
                                {"ticket": 102, "pnl_dollars": -6.0, "time": t0 + _td(minutes=20)}])
         ok &= check("sec. 8: two losses on the same setup type within 1 ATR -> that setup stands down",
-                    sd.active(dec.setup_type)
+                    sd.active(dec.setup_type, 'buy')
                     and "stand-down" in X.evaluate("buy", a, cfg, sd).block_reason, sd.losses)
         ok &= check("the stand-down survives a restart (state file, written atomically)",
-                    X.XtrStanddown(path).active(dec.setup_type) and not os.path.exists(path + ".tmp"))
+                    X.XtrStanddown(path).active(dec.setup_type, 'buy') and not os.path.exists(path + ".tmp"))
         sd.update_from_closed([{"ticket": 101, "pnl_dollars": -6.0, "time": t0}])
-        ok &= check("a closed trade is never counted twice", sd.losses[dec.setup_type]["count"] == 2)
+        ok &= check("a closed trade is never counted twice", sd.losses[X.XtrStanddown.key(dec.setup_type, "buy")]["count"] == 2)
         sd.release_if_due(_assess(m5=_tf(close=2652.0, adx=35)))
         ok &= check("no release for a close still inside the range, even with ADX >= 30",
-                    sd.active(dec.setup_type))
+                    sd.active(dec.setup_type, 'buy'))
         sd.release_if_due(_assess(m5=_tf(close=2656.0, adx=34.1)))
         ok &= check("released by a decisive close beyond the range with ADX >= 30 (trade 54)",
-                    not sd.active(dec.setup_type))
+                    not sd.active(dec.setup_type, 'buy'))
 
         sd2 = X.XtrStanddown(None)
         a_mixed = _assess(m5=_tf(close=2650.0, atr=2.0, adx=22), m15="mixed", h1="bullish")
@@ -3164,10 +3168,10 @@ def test_xtr_logic() -> bool:
             sd2.record_entry(tk, dec2, px, a_mixed)
         sd2.update_from_closed([{"ticket": 1, "pnl_dollars": -5, "time": t0},
                                 {"ticket": 2, "pnl_dollars": -5, "time": t0 + _td(minutes=5)}])
-        before_flip = sd2.active(dec2.setup_type)
+        before_flip = sd2.active(dec2.setup_type, 'buy')
         sd2.release_if_due(_assess(m5=_tf(close=2650.0, adx=22), m15="bullish", h1="bullish"))
         ok &= check("released when an HTF turns clearly in favor where it was mixed at the last loss",
-                    before_flip and not sd2.active(dec2.setup_type))
+                    before_flip and not sd2.active(dec2.setup_type, 'buy'))
 
         sd3 = X.XtrStanddown(None)
         for tk, px in ((7, 2650.0), (8, 2670.0)):
@@ -3175,10 +3179,44 @@ def test_xtr_logic() -> bool:
         sd3.update_from_closed([{"ticket": 7, "pnl_dollars": -5, "time": t0},
                                 {"ticket": 8, "pnl_dollars": -5, "time": t0 + _td(minutes=5)}])
         ok &= check("two losses far apart (different ranges) do not stand down",
-                    not sd3.active(dec.setup_type) and sd3.losses[dec.setup_type]["count"] == 1)
+                    not sd3.active(dec.setup_type, 'buy') and sd3.losses[X.XtrStanddown.key(dec.setup_type, "buy")]["count"] == 1)
         sd3.record_entry(9, dec, 2670.5, a)
         sd3.update_from_closed([{"ticket": 9, "pnl_dollars": 6, "time": t0 + _td(minutes=9)}])
-        ok &= check("a win resets that setup's loss count", dec.setup_type not in sd3.losses)
+        ok &= check("a win resets that setup's loss count", X.XtrStanddown.key(dec.setup_type, "buy") not in sd3.losses)
+
+        sd7 = X.XtrStanddown(None)
+        for tk, px in ((31, 2650.0), (32, 2650.5)):
+            sd7.record_entry(tk, dec, px, a)
+        sd7.update_from_closed([{"ticket": 31, "pnl_dollars": -5, "time": t0},
+                                {"ticket": 32, "pnl_dollars": -5, "time": t0 + _td(minutes=5)}])
+        ok &= check("the stand-down is per direction: two failed buys never block a sell",
+                    sd7.active(dec.setup_type, "buy") and not sd7.active(dec.setup_type, "sell"))
+        sd4 = X.XtrStanddown(None)
+        for tk, d_ in ((21, "buy"), (22, "sell")):
+            sd4.record_entry(tk, X.evaluate(d_, a, cfg, None), 2650.0, a)
+        sd4.update_from_closed([{"ticket": 21, "pnl_dollars": -5, "time": t0},
+                                {"ticket": 22, "pnl_dollars": -5, "time": t0 + _td(minutes=5)}])
+        ok &= check("a buy loss then a sell loss is not two losses in a row on one setup",
+                    not any(sd4.active(s_, d_) for s_ in (X.TREND_CONTINUATION, X.EXTENDED_CHASE,
+                                                           X.RSI_EXTREME_BOUNCE, X.BOUNCE_FAILURE_REVERSAL)
+                            for d_ in ("buy", "sell")), sd4.losses)
+        bad = os.path.join(tmp, "bad_state.json")
+        with open(bad, "w") as f:
+            json.dump({"open": {"5": {"setup": "x"}, "6": dict(sd4.open.get("21", {}) or
+                       {"setup": "trend_continuation", "entry": 2650.0, "atr": 2.0, "direction": "buy",
+                        "m15": "bullish", "h1": "bullish"})},
+                       "losses": {"trend_continuation": {"count": 2}, "old|buy": {"count": "2"}},
+                       "seen": [1, "2"]}, f)
+        sd5 = X.XtrStanddown(bad)
+        sd5.release_if_due(a)
+        ok &= check("a malformed state file loads without raising: bad records dropped, good kept",
+                    list(sd5.open) == ["6"] and sd5.losses == {} and sd5.seen == ["1", "2"],
+                    (sd5.open, sd5.losses, sd5.seen))
+        sd6 = X.XtrStanddown(None)
+        for tk in range(X.XtrStanddown.MAX_OPEN + 5):
+            sd6.record_entry(tk + 1, dec, 2650.0, a)
+        ok &= check("tickets awaiting a close are capped (oldest dropped)",
+                    len(sd6.open) == X.XtrStanddown.MAX_OPEN and "1" not in sd6.open, len(sd6.open))
 
     def accelerating(sign):
         # A trend that keeps accelerating: EMA9 > EMA21, RSI > 50 and a

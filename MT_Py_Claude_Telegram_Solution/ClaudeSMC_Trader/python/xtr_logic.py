@@ -232,8 +232,9 @@ def evaluate(direction: str, a: XtrAssessment, cfg, standdown: "XtrStanddown | N
     elif setup == BOUNCE_FAILURE_REVERSAL and not reversal_confirmation_passes(direction, a.m5):
         block = (f"XTR: bounce-failure entry before the M5 MACD histogram crossed zero "
                  f"({a.m5.macd_hist:+.3f}) - wait one more bar")
-    elif standdown is not None and standdown.active(setup):
-        block = f"XTR: stand-down on {setup.replace('_', ' ')} after 2 losses in this range"
+    elif standdown is not None and standdown.active(setup, direction):
+        block = (f"XTR: stand-down on {direction} {setup.replace('_', ' ')} "
+                 "after 2 losses in this range")
     elif cfg.xtr_gate == "require_alignment":
         triggered = a.m5_direction == direction or a.bounce_direction == direction
         if not triggered:
@@ -278,20 +279,35 @@ class XtrStanddown:
     works across restarts; dry-run trades have no ticket and teach nothing.
     """
 
+    MAX_OPEN = 200   # tickets awaiting their close; older ones are dropped
+
     def __init__(self, path: str | None):
         self.path = path
         self.open: dict = {}      # ticket -> {setup, entry, atr, direction, m15, h1}
-        self.losses: dict = {}    # setup -> {count, entry, atr, direction, m15, h1}
+        self.losses: dict = {}    # "setup|direction" -> {count, entry, atr, direction, m15, h1}
         self.seen: list = []      # tickets already counted
         if path and os.path.exists(path):
             try:
                 with open(path) as f:
                     saved = json.load(f)
-                self.open = dict(saved.get("open", {}))
-                self.losses = dict(saved.get("losses", {}))
-                self.seen = list(saved.get("seen", []))
+                # Only well-formed entries survive a load: one hand-edited
+                # or truncated record must not raise on every bar.
+                self.open = {str(k): v for k, v in dict(saved.get("open", {})).items()
+                             if _valid_record(v)}
+                self.losses = {k: v for k, v in dict(saved.get("losses", {})).items()
+                               if "|" in str(k) and _valid_record(v)
+                               and isinstance(v.get("count"), int)}
+                self.seen = [str(t) for t in list(saved.get("seen", []))]
             except (OSError, ValueError, TypeError, AttributeError) as exc:
                 log.warning("Could not read %s (%s) - XTR stand-down state starts fresh.", path, exc)
+                self.open, self.losses, self.seen = {}, {}, []
+
+    @staticmethod
+    def key(setup: str, direction: str) -> str:
+        """Losses count per setup type AND direction: two failed buys never
+        stand down sells of the same setup type, and a buy loss followed
+        by a sell loss is not "two losses in a row" on one setup."""
+        return f"{setup}|{direction}"
 
     def save(self) -> None:
         if not self.path:
@@ -310,6 +326,8 @@ class XtrStanddown:
             return
         self.open[str(ticket)] = {"setup": decision.setup_type, "entry": entry, "atr": a.m5.atr14,
                                   "direction": decision.direction, "m15": a.m15_class, "h1": a.h1_class}
+        while len(self.open) > self.MAX_OPEN:   # a close never seen (history window) - oldest first
+            self.open.pop(next(iter(self.open)))
         self.save()
 
     def update_from_closed(self, closed_trades: list) -> None:
@@ -323,20 +341,20 @@ class XtrStanddown:
             self.seen.append(key)
             self.open.pop(key, None)
             changed = True
-            setup = info["setup"]
+            k = self.key(info["setup"], info["direction"])
             if t["pnl_dollars"] < 0:
-                prev = self.losses.get(setup)
+                prev = self.losses.get(k)
                 same_range = prev is not None and abs(info["entry"] - prev["entry"]) < max(info["atr"], 1e-9)
                 count = prev["count"] + 1 if same_range else 1
-                self.losses[setup] = {**info, "count": count}
+                self.losses[k] = {**info, "count": count}
             else:
-                self.losses.pop(setup, None)
+                self.losses.pop(k, None)
         if changed:
             self.save()
 
     def release_if_due(self, a: XtrAssessment) -> None:
         changed = False
-        for setup, info in list(self.losses.items()):
+        for k, info in list(self.losses.items()):
             if info["count"] < 2:
                 continue
             breakout = abs(a.m5.close - info["entry"]) > info["atr"] and a.m5.adx14 >= 30.0
@@ -344,14 +362,24 @@ class XtrStanddown:
             htf_flip = ((a.m15_class == want and info["m15"] != want)
                         or (a.h1_class == want and info["h1"] != want))
             if breakout or htf_flip:
-                log.info("XTR stand-down on %s lifted (%s).", setup,
+                log.info("XTR stand-down on %s lifted (%s).", k.replace("|", " "),
                          "decisive breakout with ADX >= 30" if breakout else "HTF turned in favor")
-                self.losses.pop(setup)
+                self.losses.pop(k)
                 changed = True
         if changed:
             self.save()
 
-    def active(self, setup: str) -> bool:
-        info = self.losses.get(setup)
+    def active(self, setup: str, direction: str) -> bool:
+        info = self.losses.get(self.key(setup, direction))
         return bool(info) and info["count"] >= 2
+
+
+def _valid_record(v) -> bool:
+    """A saved open/loss record has every field the stand-down reads."""
+    try:
+        return (isinstance(v, dict) and v["direction"] in _CLASS_OF and isinstance(v["setup"], str)
+                and float(v["entry"]) > 0 and float(v["atr"]) >= 0
+                and isinstance(v["m15"], str) and isinstance(v["h1"], str))
+    except (KeyError, TypeError, ValueError):
+        return False
 
