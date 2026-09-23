@@ -59,7 +59,7 @@ def structure_targets(plan, targets, limit: int = 2) -> list[float]:
 
 def format_full_conviction_message(symbol: str, verdict, executed: bool,
                                     reject_reason: str = "", plan=None, news_note: str = "",
-                                    dry_run: bool = False, digits: int = 2) -> str:
+                                    dry_run: bool = False, digits: int = 2, xtr_note: str = "") -> str:
     """verdict is a claude_advisor.ConfluenceVerdict. `executed`/
     `reject_reason`/`plan`/`news_note` come straight from the
     executor.Decision this verdict produced (plan is an executor.TradePlan,
@@ -87,6 +87,8 @@ def format_full_conviction_message(symbol: str, verdict, executed: bool,
                 lines.append(f"TP{i}: {f(target)} (Claude's structure target - the trail decides the exit)")
     elif verdict.take_profit_targets:
         lines.append("Targets: " + ", ".join(f"{t:.{digits}f}" for t in verdict.take_profit_targets[:3]))
+    if xtr_note:
+        lines.append(f"XTR: {xtr_note}")
     if news_note:
         lines.append(f"News check: {news_note}")
     lines.append(f"Reasoning: {verdict.reasoning}")

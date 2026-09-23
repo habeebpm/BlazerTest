@@ -164,6 +164,19 @@ agrees with your direction as corroboration, and one against it as a \
 reason for caution - the market may already have priced it in, so it is \
 context, not a rule.
 
+`xtr` (null when unavailable) is a mechanical M5/M15/H1 alignment read from \
+a separately forward-tested gold scalping rulebook. Each timeframe is \
+"bullish"/"bearish" only when EMA9 vs EMA21, RSI14 vs 50 and the MACD \
+histogram ALL agree, else "mixed". `buy`/`sell` preview the conviction \
+(full = M15 and H1 both agree, reduced = one agrees, unaligned = both \
+mixed, opposed = one clearly against) and the setup type. An entry against \
+a clearly opposed M15 or H1 is refused mechanically after your verdict, as \
+are an extended chase whose M5 histogram has stopped accelerating and a \
+bounce-failure entry before the histogram crosses zero - so do not call \
+"full" for a direction whose preview says "opposed". Prefer full over \
+reduced alignment; in a ranging regime (M5 ADX < 25) an RSI-extreme bounce \
+at the Bollinger band is the rulebook's best-performing setup.
+
 `recent_performance` summarizes this system's own last several closed trades \
 (win/loss count, win rate, net P&L) - context only, never a mechanical gate: \
 it does not change what counts as a valid setup. Use it the way a disciplined \

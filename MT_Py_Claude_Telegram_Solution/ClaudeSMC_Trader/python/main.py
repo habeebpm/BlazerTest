@@ -29,6 +29,7 @@ import ml_advisor
 import mt5_gateway as gw
 import news_check
 import telegram_alert
+import xtr_logic
 from config import AdvisorConfig
 
 log = logging.getLogger("main")
@@ -114,6 +115,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.news_check_web_search = True
     if args.news_check_fail_closed:
         cfg.news_check_fail_closed = True
+    if args.xtr_gate:
+        cfg.xtr_gate = args.xtr_gate
     if args.min_confluence is not None:
         cfg.min_confluence_count = args.min_confluence
     if args.allow_partial_conviction:
@@ -396,7 +399,39 @@ def claude_paused(cfg: AdvisorConfig, gateway=gw, retry_delay: float = 0.2) -> b
     return _last_pause_state["paused"]
 
 
-def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
+_xtr_warned = {"at": 0.0}
+
+
+def xtr_assessment(cfg: AdvisorConfig):
+    """The XTR M5/M15/H1 reading, or None (gate off, or bars unavailable -
+    logged at most every 30 minutes; the gate is then skipped, never
+    blocking trading on a data hiccup)."""
+    if cfg.xtr_gate == "off":
+        return None
+    try:
+        return xtr_logic.assess(gw, cfg.symbol, cfg.xtr_bars)
+    except Exception as exc:
+        if time.time() - _xtr_warned["at"] > 1800:
+            _xtr_warned["at"] = time.time()
+            log.warning("XTR alignment unavailable this cycle (%s) - its gate is skipped.", exc)
+        return None
+
+
+def xtr_skip_reason(cfg: AdvisorConfig, a) -> str:
+    """Before the paid Claude call: "" unless the XTR gate would reject
+    EVERY direction anyway (M15 and H1 clearly against each other, or - in
+    require_alignment mode - no M5 trigger either way)."""
+    if a is None or cfg.xtr_gate == "off":
+        return ""
+    if all(xtr_logic.grade_conviction(d, a.m15_class, a.h1_class) == xtr_logic.OPPOSED
+           for d in ("buy", "sell")):
+        return f"XTR: M15 {a.m15_class} vs H1 {a.h1_class} - every direction is against a clear HTF"
+    if cfg.xtr_gate == "require_alignment" and a.m5_direction is None and a.bounce_direction is None:
+        return "XTR: no clean M5 trigger in either direction"
+    return ""
+
+
+def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> None:
     equity = gw.account_equity()
     gap = day.roll(equity)
     if gap is not None and cfg.send_performance_digest and cfg.telegram_alert_bot_token \
@@ -410,6 +445,10 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     # being managed by the EA either way.
     skip_reason = (CLAUDE_PAUSED_TEXT if claude_paused(cfg) else
                    day.block_reason() or executor.verdict_independent_block(gw, cfg, day.trades_today))
+    xtr_a = None
+    if not skip_reason:
+        xtr_a = xtr_assessment(cfg)
+        skip_reason = xtr_skip_reason(cfg, xtr_a)
     if skip_reason:
         log.info("No evaluation this cycle (no Claude call): %s", skip_reason)
         if cfg.last_verdict_filename:
@@ -420,9 +459,21 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
                 log.debug("Could not update the last-verdict file.", exc_info=True)
         return
     features = market_intel.build_feature_snapshot(gw, cfg)
+    features["xtr"] = xtr_logic.snapshot_context(xtr_a)
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
               verdict.direction, verdict.conviction, verdict.confluence_count, verdict.reasoning)
+    xtr_decision = None
+    if xtr_a is not None and verdict.direction in ("buy", "sell"):
+        if xtr_state is not None:
+            try:
+                xtr_state.update_from_closed(gw.recent_closed_trades(cfg.symbol, cfg.magic, count=50))
+            except Exception:
+                log.debug("Could not update the XTR stand-down state.", exc_info=True)
+            xtr_state.release_if_due(xtr_a)
+        xtr_decision = xtr_logic.evaluate(verdict.direction, xtr_a, cfg, xtr_state)
+        log.info("XTR: %s%s", xtr_decision.summary(),
+                 f" - {xtr_decision.block_reason}" if xtr_decision.block_reason else "")
     # Re-checked right before ordering: the Claude call takes seconds, and a
     # PauseClaudeHab/PauseHab tapped meanwhile must still stop this entry.
     block = day.block_reason() or (
@@ -442,7 +493,9 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
 
     decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, block,
                                 day_start_equity=day.day_start_equity,
-                                pre_trade_check=pre_trade_check)
+                                pre_trade_check=pre_trade_check, xtr=xtr_decision)
+    if decision.executed and xtr_decision is not None and xtr_state is not None and decision.plan:
+        xtr_state.record_entry(decision.ticket, xtr_decision, decision.plan.entry_price, xtr_a)
     if decision.executed:
         day.trades_today += 1
         day.save()
@@ -487,7 +540,8 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
                 log.debug("Could not price the alert's levels.", exc_info=True)
         message = telegram_alert.format_full_conviction_message(
             cfg.symbol, verdict, decision.executed, decision.reject_reason, plan=plan,
-            news_note=decision.news_note, dry_run=cfg.dry_run, digits=getattr(spec, "digits", 2))
+            news_note=decision.news_note, dry_run=cfg.dry_run, digits=getattr(spec, "digits", 2),
+            xtr_note=xtr_decision.summary() if xtr_decision is not None else "")
         threading.Thread(
             target=telegram_alert.send_alert,
             args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, message),
@@ -610,6 +664,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "headlines only")
     parser.add_argument("--news-check-no-web-search", action="store_true",
                         dest="news_check_no_web_search", help=argparse.SUPPRESS)  # the default now
+    parser.add_argument("--xtr-gate", choices=["off", "block_opposed", "require_alignment"],
+                        dest="xtr_gate",
+                        help="XTR M5/M15/H1 alignment gate on Claude's entries (default block_opposed: "
+                             "never against a clearly opposed M15/H1, plus the momentum filters and the "
+                             "two-loss stand-down; require_alignment also needs the M5 trigger; off = "
+                             "context only) - see xtr_logic.py")
     parser.add_argument("--news-check-fail-closed", action="store_true", dest="news_check_fail_closed",
                         help="refuse the entry when the breaking-news check cannot run at all "
                              "(default: trade anyway and say so in the log and alert)")
@@ -709,6 +769,8 @@ def main(argv: list | None = None) -> int:
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off",
                   f"after {cfg.stale_cycle_alert_minutes:g}min" if (cfg.stale_cycle_alert_minutes > 0
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
+        log.info("XTR alignment gate: %s (ranging, not full conviction -> size x%g)",
+                 cfg.xtr_gate, cfg.xtr_ranging_risk_mult)
         log.info("Breaking-news check before each entry: %s",
                  "off" if not cfg.breaking_news_check else
                  f"{len(cfg.news_feeds)} free RSS feed(s)"
@@ -735,9 +797,10 @@ def main(argv: list | None = None) -> int:
                  f" | problems: {'; '.join(result.errors)}" if result.errors else "")
         return 0
     day = DayRoll(state_path=os.path.join(cfg.log_dir, "day_state.json"))
+    xtr_state = xtr_logic.XtrStanddown(os.path.join(cfg.log_dir, "xtr_state.json"))
 
     if args.once:
-        run_once(client, cfg, spec, day)
+        run_once(client, cfg, spec, day, xtr_state)
         return 0
 
     log.info("Watching %s for a new closed %s candle every %ds - Ctrl+C to stop.",
@@ -757,7 +820,7 @@ def main(argv: list | None = None) -> int:
                 # skipped forever - but at most MAX_ATTEMPTS_PER_BAR times, so
                 # a repeating error can't re-call Claude (or re-send an order)
                 # every poll for the whole bar.
-                run_once(client, cfg, spec, day)
+                run_once(client, cfg, spec, day, xtr_state)
                 last_bar_time = bar_time
                 failed_bar, failed_attempts = None, 0
             heartbeat.mark_cycle_success()

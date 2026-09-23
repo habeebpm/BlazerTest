@@ -51,6 +51,7 @@ import market_intel
 import ml_advisor
 import news_check
 import telegram_alert
+import xtr_logic
 import mt5_gateway as gw
 from claude_advisor import ConfluenceLeg, ConfluenceVerdict
 from config import AdvisorConfig
@@ -3003,6 +3004,231 @@ def test_entry_levels_and_alert() -> bool:
                 os.environ[k] = v
     return ok
 
+
+# --------------------------------------------------------------------------- #
+# XTR alignment gate (xtr_logic.py)
+# --------------------------------------------------------------------------- #
+def _tf(cls="bullish", close=2650.0, rsi=58.0, hist=0.2, hist_prev=0.1, adx=30.0, atr=2.0,
+        upper=2660.0, lower=2640.0):
+    return xtr_logic.TfRead(close=close, ema9=0, ema21=0, rsi14=rsi, macd_hist=hist, macd_hist_prev=hist_prev,
+                            bb_upper=upper, bb_lower=lower, adx14=adx, atr14=atr, cls=cls)
+
+
+def _assess(m5=None, m15="bullish", h1="bullish", recent=None):
+    m5 = m5 or _tf()
+    return xtr_logic.XtrAssessment(m5=m5, m15_class=m15, h1_class=h1,
+                                   m5_direction=xtr_logic.m5_signal(m5),
+                                   bounce_direction=xtr_logic.bounce_signal(m5),
+                                   m5_recent_classes=recent if recent is not None else ["bullish"] * 6)
+
+
+class _BarsGateway:
+    def __init__(self, frames):
+        self.frames = frames
+
+    def get_bars(self, symbol, tf, count):
+        return self.frames[tf].tail(count).reset_index(drop=True)
+
+
+def test_xtr_logic() -> bool:
+    print("\n=== 31. XTR alignment gate (M5 trigger, M15/H1 alignment, filters, stand-down) ===")
+    ok = True
+    cfg = AdvisorConfig()
+    X = xtr_logic
+
+    ok &= check("a timeframe is clear only when EMA9/21, RSI and MACD histogram ALL agree (2 of 3 = mixed)",
+                X.classify(2, 1, 55, 0.1) == X.BULLISH and X.classify(1, 2, 45, -0.1) == X.BEARISH
+                and X.classify(2, 1, 55, -0.1) == X.MIXED and X.classify(1, 2, 55, -0.1) == X.MIXED)
+    grades = {(m15, h1): X.grade_conviction("buy", m15, h1)
+              for m15 in ("bullish", "bearish", "mixed") for h1 in ("bullish", "bearish", "mixed")}
+    ok &= check("conviction: both agree = full, one = reduced, both mixed = unaligned, any clear opposite = opposed",
+                grades[("bullish", "bullish")] == X.FULL and grades[("bullish", "mixed")] == X.REDUCED
+                and grades[("mixed", "bullish")] == X.REDUCED and grades[("mixed", "mixed")] == X.UNALIGNED
+                and grades[("bullish", "bearish")] == X.OPPOSED and grades[("bearish", "mixed")] == X.OPPOSED,
+                grades)
+
+    d = X.evaluate("buy", _assess(m15="bearish"), cfg)
+    ok &= check("a BUY against a clearly bearish M15 is blocked (the spec's most important rule)",
+                d.conviction == X.OPPOSED and "M15 clearly bearish" in d.block_reason, d.block_reason)
+    d = X.evaluate("sell", _assess(m15="bearish", h1="bearish", m5=_tf("bearish", rsi=42, hist=-0.2, hist_prev=-0.1),
+                                   recent=["bearish"] * 6), cfg)
+    ok &= check("a SELL with M15 and H1 both bearish is full conviction trend continuation, allowed at full size",
+                d.conviction == X.FULL and d.setup_type == X.TREND_CONTINUATION and not d.block_reason
+                and d.risk_multiplier == 1.0, d)
+
+    chase_decel = _assess(m5=_tf(rsi=68, hist=0.3, hist_prev=0.5))
+    chase_accel = _assess(m5=_tf(rsi=68, hist=0.5, hist_prev=0.3))
+    d1, d2 = X.evaluate("buy", chase_decel, cfg), X.evaluate("buy", chase_accel, cfg)
+    ok &= check("6a: an extended BUY (RSI > 65) is blocked when the M5 histogram stopped accelerating, allowed "
+                "while it still rises", d1.setup_type == X.EXTENDED_CHASE and "no longer accelerating" in d1.block_reason
+                and d2.setup_type == X.EXTENDED_CHASE and not d2.block_reason, (d1.block_reason, d2.block_reason))
+
+    before = _assess(m5=_tf("mixed", rsi=52, hist=-0.12, hist_prev=-0.3), recent=["bearish", "bearish", "mixed"])
+    after = _assess(m5=_tf("bullish", rsi=55, hist=0.05, hist_prev=-0.12), recent=["bearish", "bearish", "mixed"])
+    d1, d2 = X.evaluate("buy", before, cfg), X.evaluate("buy", after, cfg)
+    ok &= check("6b: a bounce-failure BUY before the histogram crossed zero waits (trade 59), after the cross passes",
+                d1.setup_type == X.BOUNCE_FAILURE_REVERSAL and "crossed zero" in d1.block_reason
+                and d2.setup_type == X.BOUNCE_FAILURE_REVERSAL and not d2.block_reason, (d1, d2))
+
+    bounce = _assess(m5=_tf("bearish", close=2639.0, rsi=27, hist=-0.4, hist_prev=-0.5, adx=18, lower=2640.0),
+                     m15="mixed", h1="bullish", recent=["bearish"] * 6)
+    d = X.evaluate("buy", bounce, cfg)
+    ok &= check("5a: RSI < 30 at the lower band in a ranging market is an RSI-extreme bounce (not a 'failed bounce'), "
+                "flagged 6c, sized down (ranging + reduced)",
+                d.setup_type == X.RSI_EXTREME_BOUNCE and not d.block_reason and "RSI 27" in d.caution
+                and d.risk_multiplier == cfg.xtr_ranging_risk_mult and d.regime == X.RANGING, d)
+
+    strict = AdvisorConfig(xtr_gate="require_alignment")
+    no_trigger = _assess(m5=_tf("mixed", rsi=52, hist=-0.1, hist_prev=-0.2), recent=["mixed"] * 6)
+    unaligned = _assess(m15="mixed", h1="mixed")
+    ok &= check("require_alignment: no clean M5 trigger -> blocked; both HTFs mixed -> blocked; "
+                "block_opposed (default) allows both",
+                "no clean M5 trigger" in X.evaluate("buy", no_trigger, strict).block_reason
+                and "both mixed" in X.evaluate("buy", unaligned, strict).block_reason
+                and not X.evaluate("buy", no_trigger, cfg).block_reason
+                and not X.evaluate("buy", unaligned, cfg).block_reason)
+
+    import tempfile
+    from datetime import timedelta as _td
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "xtr_state.json")
+        sd = X.XtrStanddown(path)
+        a = _assess(m5=_tf(close=2650.0, atr=2.0, adx=22))
+        dec = X.evaluate("buy", a, cfg, sd)
+        t0 = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
+        sd.record_entry(101, dec, 2650.0, a)
+        sd.record_entry(102, dec, 2651.0, a)
+        sd.update_from_closed([{"ticket": 101, "pnl_dollars": -6.0, "time": t0},
+                               {"ticket": 102, "pnl_dollars": -6.0, "time": t0 + _td(minutes=20)}])
+        ok &= check("sec. 8: two losses on the same setup type within 1 ATR -> that setup stands down",
+                    sd.active(dec.setup_type)
+                    and "stand-down" in X.evaluate("buy", a, cfg, sd).block_reason, sd.losses)
+        ok &= check("the stand-down survives a restart (state file, written atomically)",
+                    X.XtrStanddown(path).active(dec.setup_type) and not os.path.exists(path + ".tmp"))
+        sd.update_from_closed([{"ticket": 101, "pnl_dollars": -6.0, "time": t0}])
+        ok &= check("a closed trade is never counted twice", sd.losses[dec.setup_type]["count"] == 2)
+        sd.release_if_due(_assess(m5=_tf(close=2652.0, adx=35)))
+        ok &= check("no release for a close still inside the range, even with ADX >= 30",
+                    sd.active(dec.setup_type))
+        sd.release_if_due(_assess(m5=_tf(close=2656.0, adx=34.1)))
+        ok &= check("released by a decisive close beyond the range with ADX >= 30 (trade 54)",
+                    not sd.active(dec.setup_type))
+
+        sd2 = X.XtrStanddown(None)
+        a_mixed = _assess(m5=_tf(close=2650.0, atr=2.0, adx=22), m15="mixed", h1="bullish")
+        dec2 = X.evaluate("buy", a_mixed, cfg, sd2)
+        for tk, px in ((1, 2650.0), (2, 2650.5)):
+            sd2.record_entry(tk, dec2, px, a_mixed)
+        sd2.update_from_closed([{"ticket": 1, "pnl_dollars": -5, "time": t0},
+                                {"ticket": 2, "pnl_dollars": -5, "time": t0 + _td(minutes=5)}])
+        before_flip = sd2.active(dec2.setup_type)
+        sd2.release_if_due(_assess(m5=_tf(close=2650.0, adx=22), m15="bullish", h1="bullish"))
+        ok &= check("released when an HTF turns clearly in favor where it was mixed at the last loss",
+                    before_flip and not sd2.active(dec2.setup_type))
+
+        sd3 = X.XtrStanddown(None)
+        for tk, px in ((7, 2650.0), (8, 2670.0)):
+            sd3.record_entry(tk, dec, px, a)
+        sd3.update_from_closed([{"ticket": 7, "pnl_dollars": -5, "time": t0},
+                                {"ticket": 8, "pnl_dollars": -5, "time": t0 + _td(minutes=5)}])
+        ok &= check("two losses far apart (different ranges) do not stand down",
+                    not sd3.active(dec.setup_type) and sd3.losses[dec.setup_type]["count"] == 1)
+        sd3.record_entry(9, dec, 2670.5, a)
+        sd3.update_from_closed([{"ticket": 9, "pnl_dollars": 6, "time": t0 + _td(minutes=9)}])
+        ok &= check("a win resets that setup's loss count", dec.setup_type not in sd3.losses)
+
+    def accelerating(sign):
+        # A trend that keeps accelerating: EMA9 > EMA21, RSI > 50 and a
+        # positive (rising) MACD histogram all at once - a steady linear
+        # drift would leave the histogram hovering around zero ("mixed").
+        df = make_trending_df(n=220, drift=0.0, noise=0.02)
+        df["close"] = 2650.0 + sign * 0.004 * (np.arange(220) ** 2)
+        df["open"] = df["close"].shift(1).fillna(df["close"].iloc[0])
+        df["high"] = df[["open", "close"]].max(axis=1) + 0.1
+        df["low"] = df[["open", "close"]].min(axis=1) - 0.1
+        return df
+    up, down = accelerating(+1), accelerating(-1)
+    gw_up = _BarsGateway({"M5": up, "M15": up, "H1": up})
+    a_up = X.assess(gw_up, "XAUUSD", 200)
+    ok &= check("assess() reads M5/M15/H1 from the gateway (closed bars) - a steady uptrend reads bullish everywhere",
+                a_up.m15_class == X.BULLISH and a_up.h1_class == X.BULLISH and a_up.m5_direction == "buy",
+                (a_up.m15_class, a_up.h1_class, a_up.m5_direction))
+    try:
+        X.assess(_BarsGateway({"M5": up.tail(30), "M15": up, "H1": up}), "XAUUSD", 200)
+        short_raises = False
+    except ValueError:
+        short_raises = True
+    ok &= check("too little history raises (the caller then skips the gate) instead of reading unwarmed EMAs",
+                short_raises)
+
+    split = X.assess(_BarsGateway({"M5": up, "M15": up, "H1": down}), "XAUUSD", 200)
+    ok &= check("M15 bullish vs H1 bearish blocks every direction -> the paid Claude call is skipped",
+                main_mod.xtr_skip_reason(cfg, split).startswith("XTR: M15 bullish vs H1 bearish")
+                and main_mod.xtr_skip_reason(cfg, a_up) == ""
+                and main_mod.xtr_skip_reason(AdvisorConfig(xtr_gate="off"), split) == "")
+    ok &= check("the snapshot section Claude reads previews both directions",
+                X.snapshot_context(split)["buy"]["conviction"] == X.OPPOSED
+                and X.snapshot_context(a_up)["buy"]["conviction"] == X.FULL
+                and X.snapshot_context(None) is None)
+
+    spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+                         volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+    cfg_risk = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=True,
+                             risk_percent=2.0)
+    fg_block = FakeGateway()
+    blocked = X.evaluate("buy", _assess(h1="bearish"), cfg_risk)
+    d = executor.execute(fg_block, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=blocked)
+    ok &= check("executor: an XTR block rejects the entry with its reason and sends no order",
+                not d.executed and fg_block.orders_sent == [] and d.reject_reason.startswith("XTR:"), d.reject_reason)
+    fg_full, fg_half = FakeGateway(), FakeGateway()
+    full = X.evaluate("buy", _assess(), cfg_risk)
+    half = X.evaluate("buy", _assess(m5=_tf(adx=18), m15="mixed"), cfg_risk)
+    executor.execute(fg_full, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=full)
+    executor.execute(fg_half, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0, xtr=half)
+    lots_full, lots_half = fg_full.orders_sent[0][1], fg_half.orders_sent[0][1]
+    ok &= check("sec. 7: ranging + reduced conviction halves the risk-sized lot; trending full keeps it",
+                half.risk_multiplier == 0.5 and abs(lots_half - lots_full / 2) <= 0.011, (lots_full, lots_half))
+
+    msg = telegram_alert.format_full_conviction_message("XAUUSD", make_verdict(), True, xtr_note=full.summary())
+    ok &= check("the Telegram alert carries the XTR reading",
+                "XTR: FULL conviction, trend continuation, trending" in msg, msg)
+    import threading as _threading
+    originals = (main_mod.gw, main_mod.market_intel.build_feature_snapshot, main_mod.claude_advisor.get_verdict,
+                 main_mod.news_check.check_before_trade, main_mod.telegram_alert.send_alert,
+                 main_mod.claude_paused, main_mod.xtr_logic.assess)
+    sent, calls = [], []
+    try:
+        fake = FakeRunOnceGateway(bid=2350.0, ask=2350.2)
+        main_mod.gw = fake
+        main_mod.market_intel.build_feature_snapshot = lambda g, c: {"fake": True}
+        main_mod.claude_advisor.get_verdict = lambda client, c, f: calls.append(f) or make_verdict("buy", 3, "full")
+        main_mod.news_check.check_before_trade = lambda *a, **k: news_check.NewsCheckResult(ran=True, note="clear")
+        main_mod.telegram_alert.send_alert = lambda t, c, text, **kw: sent.append(text) or True
+        main_mod.claude_paused = lambda c, gateway=None: False
+        main_mod.xtr_logic.assess = lambda g, sym, bars=200, recent=6: _assess(m15="mixed", h1="bearish")
+        cfg_run = AdvisorConfig(dry_run=True, use_risk_percent=False, log_dir="/tmp/claudesmc_selftest_logs",
+                                telegram_alert_bot_token="T", telegram_alert_chat_id="C",
+                                claude_pause_filename="", send_performance_digest=False)
+        day = main_mod.DayRoll()
+        main_mod.run_once(object(), cfg_run, spec, day, X.XtrStanddown(None))
+        for t in _threading.enumerate():
+            if t is not _threading.current_thread() and t.daemon:
+                t.join(timeout=2)
+        msg = sent[-1] if sent else ""
+        ok &= check("run_once: Claude sees the xtr section; a BUY against a clearly bearish H1 is refused, the "
+                    "alert says why, no order is sent",
+                    calls and calls[0].get("xtr", {}).get("h1_class") == "bearish" and fake.orders_sent == []
+                    and "NOT executed - XTR: H1 clearly bearish" in msg and day.trades_today == 0, msg)
+    finally:
+        (main_mod.gw, main_mod.market_intel.build_feature_snapshot, main_mod.claude_advisor.get_verdict,
+         main_mod.news_check.check_before_trade, main_mod.telegram_alert.send_alert,
+         main_mod.claude_paused, main_mod.xtr_logic.assess) = originals
+
+    ok &= check("--xtr-gate maps to config",
+                main_mod.build_config(main_mod.build_parser().parse_args(["--xtr-gate", "require_alignment"]))
+                .xtr_gate == "require_alignment" and AdvisorConfig().xtr_gate == "block_opposed")
+    return ok
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3036,6 +3262,7 @@ def main() -> int:
         test_econ_calendar(),
         test_breaking_news_check(),
         test_entry_levels_and_alert(),
+        test_xtr_logic(),
     ]
     print()
     if all(results):

@@ -209,6 +209,7 @@ check (no Claude cost, no trades); the EA keeps managing any open trades.
 | Max loss per day | 10% of account - no new trade is opened if it could push the day past 10%, counting trades already open |
 | Max open trades | 5 per direction (Telegram + Claude together) |
 | News filter | No new trades from 15 minutes before to 15 minutes after a high-impact USD event (NFP, CPI, FOMC...), from MT5's own economic calendar |
+| Trend alignment | No trade against a clearly opposed M15 or H1 trend (Telegram and Claude); smaller size in quiet, ranging markets; a setup that lost twice in the same price range pauses |
 | Breaking news | Just before each Claude entry, Claude reads the last 3 hours of free news headlines for **surprise** news on gold or the dollar (war, emergency Fed moves, tariffs...) and cancels the entry if it points the other way |
 | Exit | Stop at $6, lock profit at $6, then trail $3 (per 0.01 lot, scaled with lot size) |
 

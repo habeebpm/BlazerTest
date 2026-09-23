@@ -413,7 +413,44 @@ central-bank gold moves, ...) and judges it against this entry's direction:
 
 Not simulated in `backtest.py` - there is no historical news feed.
 
-### 5. Further optional enhancements
+### 5. XTR alignment gate (on by default)
+
+`python/xtr_logic.py` applies the forward-tested XTR gold scalping rules
+mechanically on top of Claude's verdict, read from the last **closed** M5,
+M15 and H1 bars:
+
+| Rule | What happens |
+|---|---|
+| A timeframe is clearly bullish/bearish only when EMA9 vs EMA21, RSI14 vs 50 and the MACD(12,26,9) histogram **all** agree | 2 of 3 = mixed, never counts |
+| M15 or H1 clearly **against** Claude's direction | Entry refused ("never trade against a clear HTF") |
+| M15 clearly one way, H1 clearly the other | Every direction is blocked, so the **paid Claude call is skipped** that cycle |
+| Extended chase (M5 RSI > 65 / < 35 or outside the Bollinger band) | Only while the M5 MACD histogram is still accelerating |
+| Bounce-failure reversal (M5 bounced against the trend in the last 6 bars and turned back) | Only once the M5 histogram has already crossed zero |
+| RSI-extreme bounce (RSI < 30 at the lower band / > 70 at the upper band, ADX < 25) | Recognised as its own setup type; RSI beyond 30/70 is flagged, never blocked |
+| Ranging (M5 ADX < 25) and not full conviction (both HTFs agreeing) | Risk-sized lot x `xtr_ranging_risk_mult` (0.5) |
+| 2 losses in a row on the same setup type within 1 M5 ATR | That setup stands down until an M5 close beyond the range with ADX >= 30, or an HTF turning clearly in favor (state in `logs/xtr_state.json`, learnt from real MT5 results by ticket) |
+
+Claude also sees the reading (`xtr` in the snapshot: each timeframe's
+class, the M5 trigger, regime and a conviction/setup preview for both
+directions), and the Telegram alert shows it (`XTR: FULL conviction, trend
+continuation, trending`).
+
+`--xtr-gate require_alignment` applies the spec's complete decision flow
+(the M5 trigger must fire in Claude's direction and at least one HTF must
+agree - far fewer trades); `--xtr-gate off` keeps it as context only. If
+M5/M15/H1 bars can't be read the gate is skipped and logged, never halting
+trading. `UnifiedTrader_EA.mq5` applies the same "never against a clear
+M15/H1" rule to Telegram signals (`InpXtrHtfFilter`, on by default).
+
+Not taken from the spec, on purpose: its entry/SL/TP maths (the fixed $6
+stop and $6 TP1 lock is already 1.0R, the spec's own recommended target),
+its breakeven at 0.5 x M5 ATR plus 15-minute window (already available as
+`exit_style="breakeven_r_decay"` / `InpExitStyle`), and its per-pip lot
+formula (sizing here already risks 2% of equity via the broker's tick
+value). The spec's own sample is small (59 trades over 8 days; 13 since its
+last rule change) - treat the dry-run weeks as its real test.
+
+### 6. Further optional enhancements
 
 Everything below is off by default (or takes effect only once the Telegram
 alert credentials from step 3 above are set) - none of it changes existing

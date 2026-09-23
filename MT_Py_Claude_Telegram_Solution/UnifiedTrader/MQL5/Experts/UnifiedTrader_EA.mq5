@@ -314,6 +314,11 @@ input string  InpLastVerdictFilename = "claudesmc_last_verdict.txt"; // Why butt
 input string  InpClaudePauseFilename = "claudesmc_pause.txt";        // PauseClaudeHab/ResumeClaudeHab: MUST match python/config.py's AdvisorConfig.claude_pause_filename
 input bool    InpNotifyTradeClosed   = true;                         // Message InpControlChatId on every closed trade (P/L, equity, today's win%)
 
+input group "=== XTR HTF filter (Telegram entries) - never trade against a clear M15/H1 ==="
+input bool            InpXtrHtfFilter = true;          // Skip a Telegram entry when an HTF below is CLEARLY against it
+input ENUM_TIMEFRAMES InpXtrHtf1      = PERIOD_M15;    // HTF #1 - clear = EMA9 vs EMA21, RSI14 vs 50 and MACD(12,26,9) histogram ALL agree
+input ENUM_TIMEFRAMES InpXtrHtf2      = PERIOD_H1;     // HTF #2 (2-of-3 agreement counts as mixed, never blocks)
+
 input group "=== Economic calendar (MT5 built-in, no API key) - see EconCalendar.mqh ==="
 input bool                 InpNewsFilter         = true;                  // Skip new Telegram entries near important news
 input string               InpNewsCurrencies     = "USD";                 // Currencies to watch, comma-separated (gold is priced in USD)
@@ -349,6 +354,7 @@ int      g_tradesToday   = 0;
 double   g_dayStartEquity = 0.0;             // InpMaxDailyLossPct only - see UpdateDailyTracking/DailyLossBreakerActive
 bool     g_dailyLossHit   = false;           // latches for the rest of the day once InpMaxDailyLossPct is breached
 int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - see OnInit/OnDeinit
+int      g_xtrH[10];                         // InpXtrHtfFilter: EMA9, EMA21, RSI14, MACD, EMA9(MACD) per HTF
 bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab/ResumeTelHab - see file header
 bool     g_claudePaused   = false;           // PauseHab/PauseClaudeHab/ResumeHab/ResumeClaudeHab - see file header
 bool     g_sentControlStartupMsg = false;    // one-shot: the buttons/keyboard intro, sent from TelegramPoll()
@@ -368,6 +374,8 @@ double   BreakevenAtrDistance();
 bool     BreakevenDue(double profit);
 double   PipSize();
 bool     IsAllowedChat(long chatId);
+int      XtrClassify(int slot);
+bool     XtrHtfOpposes(int dir, string &reason);
 datetime DateToDay(datetime t);
 void     UpdateDailyTracking();
 void     SaveDayState();
@@ -457,6 +465,32 @@ int OnInit()
             "this EA cannot tell the two sources' positions apart.");
       return(INIT_PARAMETERS_INCORRECT);
    }
+   ArrayInitialize(g_xtrH, INVALID_HANDLE);
+   if(InpXtrHtfFilter && InpEnableTelegramSignals)
+   {
+      ENUM_TIMEFRAMES tfs[2];
+      tfs[0] = InpXtrHtf1;
+      tfs[1] = InpXtrHtf2;
+      for(int k = 0; k < 2; k++)
+      {
+         g_xtrH[k * 5]     = iMA(_Symbol, tfs[k], 9, 0, MODE_EMA, PRICE_CLOSE);
+         g_xtrH[k * 5 + 1] = iMA(_Symbol, tfs[k], 21, 0, MODE_EMA, PRICE_CLOSE);
+         g_xtrH[k * 5 + 2] = iRSI(_Symbol, tfs[k], 14, PRICE_CLOSE);
+         g_xtrH[k * 5 + 3] = iMACD(_Symbol, tfs[k], 12, 26, 9, PRICE_CLOSE);
+         // The standard (EMA) signal line - MT5's own MACD signal is an SMA,
+         // which would disagree with the spec and xtr_logic.py near zero.
+         if(g_xtrH[k * 5 + 3] != INVALID_HANDLE)
+            g_xtrH[k * 5 + 4] = iMA(_Symbol, tfs[k], 9, 0, MODE_EMA, g_xtrH[k * 5 + 3]);
+      }
+      for(int h = 0; h < 10; h++)
+         if(g_xtrH[h] == INVALID_HANDLE)
+         {
+            Print("UnifiedTrader_EA: could not create the XTR HTF filter indicators - set "
+                  "InpXtrHtfFilter=false to run without it.");
+            return(INIT_FAILED);
+         }
+   }
+
    if(InpExitStyle == EXIT_BREAKEVEN_R_DECAY)
    {
       if(InpBreakevenAtrMult <= 0.0 || InpAtrPeriod <= 0 || InpDecayWindowMinutes <= 0.0)
@@ -698,6 +732,67 @@ void OnDeinit(const int reason)
    if(g_atrHandle != INVALID_HANDLE)
       IndicatorRelease(g_atrHandle);
    g_atrHandle = INVALID_HANDLE;   // globals survive a re-init - never reuse a released handle
+   for(int h = 0; h < 10; h++)
+   {
+      if(g_xtrH[h] != INVALID_HANDLE)
+         IndicatorRelease(g_xtrH[h]);
+      g_xtrH[h] = INVALID_HANDLE;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| XTR HTF class of slot 0 (InpXtrHtf1) or 1 (InpXtrHtf2) on its last |
+//| CLOSED bar: 1 bullish, -1 bearish (EMA9 vs EMA21, RSI14 vs 50 and  |
+//| the MACD histogram = line - EMA9(line) ALL agree), 0 mixed, -2 when |
+//| the data isn't ready yet. Same rule as ClaudeSMC_Trader's           |
+//| xtr_logic.py.                                                       |
+//+------------------------------------------------------------------+
+int XtrClassify(int slot)
+{
+   int base = slot * 5;
+   double e9[1], e21[1], r[1], mLine[1], mSig[1];
+   if(CopyBuffer(g_xtrH[base], 0, 1, 1, e9) != 1 || CopyBuffer(g_xtrH[base + 1], 0, 1, 1, e21) != 1
+      || CopyBuffer(g_xtrH[base + 2], 0, 1, 1, r) != 1 || CopyBuffer(g_xtrH[base + 3], 0, 1, 1, mLine) != 1
+      || CopyBuffer(g_xtrH[base + 4], 0, 1, 1, mSig) != 1)
+      return(-2);
+   bool emaBull  = (e9[0] > e21[0]);
+   bool rsiBull  = (r[0] > 50.0);
+   bool histBull = (mLine[0] - mSig[0] > 0.0);
+   if(emaBull && rsiBull && histBull)
+      return(1);
+   if(!emaBull && !rsiBull && !histBull)
+      return(-1);
+   return(0);
+}
+
+//+------------------------------------------------------------------+
+//| true (with `reason`) when M15 or H1 is CLEARLY against `dir`. An   |
+//| HTF whose data isn't ready never blocks (logged).                  |
+//+------------------------------------------------------------------+
+bool XtrHtfOpposes(int dir, string &reason)
+{
+   reason = "";
+   if(!InpXtrHtfFilter || g_xtrH[0] == INVALID_HANDLE)
+      return(false);
+   int want = (dir == DIR_BUY) ? 1 : -1;
+   for(int k = 0; k < 2; k++)
+   {
+      int c = XtrClassify(k);
+      ENUM_TIMEFRAMES tf = (k == 0) ? InpXtrHtf1 : InpXtrHtf2;
+      string tfName = StringSubstr(EnumToString(tf), 7);
+      if(c == -2)
+      {
+         PrintFormat("UnifiedTrader_EA: XTR HTF filter - %s data not ready, not blocking.", tfName);
+         continue;
+      }
+      if(c == -want)
+      {
+         reason = StringFormat("XTR: %s clearly %s - never trade against a clear HTF", tfName,
+                               c > 0 ? "bullish" : "bearish");
+         return(true);
+      }
+   }
+   return(false);
 }
 
 //+------------------------------------------------------------------+
@@ -2127,6 +2222,14 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       Print("UnifiedTrader_EA: OPEN signal has no clear BUY/SELL direction - ignoring.");
       LogSignalRow(chatId, "OPEN", "", msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, "no BUY/SELL direction", false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   string xtrReason;
+   if(XtrHtfOpposes(msg.direction, xtrReason))
+   {
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", xtrReason);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, xtrReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
 
