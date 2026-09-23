@@ -455,6 +455,27 @@ formula (sizing here already risks 2% of equity via the broker's tick
 value). The spec's own sample is small (59 trades over 8 days; 13 since its
 last rule change) - treat the dry-run weeks as its real test.
 
+### 5a. Companion programs (`main_preset.ini`)
+
+`main.py` also runs the solution's other Python programs - each optional,
+switched on in `main_preset.ini` next to it (`--preset` for another file),
+so one command and one window run everything (`services.py`):
+
+| Section | Program | How |
+|---|---|---|
+| `[relay_bridge]` | `../../python/telegram_relay_bridge.py` | continuous (see 5b) |
+| `[xtr_export]` | `../../XTR_Export/python/xtr_export.py` (VPS Drive upload; on a PC the EA's `InpXtrExport` does it) | continuous |
+| `[ml_retrain]` | `train_ml_model.py` | every `every_days` |
+| `[calibration_report]` | `calibration_report.py` | every `every_days` |
+
+All ship `enabled = false`; `args` passes extra options. Continuous ones
+are supervised child processes - restarted after a crash, stopped for good
+on a configuration error with one Telegram alert, stopped with `main.py`.
+Scheduled ones run when due (last run kept in `logs/services_state.json`,
+so a restart doesn't re-run them) with output in `logs/<section>.log`. A
+bad value switches off only that section (logged). `telegram_copier.py` is
+deliberately not included - `UnifiedTrader_EA` already copies the signals.
+
 ### 5b. Telegram relay bridge inside this program (`--relay`)
 
 `python main.py --relay ...` also runs `../../python/telegram_relay_bridge.py`

@@ -58,13 +58,18 @@ def login(bridge_dir: str = BRIDGE_DIR) -> int:
     return subprocess.call([sys.executable, BRIDGE_SCRIPT, "--check"], cwd=bridge_dir)
 
 
-class RelaySupervisor:
-    def __init__(self, bridge_dir: str = BRIDGE_DIR, extra_args=(), on_fatal=None,
-                 first_delay: float = 30.0, max_delay: float = 600.0, healthy_after: float = 600.0,
-                 command=None):
-        self.bridge_dir = bridge_dir
-        self.command = list(command) if command else [sys.executable, BRIDGE_SCRIPT, "--no-login",
-                                                      *extra_args]
+class ChildSupervisor:
+    """Keeps one companion script running as a child process: restart after
+    a crash/exit (first_delay doubling to max_delay, reset once it ran
+    healthy_after seconds), stop for good on an exit code in `fatal`
+    ({code: reason}; on_fatal(reason) is called once), stop() on exit."""
+
+    def __init__(self, name: str, command, cwd: str, fatal=None, on_fatal=None,
+                 first_delay: float = 30.0, max_delay: float = 600.0, healthy_after: float = 600.0):
+        self.name = name
+        self.command = list(command)
+        self.cwd = cwd
+        self.fatal = dict(fatal or {})
         self.on_fatal = on_fatal
         self.first_delay, self.max_delay, self.healthy_after = first_delay, max_delay, healthy_after
         self._stop = threading.Event()
@@ -77,7 +82,7 @@ class RelaySupervisor:
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(target=self._run, name="relay-supervisor", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=f"{self.name}-supervisor", daemon=True)
         self._thread.start()
         atexit.register(self.stop)
 
@@ -106,20 +111,18 @@ class RelaySupervisor:
                 with self._lock:
                     if self._stop.is_set():
                         return
-                    self._proc = subprocess.Popen(self.command, cwd=self.bridge_dir,
-                                                  stdin=subprocess.DEVNULL)
+                    self._proc = subprocess.Popen(self.command, cwd=self.cwd, stdin=subprocess.DEVNULL)
                     self.starts += 1
-                log.info("Telegram relay bridge started (pid %s).", self._proc.pid)
+                log.info("%s started (pid %s).", self.name, self._proc.pid)
                 rc = self._proc.wait()
             except OSError as exc:
                 rc = None
-                log.error("Could not start the relay bridge (%s).", exc)
+                log.error("Could not start %s (%s).", self.name, exc)
             if self._stop.is_set():
                 return
-            if rc in _FATAL_TEXT:
-                self.fatal_reason = _FATAL_TEXT[rc]
-                log.error("Telegram relay bridge stopped for good: %s. Trading continues.",
-                          self.fatal_reason)
+            if rc in self.fatal:
+                self.fatal_reason = self.fatal[rc]
+                log.error("%s stopped for good: %s. Trading continues.", self.name, self.fatal_reason)
                 if self.on_fatal is not None:
                     try:
                         self.on_fatal(self.fatal_reason)
@@ -128,7 +131,19 @@ class RelaySupervisor:
                 return
             if time.monotonic() - started >= self.healthy_after:
                 delay = self.first_delay
-            log.warning("Telegram relay bridge exited (code %s) - restarting in %.0fs.", rc, delay)
+            log.warning("%s exited (code %s) - restarting in %.0fs.", self.name, rc, delay)
             if self._stop.wait(delay):
                 return
             delay = min(delay * 2, self.max_delay)
+
+
+class RelaySupervisor(ChildSupervisor):
+    """The Telegram relay bridge (see the module docstring)."""
+
+    def __init__(self, bridge_dir: str = BRIDGE_DIR, extra_args=(), on_fatal=None,
+                 first_delay: float = 30.0, max_delay: float = 600.0, healthy_after: float = 600.0,
+                 command=None):
+        super().__init__("Telegram relay bridge",
+                         command or [sys.executable, BRIDGE_SCRIPT, "--no-login", *extra_args],
+                         bridge_dir, fatal=_FATAL_TEXT, on_fatal=on_fatal, first_delay=first_delay,
+                         max_delay=max_delay, healthy_after=healthy_after)

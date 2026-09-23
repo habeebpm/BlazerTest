@@ -52,6 +52,7 @@ import market_intel
 import ml_advisor
 import news_check
 import relay_supervisor
+import services
 import telegram_alert
 import xtr_logic
 import mt5_gateway as gw
@@ -3369,20 +3370,81 @@ def test_relay_supervisor() -> bool:
             if v is not None:
                 os.environ[k] = v
 
-    started = []
+    import tempfile
+    made = []
 
     class FakeSup:
-        def __init__(self, on_fatal=None):
-            self.on_fatal = on_fatal
+        def __init__(self, name, command, cwd, fatal=None, on_fatal=None):
+            self.name, self.command, self.cwd, self.fatal, self.on_fatal = name, command, cwd, fatal, on_fatal
 
         def start(self):
-            started.append(self)
+            made.append(self)
 
-    sup2 = main_mod.start_relay(AdvisorConfig(), supervisor_cls=FakeSup)
-    ok &= check("main.start_relay() starts the supervisor with a fatal-alert callback",
-                started == [sup2] and callable(sup2.on_fatal))
+    class FakeJob(FakeSup):
+        def __init__(self, name, command, cwd, every_days, state_path, log_path):
+            super().__init__(name, command, cwd)
+            self.every_days, self.state_path, self.log_path = every_days, state_path, log_path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ini = os.path.join(tmp, "p.ini")
+        with open(ini, "w") as f:
+            f.write("[relay_bridge]\nenabled = false\n[xtr_export]\nenabled = true\n"
+                    "args = --out-dir C:\\XTR_Data --bars 150 ; a comment\n"
+                    "[ml_retrain]\nenabled = yes\nevery_days = 3\n"
+                    "[calibration_report]\nenabled = true\nevery_days = 0\n")
+        p = services.load_preset(ini)
+        ok &= check("main_preset.ini parses: backslash paths kept, inline comment dropped, a bad "
+                    "every_days switches only that service off (reported)",
+                    p.xtr_export.args == ["--out-dir", "C:\\XTR_Data", "--bars", "150"]
+                    and p.ml_retrain.enabled and p.ml_retrain.every_days == 3.0
+                    and not p.calibration_report.enabled and len(p.errors) == 1
+                    and p.enabled_names() == ["xtr_export", "ml_retrain"], (p, p.errors))
+        ok &= check("a missing preset = every companion off",
+                    services.load_preset(os.path.join(tmp, "nope.ini")).enabled_names() == [])
+        cfg_c = AdvisorConfig(log_dir=os.path.join(tmp, "logs"))
+        alerts = []
+        started = services.start_services(cfg_c, p, alert=alerts.append, force_relay=True,
+                                          supervisor_cls=FakeSup, job_cls=FakeJob)
+        names = [x.name for x in started]
+        ok &= check("start_services: --relay forces the bridge on; xtr_export + ml_retrain started; "
+                    "disabled calibration_report not", names == ["Telegram relay bridge",
+                                                                 "XTR price export", "ml_retrain"], names)
+        relay_s, xtr_s, ml_j = started
+        ok &= check("the bridge runs --no-login in its own folder; xtr_export gets the preset args",
+                    "--no-login" in relay_s.command and relay_s.cwd == relay_supervisor.BRIDGE_DIR
+                    and xtr_s.command[-4:] == ["--out-dir", "C:\\XTR_Data", "--bars", "150"]
+                    and xtr_s.cwd == services.XTR_EXPORT_DIR, (relay_s.command, xtr_s.command))
+        ok &= check("the ML job reads main.py's own logs folder and runs every_days",
+                    ml_j.every_days == 3.0 and os.path.join(tmp, "logs") in ml_j.command
+                    and ml_j.log_path.endswith("ml_retrain.log"), ml_j.command)
+        xtr_s.on_fatal("bad options")
+        ok &= check("a companion that stops for good raises one alert", len(alerts) == 1
+                    and "XTR price export stopped" in alerts[0], alerts)
+
+        # A scheduled job: runs once when due, remembers it, not again until due.
+        clock = [1_000_000.0]
+        job = services.PeriodicJob("demo", [py, "-c", "print('hello')"], tmp, 7,
+                                   os.path.join(tmp, "st.json"), os.path.join(tmp, "demo.log"),
+                                   clock=lambda: clock[0])
+        first_due = job.due()
+        rc = job.run_now()
+        clock[0] += 6 * 86400
+        not_yet = not job.due()
+        clock[0] += 2 * 86400
+        with open(os.path.join(tmp, "demo.log")) as f:
+            logged = f.read()
+        ok &= check("PeriodicJob: due at first, output logged, not due within the period, due after",
+                    first_due and rc == 0 and "hello" in logged and not_yet and job.due(), logged)
+        again = services.PeriodicJob("demo", [py, "-c", "pass"], tmp, 7, os.path.join(tmp, "st.json"),
+                                     os.path.join(tmp, "demo.log"), clock=lambda: 1_000_000.0 + 86400)
+        ok &= check("the last run survives a main.py restart (state file)", not again.due())
+
+    real_preset = services.load_preset()
+    ok &= check("the shipped main_preset.ini parses, every companion off by default",
+                not real_preset.errors and real_preset.enabled_names() == [], real_preset.errors)
     args = main_mod.build_parser().parse_args(["--relay"])
-    ok &= check("--relay / --relay-login parse", args.relay and not args.relay_login
+    ok &= check("--relay / --relay-login / --preset parse", args.relay and not args.relay_login
+                and args.preset == services.DEFAULT_PRESET
                 and main_mod.build_parser().parse_args(["--relay-login"]).relay_login)
     return ok
 

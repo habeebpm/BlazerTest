@@ -29,6 +29,7 @@ import ml_advisor
 import mt5_gateway as gw
 import news_check
 import relay_supervisor
+import services
 import telegram_alert
 import xtr_logic
 from config import AdvisorConfig
@@ -594,26 +595,17 @@ def send_test_alert(cfg: AdvisorConfig, spec) -> int:
     return 1
 
 
-def start_relay(cfg: AdvisorConfig, supervisor_cls=None):
-    """--relay: the Telegram relay bridge as a supervised child process (see
-    relay_supervisor.py). A bridge that stops for good (not logged in, bad
-    configuration) is reported once over the Telegram alert, if set up;
-    trading is never affected either way."""
-    if not os.path.exists(relay_supervisor.bridge_path()):
-        log.error("--relay: %s not found - keep this folder inside the full solution folder.",
-                  relay_supervisor.bridge_path())
-        return None
-
-    def on_fatal(reason: str) -> None:
+def start_companions(cfg: AdvisorConfig, preset_path: str, force_relay: bool = False, **kw) -> list:
+    """The optional companion programs switched on in main_preset.ini (relay
+    bridge, Python Drive export, weekly ML retrain / calibration report -
+    see services.py). One that stops for good is reported once over the
+    Telegram alert, if set up; trading is never affected either way."""
+    def alert(text: str) -> None:
         if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
-            telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
-                                      f"Telegram relay bridge stopped: {reason}. Trading continues; "
-                                      "no new signals reach the relay group until it is fixed.")
+            telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, text)
 
-    sup = (supervisor_cls or relay_supervisor.RelaySupervisor)(on_fatal=on_fatal)
-    sup.start()
-    log.info("Telegram relay bridge: running as a supervised background process.")
-    return sup
+    return services.start_services(cfg, services.load_preset(preset_path), alert=alert,
+                                   force_relay=force_relay, **kw)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -735,8 +727,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "price (one Claude call, no order) and print the result, then exit")
     parser.add_argument("--check", action="store_true",
                         help="connect to MT5, print the symbol spec, exit - no Claude call")
+    parser.add_argument("--preset", default=services.DEFAULT_PRESET,
+                        help="companion programs to run alongside (relay bridge, Python Drive export, "
+                             "weekly ML retrain / calibration report), each switched on or off there "
+                             "(default: main_preset.ini next to main.py)")
     parser.add_argument("--relay", action="store_true",
-                        help="also run the Telegram relay bridge (../../python/telegram_relay_bridge.py) "
+                        help="also run the Telegram relay bridge (same as enabled = true in "
+                             "main_preset.ini [relay_bridge]) - the bridge (../../python/telegram_relay_bridge.py) "
                              "as a supervised background process - restarted after a crash or "
                              "disconnect, stopped with this program; needs TELEGRAM_API_ID/HASH, "
                              "TELEGRAM_SOURCE_CHANNELS, TELEGRAM_RELAY_GROUP and a one-time --relay-login")
@@ -835,8 +832,7 @@ def main(argv: list | None = None) -> int:
         run_once(client, cfg, spec, day, xtr_state)
         return 0
 
-    if args.relay:
-        start_relay(cfg)
+    start_companions(cfg, args.preset, force_relay=args.relay)
 
     log.info("Watching %s for a new closed %s candle every %ds - Ctrl+C to stop.",
               cfg.symbol, cfg.primary_timeframe, cfg.poll_seconds)

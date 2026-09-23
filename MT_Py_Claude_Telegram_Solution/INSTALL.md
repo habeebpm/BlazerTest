@@ -100,7 +100,7 @@ python main.py --once -v
 
 ## 7. Optional - Relay bridge (not admin of the signal channel)
 
-Runs inside the Claude program (`--relay`) - no extra window.
+Runs inside the Claude program (`main_preset.ini`) - no extra window.
 
 1. Create a private Telegram group -> add your bot as admin.
 2. <https://my.telegram.org> -> API development tools -> copy `api_id`, `api_hash`.
@@ -121,10 +121,8 @@ Runs inside the Claude program (`--relay`) - no extra window.
    ```
 6. New Command Prompt -> run `python main.py --relay-login` again ->
    both chats must resolve.
-7. Add `--relay` to the step 6 command:
-   ```bat
-   python main.py --live --relay --xtr-gate require_alignment --shared-cap-magic 20260922
-   ```
+7. Open `ClaudeSMC_Trader\python\main_preset.ini` -> `[relay_bridge]` ->
+   `enabled = true` -> save -> restart the step 6 command (Ctrl+C, run again).
 8. EA `InpChannelId1` = the relay group id.
 9. Never also run `telegram_relay_bridge.py` on its own (double relaying).
 
@@ -162,10 +160,10 @@ python xtr_export.py --check
    **Keys -> Add Key -> JSON** -> save as `C:\keys\drive.json`.
 3. Share the Drive folder with the service account's email -> **Editor**.
 4. Copy the folder id from `drive.google.com/drive/folders/<id>`.
-5. ```bat
-   python xtr_export.py --upload-drive --drive-folder-id <id> --drive-credentials C:\keys\drive.json
-   ```
-   Leave it running. (EA `InpXtrExport` = `false` then.)
+5. `ClaudeSMC_Trader\python\main_preset.ini` -> `[xtr_export]` ->
+   `enabled = true`, replace `YOUR_FOLDER_ID` with the id -> save ->
+   restart `main.py`.
+6. EA `InpXtrExport` = `false`.
 
 ## 9. Optional - Trade Logger (trade journal CSV)
 
@@ -197,19 +195,14 @@ Needs step 9.
 
 ## 11. Optional - ML advisor (after ~30 closed demo trades)
 
-```bat
-cd MT_Py_Claude_Telegram_Solution\ClaudeSMC_Trader\python
-python train_ml_model.py
-```
-
-Repeat once a week. No restart needed.
+`ClaudeSMC_Trader\python\main_preset.ini` -> `[ml_retrain]` ->
+`enabled = true` -> save -> restart `main.py`. Retrains every 7 days
+(`every_days`); output in `logs\ml_retrain.log`.
 
 ## 12. Optional - Conviction report (weekly)
 
-```bat
-cd MT_Py_Claude_Telegram_Solution\ClaudeSMC_Trader\python
-python calibration_report.py
-```
+`main_preset.ini` -> `[calibration_report]` -> `enabled = true` -> save ->
+restart `main.py`. Output in `logs\calibration_report.log`.
 
 ## 13. Optional - Backtest (free, mechanical)
 
@@ -234,12 +227,12 @@ python backtest.py --from-mt5 --start 2026-08-01 --end 2026-09-23 --mechanical -
 | Window | Needed |
 |---|---|
 | MT5 + `UnifiedTrader_EA` (+ Trade Logger chart, step 9) | Always |
-| `python main.py --live [--relay] --xtr-gate require_alignment --shared-cap-magic 20260922` | Always (`--relay` = step 7, bridge runs inside it) |
-| `python xtr_export.py ...` | Step 8 option B only |
+| `python main.py --live --xtr-gate require_alignment --shared-cap-magic 20260922` | Always - also runs whatever `main_preset.ini` switches on (steps 7, 8 B, 11, 12) |
 | IIS | Step 10 only (runs as a Windows service) |
 
-Never run `python/telegram_copier.py` alongside `UnifiedTrader_EA`
-(duplicate trades).
+Never start `telegram_relay_bridge.py`, `xtr_export.py`, `train_ml_model.py`
+or `calibration_report.py` by hand while `main.py` runs them. Never run
+`python/telegram_copier.py` alongside `UnifiedTrader_EA` (duplicate trades).
 
 ## Real money (after a good demo)
 
