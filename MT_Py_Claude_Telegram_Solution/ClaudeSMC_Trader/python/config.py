@@ -199,6 +199,26 @@ class AdvisorConfig:
     #     file at all.
     last_verdict_filename: str = "claudesmc_last_verdict.txt"
 
+    # --- Heartbeat / stale-cycle alert (reuses telegram_alert_bot_token/
+    #     telegram_alert_chat_id above; see main.py's Heartbeat class) ---
+    # Periodic "still alive" ping, independent of any trading activity -
+    # useful on a quiet day with no signals, to confirm the process itself
+    # hasn't silently died. Off by default: 0 disables it (a genuine
+    # opt-in, unlike stale_cycle_alert_minutes below, since a recurring
+    # ping is more a nice-to-have than a safety feature).
+    heartbeat_interval_hours: float = 0.0
+    # A ONE-TIME (latched until the next successful pass) warning if too
+    # long passes without the poll loop completing a pass without an
+    # unexpected exception - catches a bot that's technically still
+    # running but stuck in a repeating-error loop (dropped MT5 connection,
+    # etc.) rather than genuinely evaluating cycles. On by default (once
+    # telegram creds are set) since a live trading bot silently going
+    # stale is a real risk this exists specifically to catch. A
+    # ClaudeUnavailableError does NOT count as "stuck" here - that already
+    # has its own distinct backoff/logging (see main.py) - only the
+    # generic except-Exception path does.
+    stale_cycle_alert_minutes: float = 60.0
+
     # --- Order plumbing ---
     magic: int = 20260921
     comment: str = "Claude_Sig"

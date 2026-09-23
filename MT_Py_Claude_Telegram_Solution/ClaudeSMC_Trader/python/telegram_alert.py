@@ -90,6 +90,17 @@ def format_verdict_digest(symbol: str, verdict, executed: bool, reject_reason: s
     )
 
 
+def format_heartbeat_message(symbol: str, minutes_since_last_success: float) -> str:
+    return (f"Heartbeat: ClaudeSMC_Trader ({symbol}) is running - last successful evaluation "
+            f"cycle {minutes_since_last_success:.0f} min ago.")
+
+
+def format_stale_cycle_alert(symbol: str, minutes_since_last_success: float) -> str:
+    return (f"WARNING: ClaudeSMC_Trader ({symbol}) has had no successful evaluation cycle in "
+            f"{minutes_since_last_success:.0f} min - the poll loop may be stuck on a repeating "
+            f"error (dropped MT5 connection?). Check the log.")
+
+
 def send_alert(bot_token: str, chat_id: str, text: str, poster=_post_json) -> bool:
     """Never raises - a Telegram outage (bad token, network down, rate
     limited) must never interrupt the trading loop this is a side-effect of.

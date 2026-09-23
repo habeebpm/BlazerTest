@@ -1320,6 +1320,14 @@ def test_telegram_alert() -> bool:
                 "conviction=none" in verdict_digest_none and "NOT executed" in verdict_digest_none,
                 verdict_digest_none)
 
+    heartbeat_msg = telegram_alert.format_heartbeat_message("XAUUSD", 42.0)
+    ok &= check("format_heartbeat_message() names the symbol and minutes since last success",
+                "XAUUSD" in heartbeat_msg and "42 min" in heartbeat_msg, heartbeat_msg)
+
+    stale_msg = telegram_alert.format_stale_cycle_alert("XAUUSD", 90.0)
+    ok &= check("format_stale_cycle_alert() names the symbol and minutes stuck",
+                "WARNING" in stale_msg and "XAUUSD" in stale_msg and "90 min" in stale_msg, stale_msg)
+
     return ok
 
 
@@ -1457,6 +1465,50 @@ def test_calibration_report() -> bool:
     return ok
 
 
+def test_heartbeat() -> bool:
+    print("\n=== 16. main.Heartbeat: heartbeat ping / stale-cycle alert ===")
+    ok = True
+
+    cfg_off = AdvisorConfig()
+    hb = main_mod.Heartbeat()
+    ok &= check("due_heartbeat() is False when heartbeat_interval_hours=0 (the default)",
+                hb.due_heartbeat(cfg_off) is False)
+    ok &= check("due_stale_alert() is False immediately after construction (nothing stale yet)",
+                hb.due_stale_alert(AdvisorConfig(stale_cycle_alert_minutes=60.0)) is False)
+
+    cfg_hb = AdvisorConfig(heartbeat_interval_hours=1.0)
+    hb2 = main_mod.Heartbeat()
+    hb2.last_heartbeat_sent = datetime.now(timezone.utc) - timedelta(hours=1, minutes=1)
+    ok &= check("due_heartbeat() is True once heartbeat_interval_hours has elapsed",
+                hb2.due_heartbeat(cfg_hb) is True)
+    hb2.mark_heartbeat_sent()
+    ok &= check("mark_heartbeat_sent() resets the timer - due_heartbeat() is False right after",
+                hb2.due_heartbeat(cfg_hb) is False)
+
+    cfg_stale = AdvisorConfig(stale_cycle_alert_minutes=30.0)
+    hb3 = main_mod.Heartbeat()
+    hb3.last_successful_cycle = datetime.now(timezone.utc) - timedelta(minutes=31)
+    ok &= check("due_stale_alert() is True once stale_cycle_alert_minutes has elapsed with no "
+                "successful cycle",
+                hb3.due_stale_alert(cfg_stale) is True)
+    hb3.mark_stale_alert_sent()
+    ok &= check("the stale alert is latched - due_stale_alert() stays False once sent, even "
+                "though nothing has recovered",
+                hb3.due_stale_alert(cfg_stale) is False)
+    hb3.mark_cycle_success()
+    ok &= check("mark_cycle_success() clears the latch (unlatched for the next time it goes stale) "
+                "and resets minutes_since_last_success() to ~0",
+                hb3.stale_alert_sent is False and hb3.minutes_since_last_success() < 0.1)
+
+    cfg_stale_off = AdvisorConfig(stale_cycle_alert_minutes=0.0)
+    hb4 = main_mod.Heartbeat()
+    hb4.last_successful_cycle = datetime.now(timezone.utc) - timedelta(hours=5)
+    ok &= check("stale_cycle_alert_minutes=0 disables the check even after a long silence",
+                hb4.due_stale_alert(cfg_stale_off) is False)
+
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -1480,6 +1532,7 @@ def main() -> int:
         test_telegram_alert(),
         test_day_roll_daily_limits(),
         test_calibration_report(),
+        test_heartbeat(),
     ]
     print()
     if all(results):

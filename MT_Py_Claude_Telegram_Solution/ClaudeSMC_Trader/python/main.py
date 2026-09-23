@@ -84,6 +84,10 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.telegram_alert_chat_id = args.telegram_alert_chat_id
     if args.no_performance_digest:
         cfg.send_performance_digest = False
+    if args.heartbeat_hours is not None:
+        cfg.heartbeat_interval_hours = args.heartbeat_hours
+    if args.stale_cycle_minutes is not None:
+        cfg.stale_cycle_alert_minutes = args.stale_cycle_minutes
     if args.model:
         cfg.claude_model = args.model
     if args.poll_seconds is not None:
@@ -153,6 +157,43 @@ class DayRoll:
         if self.daily_target_hit:
             return "daily profit target already reached"
         return ""
+
+
+class Heartbeat:
+    """Tracks two independent, low-noise Telegram signals about the poll
+    loop's own health (see config.py's heartbeat_interval_hours/
+    stale_cycle_alert_minutes) - completely separate from anything about
+    trading signals, performance, or the daily/weekly digest above.
+    """
+    def __init__(self):
+        now = datetime.now(timezone.utc)
+        self.last_heartbeat_sent = now
+        self.last_successful_cycle = now
+        self.stale_alert_sent = False
+
+    def mark_cycle_success(self) -> None:
+        self.last_successful_cycle = datetime.now(timezone.utc)
+        self.stale_alert_sent = False
+
+    def minutes_since_last_success(self) -> float:
+        return (datetime.now(timezone.utc) - self.last_successful_cycle).total_seconds() / 60.0
+
+    def due_heartbeat(self, cfg: AdvisorConfig) -> bool:
+        if cfg.heartbeat_interval_hours <= 0:
+            return False
+        elapsed_hours = (datetime.now(timezone.utc) - self.last_heartbeat_sent).total_seconds() / 3600.0
+        return elapsed_hours >= cfg.heartbeat_interval_hours
+
+    def mark_heartbeat_sent(self) -> None:
+        self.last_heartbeat_sent = datetime.now(timezone.utc)
+
+    def due_stale_alert(self, cfg: AdvisorConfig) -> bool:
+        if cfg.stale_cycle_alert_minutes <= 0 or self.stale_alert_sent:
+            return False
+        return self.minutes_since_last_success() >= cfg.stale_cycle_alert_minutes
+
+    def mark_stale_alert_sent(self) -> None:
+        self.stale_alert_sent = True
 
 
 def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
@@ -301,6 +342,12 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--no-performance-digest", action="store_true", dest="no_performance_digest",
                         help="disable the daily/weekly performance digest (on by default once "
                              "telegram-alert-bot-token/chat-id are set - see config.py)")
+    parser.add_argument("--heartbeat-hours", type=float, dest="heartbeat_hours",
+                        help="send a periodic 'still alive' Telegram ping every N hours (default "
+                             "0 = disabled) - reuses telegram-alert-bot-token/chat-id")
+    parser.add_argument("--stale-cycle-minutes", type=float, dest="stale_cycle_minutes",
+                        help="alert once if no successful evaluation cycle completes in this many "
+                             "minutes - the poll loop may be stuck (default 60; pass 0 to disable)")
     parser.add_argument("--model", help="Claude model id (default claude-opus-5)")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
@@ -340,7 +387,7 @@ def main(argv: list | None = None) -> int:
         log.info("Config: lot=%s max_same_dir=%d shared_cap_magics=%s sl_mode=%s sl=$%.2f tp1=$%.2f trail=$%.2f "
                   "exit_style=%s (breakeven_atr_mult=%.2f breakeven_atr_period=%d decay_window_minutes=%.1f) "
                   "min_confluence=%d/3 require_full=%s max_daily_loss=%s daily_target=%s model=%s "
-                  "dry_run=%s telegram_alerts=%s performance_digest=%s",
+                  "dry_run=%s telegram_alerts=%s performance_digest=%s heartbeat=%s stale_alert=%s",
                   f"risk {cfg.risk_percent:g}% of equity (max {cfg.max_lot_size:g})"
                   if cfg.use_risk_percent else f"fixed {cfg.fixed_lot:g}",
                   cfg.max_open_positions_per_direction, cfg.shared_cap_magic_numbers,
@@ -353,7 +400,11 @@ def main(argv: list | None = None) -> int:
                   cfg.claude_model, cfg.dry_run,
                   "on" if (cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off",
                   "on" if (cfg.send_performance_digest and cfg.telegram_alert_bot_token
-                           and cfg.telegram_alert_chat_id) else "off")
+                           and cfg.telegram_alert_chat_id) else "off",
+                  f"every {cfg.heartbeat_interval_hours:g}h" if (cfg.heartbeat_interval_hours > 0
+                      and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off",
+                  f"after {cfg.stale_cycle_alert_minutes:g}min" if (cfg.stale_cycle_alert_minutes > 0
+                      and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
         return 0
 
     if cfg.dry_run:
@@ -370,6 +421,7 @@ def main(argv: list | None = None) -> int:
               cfg.symbol, cfg.primary_timeframe, cfg.poll_seconds)
     last_bar_time = None
     sleep_seconds = cfg.poll_seconds
+    heartbeat = Heartbeat()
     while True:
         try:
             bar_time = market_intel.last_closed_time(gw, cfg.symbol, cfg.primary_timeframe)
@@ -380,11 +432,16 @@ def main(argv: list | None = None) -> int:
                 # skipped forever.
                 run_once(client, cfg, spec, day)
                 last_bar_time = bar_time
+            heartbeat.mark_cycle_success()
             sleep_seconds = cfg.poll_seconds
         except KeyboardInterrupt:
             log.info("Stopped.")
             return 0
         except claude_advisor.ClaudeUnavailableError as exc:
+            # Also counts as a "successful" pass for staleness purposes -
+            # Claude being unavailable already has its own distinct
+            # backoff/logging right here; it's not a stuck/frozen loop.
+            heartbeat.mark_cycle_success()
             if exc.retryable:
                 log.warning("Claude temporarily unavailable this cycle - %s", exc)
                 sleep_seconds = cfg.poll_seconds
@@ -402,6 +459,23 @@ def main(argv: list | None = None) -> int:
         except Exception:
             log.exception("Error during evaluation cycle - will retry next poll")
             sleep_seconds = cfg.poll_seconds
+
+        if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
+            if heartbeat.due_heartbeat(cfg):
+                msg = telegram_alert.format_heartbeat_message(
+                    cfg.symbol, heartbeat.minutes_since_last_success())
+                threading.Thread(target=telegram_alert.send_alert,
+                                 args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, msg),
+                                 daemon=True).start()
+                heartbeat.mark_heartbeat_sent()
+            if heartbeat.due_stale_alert(cfg):
+                msg = telegram_alert.format_stale_cycle_alert(
+                    cfg.symbol, heartbeat.minutes_since_last_success())
+                threading.Thread(target=telegram_alert.send_alert,
+                                 args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, msg),
+                                 daemon=True).start()
+                heartbeat.mark_stale_alert_sent()
+
         time.sleep(sleep_seconds)
 
 
