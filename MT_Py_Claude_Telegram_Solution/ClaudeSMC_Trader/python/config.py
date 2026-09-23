@@ -4,9 +4,10 @@ All tunables for the Claude-advised XAUUSD trader in one place.
 Deliberately a plain dataclass with CLI overrides in main.py (see --help) -
 no env-var magic (the one exception: the Telegram alert credentials may
 come from TELEGRAM_ALERT_BOT_TOKEN/TELEGRAM_ALERT_CHAT_ID, to keep a bot
-token off the command line), no config file format to learn. The defaults below are
-the trading rules requested: fixed 0.01 lot, max 5 concurrent same-direction
-positions, $6 stop-loss, SL moved to lock in $6 profit once TP1 is reached,
+token off the command line), no config file format to learn. The defaults
+below are the trading rules requested: 2% risk per trade (lot sized from
+equity), 10% max daily loss, max 5 concurrent same-direction positions, $6
+stop-loss at the 0.01 reference lot, SL moved to lock in $6 profit once TP1 is reached,
 trailing $3 behind price from there (exit_style="sl_to_tp1" - see below).
 
 exit_style has three values. All three agree on one thing: no broker-side
@@ -63,9 +64,9 @@ class AdvisorConfig:
     #     failing the whole snapshot.
     dxy_symbol: str = ""
 
-    # --- News/calendar blackout windows (optional; off by default) - this
-    #     solution has no economic-calendar data source of its own, so these
-    #     are maintained by hand: a list of (start_iso, end_iso) UTC pairs,
+    # --- Manual news blackout windows (optional; off by default) - extra
+    #     windows on top of the automatic economic-calendar blackout below,
+    #     for events the calendar lacks: a list of (start_iso, end_iso) UTC pairs,
     #     e.g. [("2026-10-03T12:25:00Z", "2026-10-03T12:40:00Z")] to skip a
     #     15-minute window around an NFP release. executor.gate() rejects
     #     any new entry whose evaluation time falls inside one of these -
@@ -97,16 +98,16 @@ class AdvisorConfig:
 
     # --- Breaking-news check (on by default) - see news_check.py. Right
     #     before a full-conviction entry is sent (after every other gate
-    #     passed), one extra Claude call looks for SURPRISE, unscheduled
-    #     news on gold/the dollar - with Claude's web search tool plus free
-    #     RSS headlines - and refuses the entry if such news points against
-    #     it. Runs only a few times a day, never on ordinary cycles. Web
-    #     search must be enabled for your API organization by an admin in
-    #     the Anthropic Console; if it isn't, the check falls back to the
-    #     RSS headlines alone (python main.py --test-news-check buy shows
-    #     which one ran).
+    #     passed), the FREE news feeds below are read and one short Claude
+    #     call judges them for SURPRISE, unscheduled news on gold/the
+    #     dollar, refusing the entry if such news points against it. Runs
+    #     only a few times a day, never on ordinary cycles.
+    #     news_check_web_search (off by default) additionally lets Claude
+    #     search the web - billed per search, and it must be enabled for
+    #     your API organization. python main.py --test-feeds shows which
+    #     feeds work from your PC.
     breaking_news_check: bool = True
-    news_check_web_search: bool = True
+    news_check_web_search: bool = False
     news_web_search_tool: str = "web_search_20250305"
     news_web_search_max_uses: int = 3
     news_check_lookback_minutes: int = 180
@@ -114,11 +115,20 @@ class AdvisorConfig:
     news_check_model: str = ""               # "" = claude_model
     news_check_max_tokens: int = 2000
     news_max_headlines: int = 40
+    # Free, public, no-key feeds from independent publishers, so one being
+    # down or slow (all are fetched in parallel, 8 s timeout) still leaves
+    # the others. Any RSS 2.0 or Atom URL can be added or removed here.
     news_feeds: list = field(default_factory=lambda: [
+        # Google News searches (aggregates Reuters, Bloomberg, AP, FT, ...)
         "https://news.google.com/rss/search?q=gold+OR+XAUUSD+OR+%22US+dollar%22+OR+%22Federal+Reserve%22"
         "+OR+Powell+OR+%22Treasury+yields%22+when:1d&hl=en-US&gl=US&ceid=US:en",
         "https://news.google.com/rss/search?q=war+OR+missile+OR+sanctions+OR+tariff+OR+ceasefire"
         "+OR+%22central+bank%22+OR+%22emergency%22+when:1d&hl=en-US&gl=US&ceid=US:en",
+        # FXStreet - forex & commodities (gold) newsroom
+        "https://www.fxstreet.com/rss/news",
+        # CNBC - Economy, and International top news
+        "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+        "https://www.cnbc.com/id/100727362/device/rss/rss.html",
     ])
     # A headline is kept only if it contains one of these (word-start match).
     news_keywords: list = field(default_factory=lambda: [

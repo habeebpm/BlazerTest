@@ -79,6 +79,18 @@ _warned_stale_header_paths: set = set()
 
 
 def _append_row(path: str, fieldnames: list, row: dict) -> None:
+    """Never raises. A log file that can't be written - most often
+    trades.csv open in Excel, which locks it on Windows - must not abort
+    the cycle AFTER an order was sent: main.py would then retry the same
+    bar and send the order again. The row goes to the log instead."""
+    try:
+        _append_row_unsafe(path, fieldnames, row)
+    except (OSError, csv.Error) as exc:
+        log.error("Could not write %s (%s - is it open in Excel?). Trading continues; the row "
+                  "is kept here instead: %s", path, exc, row)
+
+
+def _append_row_unsafe(path: str, fieldnames: list, row: dict) -> None:
     new_file = not os.path.exists(path)
     if not new_file and path not in _warned_stale_header_paths:
         # A file from before a field was added to `fieldnames` (e.g. the

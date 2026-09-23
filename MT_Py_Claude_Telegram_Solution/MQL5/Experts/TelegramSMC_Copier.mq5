@@ -245,6 +245,15 @@ int OnInit()
             "an admin of the signal channel, and paste the token into InpBotToken.");
       return(INIT_PARAMETERS_INCORRECT);
    }
+   if(InpChannelId1 == 0 && InpChannelId2 == 0 && !InpDryRun)
+   {
+      // Live + no channel filter = anyone who finds this bot could DM it a
+      // trade signal. Refused outright.
+      Print("TelegramSMC_Copier: REFUSING TO START - InpDryRun=false but InpChannelId1 and "
+            "InpChannelId2 are both 0, so ANY chat could send this bot a trade signal. Find the "
+            "channel id in dry-run first, set InpChannelId1, then go live.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
    if(InpChannelId1 == 0 && InpChannelId2 == 0)
       Print("TelegramSMC_Copier: WARNING - InpChannelId1 and InpChannelId2 are both 0, so signals "
             "from ANY chat this bot can see will be copied. Watch the log for 'message from chat "
@@ -1408,7 +1417,8 @@ void TelegramPoll()
       if(StringLen(updates[i].text) == 0) continue;
 
       long age = (long)TimeGMT() - updates[i].date;
-      if(InpMaxSignalAgeSec > 0 && updates[i].date > 0 && age > InpMaxSignalAgeSec)
+      // An undated message can't be proven fresh - treated as stale.
+      if(InpMaxSignalAgeSec > 0 && (updates[i].date <= 0 || age > InpMaxSignalAgeSec))
       {
          PrintFormat("TelegramSMC_Copier: message from chat %I64d is %ds old (> %ds) - stale, skipping.",
                      updates[i].chat_id, age, InpMaxSignalAgeSec);
@@ -1423,7 +1433,10 @@ void TelegramPoll()
    }
 
    if(ArraySize(updates) > 0)
+   {
       GlobalVariableSet(GV_LAST_UPDATE_ID, (double)g_lastUpdateId);
+      GlobalVariablesFlush();   // a lost offset after a crash would re-trade this batch
+   }
 }
 
 //+------------------------------------------------------------------+

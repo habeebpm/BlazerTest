@@ -337,7 +337,9 @@ process and nothing outside MT5 in the normal case. One-time setup:
    to two of those ids into `InpChannelId1` (and `InpChannelId2` for a second
    channel) and restart, so only those chats can trigger trades. Leaving both
    at `0` accepts signals from any chat the bot can see — fine for that first
-   discovery run, not recommended afterward.
+   dry-run discovery run; the EA refuses to start live (`InpDryRun=false`)
+   in that state. The Python copier likewise refuses `--live` without a
+   `--channels`/`TELEGRAM_CHANNELS` allow-list.
 
 The EA ships with **`InpDryRun = true`**. Nothing above logs-only behavior
 happens until you set it to `false`, and that should only follow watching the

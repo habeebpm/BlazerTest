@@ -172,8 +172,18 @@ def write_common_file(filename: str, text: str) -> None:
     """
     files_dir = _common_files_dir()
     os.makedirs(files_dir, exist_ok=True)
-    with open(os.path.join(files_dir, filename), "w", encoding="ascii", errors="replace") as f:
+    path = os.path.join(files_dir, filename)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="ascii", errors="replace") as f:
         f.write(text)
+    try:
+        os.replace(tmp_path, path)   # the EA never sees a half-written file
+    except PermissionError:
+        # Windows refuses the rename while the EA has the file open - rare
+        # and brief; fall back to a direct write rather than lose the text.
+        with open(path, "w", encoding="ascii", errors="replace") as f:
+            f.write(text)
+        os.remove(tmp_path)
 
 
 def read_common_file(filename: str) -> str | None:

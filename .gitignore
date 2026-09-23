@@ -15,3 +15,16 @@ MT_Py_Claude_Telegram_Solution/XTR_Export/python/xtr_data/
 # No .json file has ever been meant to be tracked here (manifests/caches
 # both already live under xtr_data/, which is fully ignored above).
 MT_Py_Claude_Telegram_Solution/XTR_Export/python/*.json
+# Secrets and per-machine runtime state - never commit these.
+# Telethon login sessions (telegram_copier.py / telegram_relay_bridge.py):
+# a .session file is a logged-in Telegram account - anyone holding it can
+# read and send as you.
+*.session
+*.session-journal
+.env
+.env.*
+*.pem
+*.key
+# ClaudeSMC_Trader runtime state (day anchor/breaker, ML snapshots)
+MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.json
+MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.jsonl

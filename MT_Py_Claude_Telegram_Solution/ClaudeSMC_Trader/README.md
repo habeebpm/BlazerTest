@@ -137,7 +137,8 @@ than it is:
 
 - **Headline news is checked once, right before an entry - not
   continuously.** Scheduled releases come from MT5's own calendar; surprise
-  news is looked up by the pre-trade breaking-news check (Setup step 4).
+  news is looked up in free news feeds by the pre-trade breaking-news
+  check (Setup step 4).
   News that breaks *after* a position is open does not close it - the stop
   and trail are its only protection. The check is only as good as what web
   search and the headlines surface in that moment.
@@ -317,7 +318,7 @@ SL: 2644.35 (risk $198.00)
 TP1: 2656.35 - stop moves here to lock +$198.00, then trails 3.00 behind price
 TP2: 2662.10 (Claude's structure target - the trail decides the exit)
 TP3: 2670.00 (Claude's structure target - the trail decides the exit)
-News check: clear - no surprise news [2 web searches + 14 headlines]
+News check: clear - no surprise news [14 headlines]
 Reasoning: ...
 ```
 
@@ -366,38 +367,49 @@ whether a trade executes. This alert is not simulated in `backtest.py`
 (`run_backtest()` never calls it), so a historical replay never spams your
 chat even if these two fields are set.
 
-### 4. Breaking-news check before every entry (on by default)
+### 4. Breaking-news check before every entry (on by default, free news)
 
 The economic calendar covers *scheduled* releases. `python/news_check.py`
 covers the rest: right before an entry is sent - after every other gate has
-passed, so only a few times a day - one extra Claude call looks for
-**surprise, unscheduled news** from about the last 3 hours that could move
-gold or the dollar hard (military strikes, emergency Fed action, tariff or
-sanctions shocks, bank failures, central-bank gold moves, ...) and judges
-it against this entry's direction:
+passed, so only a few times a day - it reads **free public news feeds** and
+one short Claude call looks for **surprise, unscheduled news** from about
+the last 3 hours that could move gold or the dollar hard (military strikes,
+emergency Fed action, tariff or sanctions shocks, bank failures,
+central-bank gold moves, ...) and judges it against this entry's direction:
 
-- **Sources:** Claude's server-side **web search** tool, plus free
-  **Google News RSS** headlines (`news_feeds`, filtered by `news_keywords`
-  to the last `news_check_lookback_minutes`). Both go into one call.
+- **Free sources, no keys or subscriptions** (`news_feeds` in `config.py`):
+  two Google News searches (which aggregate Reuters, Bloomberg, AP, FT ...),
+  FXStreet's forex & commodities newsroom, and CNBC Economy and
+  International top news. All five are downloaded in parallel (8 s timeout
+  each), kept only if published within `news_check_lookback_minutes` and
+  matching `news_keywords`, deduplicated, newest first, up to 40.
+  Any RSS/Atom URL can be added or removed.
 - **Blocks the entry** when a fresh medium/high-severity surprise points
   against the trade, or a fresh high-severity shock makes the next minutes
   too violent to trade either way. The reason lands in `decisions.csv`, the
   log and the Telegram alert (`News check: BLOCKED - ...`).
-- **Re-prices after the check:** a web search can take tens of seconds, so
-  entry, SL and lot are recomputed from a fresh tick (and the pause and
-  daily budget re-checked) before the order goes out.
-- **Web search must be allowed for your API organization** (Anthropic
-  Console, web search setting). If it's refused, the check retries once on
-  the RSS headlines alone. If no check can run at all it trades anyway and
-  says `News check: unavailable` - pass `--news-check-fail-closed` to refuse
-  the entry instead.
-- **Cost:** only full-conviction entries that passed everything else pay
-  for it - typically cents per check (web search is billed per search, max
-  `news_web_search_max_uses=3`). `--news-check-no-web-search` uses the free
-  headlines only; `--no-news-check` turns it off.
-- **Try it:** `python main.py --test-news-check buy` runs one check for a
-  hypothetical buy at the current price and prints what it found, which
-  also confirms web search is enabled.
+- **Re-prices after the check:** entry, SL and lot are recomputed from a
+  fresh tick (and the pause and daily budget re-checked) before the order
+  goes out, since the check takes a few seconds.
+- **If it can't run** (no internet, every feed down, Claude unreachable)
+  it trades anyway and says `News check: unavailable` - pass
+  `--news-check-fail-closed` to refuse the entry instead.
+- **Cost:** the news itself is free; the only cost is that one short
+  Claude call (a few thousand tokens), and only for entries that passed
+  everything else. `--no-news-check` turns it off.
+- **Safety of third-party text:** downloads are capped at 2 MB and must be
+  http(s); XML declaring entities is refused; headlines are capped at 200
+  characters and handed to Claude as data it is told never to take
+  instructions from - a hostile headline can at worst make the check
+  useless, never place a trade.
+- **Check it on your PC:** `python main.py --test-feeds` downloads every
+  feed once and reports which work (no MT5, no Claude). `python main.py
+  --test-news-check buy` runs one full check for a hypothetical buy at the
+  current price.
+- **Optional paid extra:** `--news-check-web-search` also lets Claude
+  search the live web (billed per search, up to 3 per check, and web search
+  must be enabled for your Anthropic organization). If it's refused, the
+  check falls back to the free headlines.
 
 Not simulated in `backtest.py` - there is no historical news feed.
 

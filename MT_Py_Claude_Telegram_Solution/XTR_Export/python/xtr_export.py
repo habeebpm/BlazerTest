@@ -137,6 +137,7 @@ def main(argv: list | None = None) -> int:
     # None-returning poll after a transient hiccup - is seen for the first time.
     _UNSET = object()
     last_bar_time = _UNSET
+    failures = 0
     while True:
         try:
             bar_time = last_closed_bar_time(args.symbol, trigger_tf)
@@ -144,12 +145,18 @@ def main(argv: list | None = None) -> int:
                 run_export(args.symbol, timeframes, args.bars, args.out_dir,
                            drive_service, args.drive_folder_id, drive_cache_path)
                 last_bar_time = bar_time
+            failures = 0
         except KeyboardInterrupt:
             log.info("Stopped.")
             return 0
         except Exception:
-            log.exception("Error during export cycle - will retry next poll")
-        time.sleep(args.poll_seconds)
+            failures += 1
+            # A persistent failure (revoked Drive key, quota, MT5 gone) must
+            # not hammer the API and the log every poll: back off 2x per
+            # consecutive failure, up to 5 minutes; one success resets it.
+            log.exception("Error during export cycle (%d in a row) - retrying in %ds", failures,
+                          min(args.poll_seconds * 2 ** min(failures, 10), 300))
+        time.sleep(min(args.poll_seconds * 2 ** min(failures, 10), 300) if failures else args.poll_seconds)
 
 
 if __name__ == "__main__":

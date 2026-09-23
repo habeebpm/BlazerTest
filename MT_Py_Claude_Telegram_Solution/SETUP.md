@@ -244,13 +244,13 @@ Claude's TP2/TP3 structure targets. `python main.py --test-alert` sends a
 sample. Off until set - see `ClaudeSMC_Trader/README.md` § "Telegram
 full-conviction alerts".
 
-**Breaking-news check (on by default):** right before each entry, one
-extra Claude call uses web search plus Google News headlines to look for
-surprise news on gold/the dollar, and refuses the entry if it points
-against it. Web search must be enabled for your Anthropic organization
-(otherwise headlines only). `python main.py --test-news-check buy` tries it;
-`--news-check-no-web-search`, `--news-check-fail-closed` and
-`--no-news-check` tune it - see `ClaudeSMC_Trader/README.md` § 4.
+**Breaking-news check (on by default, free news):** right before each
+entry, free public feeds (Google News, FXStreet, CNBC) are read and one
+short Claude call looks for surprise news on gold/the dollar, refusing the
+entry if it points against it. `python main.py --test-feeds` shows which
+feeds work from your PC; `--test-news-check buy` runs one check.
+`--news-check-fail-closed`, `--no-news-check` and the optional paid
+`--news-check-web-search` tune it - see `ClaudeSMC_Trader/README.md` § 4.
 
 ### 4c. MQL5: `ClaudeSMC_TradeManager.mq5`
 

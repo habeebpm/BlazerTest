@@ -492,10 +492,21 @@ int OnInit()
                "into InpBotToken.");
          return(INIT_PARAMETERS_INCORRECT);
       }
+      if(InpChannelId1 == 0 && InpChannelId2 == 0 && !InpDryRun)
+      {
+         // Live + no channel filter = anyone who finds this bot's username
+         // could DM it a "BUY" and open a real trade. Refused outright.
+         Print("UnifiedTrader_EA: REFUSING TO START - InpDryRun=false but InpChannelId1 and "
+               "InpChannelId2 are both 0, so ANY chat could send this bot a trade signal. Run once "
+               "with InpDryRun=true, read the channel id from 'message from chat <id>' in the log, "
+               "set InpChannelId1, then go live.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
       if(InpChannelId1 == 0 && InpChannelId2 == 0)
          Print("UnifiedTrader_EA: WARNING - InpChannelId1 and InpChannelId2 are both 0, so signals from "
-               "ANY chat this bot can see will be copied. Watch the log for 'message from chat <id>', "
-               "set InpChannelId1 (and InpChannelId2 for a second channel), and restart.");
+               "ANY chat this bot can see will be copied (dry-run only - live trading is refused in "
+               "this state). Watch the log for 'message from chat <id>', set InpChannelId1 (and "
+               "InpChannelId2 for a second channel), and restart.");
       else if(InpChannelId1 != 0 && InpChannelId2 != 0 && InpChannelId1 == InpChannelId2)
          Print("UnifiedTrader_EA: WARNING - InpChannelId1 and InpChannelId2 are the same chat id; the "
                "second slot is redundant.");
@@ -686,6 +697,7 @@ void OnDeinit(const int reason)
    Comment("");
    if(g_atrHandle != INVALID_HANDLE)
       IndicatorRelease(g_atrHandle);
+   g_atrHandle = INVALID_HANDLE;   // globals survive a re-init - never reuse a released handle
 }
 
 //+------------------------------------------------------------------+
@@ -1362,16 +1374,11 @@ void WriteClaudePauseFile()
    if(StringLen(InpClaudePauseFilename) == 0 || MQLInfoInteger(MQL_TESTER)
       || MQLInfoInteger(MQL_OPTIMIZATION))
       return;
-   int handle = FileOpen(InpClaudePauseFilename, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(handle == INVALID_HANDLE)
-   {
+   // Atomic (temp file + rename): python/main.py must never catch it empty.
+   if(!CommonFileWriteAtomic(InpClaudePauseFilename, g_claudePaused ? "paused" : "running"))
       PrintFormat("UnifiedTrader_EA: WARNING - could not write the Claude pause file %s (error %d) - "
                   "python/main.py will not see the current pause state.",
                   InpClaudePauseFilename, GetLastError());
-      return;
-   }
-   FileWriteString(handle, g_claudePaused ? "paused" : "running");
-   FileClose(handle);
 }
 
 //+------------------------------------------------------------------+
@@ -2515,7 +2522,8 @@ void TelegramPoll()
       // needed) is the safer failure mode than silently acting on a stale
       // command with no chance to reconsider.
       long age = (long)TimeGMT() - updates[i].date;
-      bool isStale = (InpMaxSignalAgeSec > 0 && updates[i].date > 0 && age > InpMaxSignalAgeSec);
+      // An undated message can't be proven fresh - treated as stale.
+      bool isStale = (InpMaxSignalAgeSec > 0 && (updates[i].date <= 0 || age > InpMaxSignalAgeSec));
 
       if(InpControlChatId != 0 && updates[i].chat_id == InpControlChatId)
       {
@@ -2542,7 +2550,13 @@ void TelegramPoll()
    }
 
    if(ArraySize(updates) > 0)
+   {
       GlobalVariableSet(GV_LAST_UPDATE_ID, (double)g_lastUpdateId);
+      // To disk now: after a crash, a lost offset would make Telegram
+      // re-deliver this batch and a signal younger than
+      // InpMaxSignalAgeSec would be traded a second time.
+      GlobalVariablesFlush();
+   }
 }
 
 //+------------------------------------------------------------------+

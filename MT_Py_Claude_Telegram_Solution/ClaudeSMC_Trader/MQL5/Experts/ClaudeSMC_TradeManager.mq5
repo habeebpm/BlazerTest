@@ -178,6 +178,7 @@ void OnDeinit(const int reason)
 {
    if(g_atrHandle != INVALID_HANDLE)
       IndicatorRelease(g_atrHandle);
+   g_atrHandle = INVALID_HANDLE;   // globals survive a re-init - never reuse a released handle
 }
 
 //+------------------------------------------------------------------+

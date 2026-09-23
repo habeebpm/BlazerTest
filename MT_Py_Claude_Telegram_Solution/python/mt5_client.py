@@ -417,7 +417,8 @@ def open_position(cfg: TradeConfig, spec: SymbolSpec, direction: str, dry_run: b
     if result is None:
         log.error("order_send returned None: %s", m.last_error())
         return None
-    if result.retcode != m.TRADE_RETCODE_DONE:
+    # A partial fill (DONE_PARTIAL) opened a real position - not a rejection.
+    if result.retcode not in (m.TRADE_RETCODE_DONE, getattr(m, "TRADE_RETCODE_DONE_PARTIAL", 10010)):
         market_closed = getattr(m, "TRADE_RETCODE_MARKET_CLOSED", 10018)
         if result.retcode == market_closed:
             log.warning("Order not placed: the market is closed. The signal stands; "
@@ -478,7 +479,8 @@ def open_signal_position(cfg, spec: SymbolSpec, direction: str, volume: float,
     if result is None:
         log.error("order_send returned None: %s", m.last_error())
         return None
-    if result.retcode != m.TRADE_RETCODE_DONE:
+    # A partial fill (DONE_PARTIAL) opened a real position - not a rejection.
+    if result.retcode not in (m.TRADE_RETCODE_DONE, getattr(m, "TRADE_RETCODE_DONE_PARTIAL", 10010)):
         market_closed = getattr(m, "TRADE_RETCODE_MARKET_CLOSED", 10018)
         if result.retcode == market_closed:
             log.warning("Copied order not placed: the market is closed.")

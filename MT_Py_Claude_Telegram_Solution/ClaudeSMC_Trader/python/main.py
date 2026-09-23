@@ -38,6 +38,9 @@ log = logging.getLogger("main")
 # every cfg.poll_seconds (default 30s) would just spam the same failure.
 CLAUDE_UNAVAILABLE_BACKOFF_SECONDS = 1800
 
+# An unexpected error retries the same closed bar at most this many times.
+MAX_ATTEMPTS_PER_BAR = 3
+
 
 def setup_logging(verbose: bool = False) -> None:
     logging.basicConfig(
@@ -107,8 +110,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.news_auto_blackout = False
     if args.no_news_check:
         cfg.breaking_news_check = False
-    if args.news_check_no_web_search:
-        cfg.news_check_web_search = False
+    if args.news_check_web_search and not args.news_check_no_web_search:
+        cfg.news_check_web_search = True
     if args.news_check_fail_closed:
         cfg.news_check_fail_closed = True
     if args.min_confluence is not None:
@@ -149,7 +152,7 @@ class DayRoll:
                     log.info("Restored today's state: day-start equity %.2f, %d trade(s)%s.",
                              self.day_start_equity, self.trades_today,
                              ", daily loss breaker TRIGGERED" if self.daily_loss_hit else "")
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
                 log.warning("Could not read %s (%s) - starting today's state fresh.", state_path, exc)
 
     def save(self) -> None:
@@ -157,11 +160,15 @@ class DayRoll:
             return
         try:
             os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
-            with open(self.state_path, "w") as f:
+            # temp file + os.replace: a crash mid-write can never leave a
+            # half-written file that would reset a triggered breaker.
+            tmp_path = self.state_path + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump({"date": self.date.isoformat(), "trades_today": self.trades_today,
                            "day_start_equity": self.day_start_equity,
                            "daily_loss_hit": self.daily_loss_hit,
                            "daily_target_hit": self.daily_target_hit}, f)
+            os.replace(tmp_path, self.state_path)
         except OSError as exc:
             log.warning("Could not save %s (%s) - a restart today would re-anchor the daily cap.",
                         self.state_path, exc)
@@ -354,20 +361,39 @@ CLAUDE_PAUSED_TEXT = ("Claude entries are PAUSED from Telegram (PauseClaudeHab/P
                       "evaluation until ResumeClaudeHab or ResumeHab.")
 
 
-def claude_paused(cfg: AdvisorConfig, gateway=gw) -> bool:
+_last_pause_state = {"paused": False}
+
+
+def claude_paused(cfg: AdvisorConfig, gateway=gw, retry_delay: float = 0.2) -> bool:
     """True while UnifiedTrader_EA.mq5's pause file says "paused" - see
-    config.py's claude_pause_filename. A missing or unreadable file counts
-    as running (a read hiccup must not silently halt trading); an unreadable
-    one is logged."""
+    config.py's claude_pause_filename. No file at all (the EA never wrote
+    one) counts as running. A read that fails or returns something other
+    than "paused"/"running" - e.g. caught mid-write by the EA - is retried
+    once, then falls back to the LAST state actually read: a hiccup must
+    neither lift a pause nor invent one."""
     if not cfg.claude_pause_filename:
         return False
-    try:
-        text = gateway.read_common_file(cfg.claude_pause_filename)
-    except Exception as exc:
-        log.warning("Could not read the Claude pause file %r (%s) - treating as running.",
-                    cfg.claude_pause_filename, exc)
-        return False
-    return (text or "").strip().lower() == "paused"
+    problem = ""
+    for attempt in range(2):
+        try:
+            text = gateway.read_common_file(cfg.claude_pause_filename)
+        except Exception as exc:
+            problem = f"read failed: {exc}"
+        else:
+            if text is None:
+                _last_pause_state["paused"] = False
+                return False
+            state = text.strip().lower()
+            if state in ("paused", "running"):
+                _last_pause_state["paused"] = state == "paused"
+                return _last_pause_state["paused"]
+            problem = f"unexpected content {text[:20]!r}"
+        if attempt == 0 and retry_delay > 0:
+            time.sleep(retry_delay)
+    log.warning("Claude pause file %r: %s - keeping the last known state (%s).",
+                cfg.claude_pause_filename, problem,
+                "paused" if _last_pause_state["paused"] else "running")
+    return _last_pause_state["paused"]
 
 
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
@@ -469,6 +495,23 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
         ).start()
 
 
+def report_feeds(cfg: AdvisorConfig) -> int:
+    """--test-feeds: one download of every free news feed, no MT5/Claude."""
+    rows = news_check.feed_report(cfg)
+    for r in rows:
+        if r["ok"]:
+            log.info("OK    %-50s %3d items, %2d relevant in the last %d min, newest %s min ago",
+                     r["feed"], r["items"], r["relevant_recent"], cfg.news_check_lookback_minutes,
+                     r["newest_minutes_ago"] if r["newest_minutes_ago"] is not None else "?")
+        else:
+            log.warning("FAIL  %-50s %s", r["feed"], r["error"])
+    working = sum(1 for r in rows if r["ok"])
+    log.info("%d of %d feeds working.%s", working, len(rows),
+             "" if working else " The breaking-news check has nothing to read - check this PC's "
+                                "internet/firewall, or edit news_feeds in config.py.")
+    return 0 if working else 1
+
+
 def send_test_alert(cfg: AdvisorConfig, spec) -> int:
     """--test-alert: a sample full-conviction message, priced at the live
     tick, sent synchronously so a bad token/chat id is reported here."""
@@ -561,10 +604,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="skip the pre-trade breaking-news check (news_check.py) - by default "
                              "every entry that passes all other gates first gets one extra Claude "
                              "call looking for surprise news on gold/the dollar")
+    parser.add_argument("--news-check-web-search", action="store_true", dest="news_check_web_search",
+                        help="let the breaking-news check also use Claude's web search tool (billed per "
+                             "search; must be enabled for your API organization) - default: free RSS "
+                             "headlines only")
     parser.add_argument("--news-check-no-web-search", action="store_true",
-                        dest="news_check_no_web_search",
-                        help="run the breaking-news check on free RSS headlines only, without "
-                             "Claude's web search tool")
+                        dest="news_check_no_web_search", help=argparse.SUPPRESS)  # the default now
     parser.add_argument("--news-check-fail-closed", action="store_true", dest="news_check_fail_closed",
                         help="refuse the entry when the breaking-news check cannot run at all "
                              "(default: trade anyway and say so in the log and alert)")
@@ -599,13 +644,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-alert", action="store_true", dest="test_alert",
                         help="send a SAMPLE full-conviction alert (levels priced at the current tick, "
                              "no Claude call, no order) to check the Telegram alert setup, then exit")
+    parser.add_argument("--test-feeds", action="store_true", dest="test_feeds",
+                        help="download every free news feed once and report which work from this PC "
+                             "(no MT5, no Claude call), then exit")
     parser.add_argument("--test-news-check", choices=["buy", "sell"], dest="test_news_check",
                         help="run the breaking-news check once for a hypothetical entry at the current "
                              "price (one Claude call, no order) and print the result, then exit")
     parser.add_argument("--check", action="store_true",
                         help="connect to MT5, print the symbol spec, exit - no Claude call")
     parser.add_argument("--login", type=int, help="MT5 account login (optional, if not already logged in)")
-    parser.add_argument("--password", help="MT5 account password")
+    parser.add_argument("--password", help="MT5 account password (safer: set the MT5_PASSWORD "
+                                           "environment variable instead)")
     parser.add_argument("--server", help="MT5 broker server name")
     parser.add_argument("--terminal-path", dest="terminal_path", help="path to terminal64.exe")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -627,8 +676,13 @@ def main(argv: list | None = None) -> int:
             "other keeps opening past it). Nothing here can verify that for you - check it by hand.",
             cfg.shared_cap_magic_numbers, cfg.max_open_positions_per_direction)
 
-    gw.connect(login=args.login, password=args.password, server=args.server,
-               terminal_path=args.terminal_path)
+    if args.test_feeds:
+        return report_feeds(cfg)
+
+    # MT5_PASSWORD keeps the password out of the process list / shell
+    # history; normally neither is needed (MT5 already logged in).
+    gw.connect(login=args.login, password=args.password or os.environ.get("MT5_PASSWORD") or None,
+               server=args.server, terminal_path=args.terminal_path)
     spec = gw.symbol_spec(cfg.symbol)
 
     if args.check:
@@ -657,8 +711,9 @@ def main(argv: list | None = None) -> int:
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
         log.info("Breaking-news check before each entry: %s",
                  "off" if not cfg.breaking_news_check else
-                 ("web search + " if cfg.news_check_web_search else "")
-                 + f"{len(cfg.news_feeds)} RSS feed(s), last {cfg.news_check_lookback_minutes} min, "
+                 f"{len(cfg.news_feeds)} free RSS feed(s)"
+                 + (" + Claude web search" if cfg.news_check_web_search else "")
+                 + f", last {cfg.news_check_lookback_minutes} min, "
                  + ("refuse entry if unavailable" if cfg.news_check_fail_closed
                     else "trade anyway if unavailable"))
         return 0
@@ -690,6 +745,8 @@ def main(argv: list | None = None) -> int:
     last_bar_time = None
     sleep_seconds = cfg.poll_seconds
     heartbeat = Heartbeat()
+    failed_bar, failed_attempts = None, 0
+    bar_time = None
     while True:
         try:
             bar_time = market_intel.last_closed_time(gw, cfg.symbol, cfg.primary_timeframe)
@@ -697,9 +754,12 @@ def main(argv: list | None = None) -> int:
                 # last_bar_time only advances AFTER a successful cycle - if
                 # run_once() raises (Claude down, MT5 hiccup, ...), this same
                 # bar is retried on the next poll instead of being silently
-                # skipped forever.
+                # skipped forever - but at most MAX_ATTEMPTS_PER_BAR times, so
+                # a repeating error can't re-call Claude (or re-send an order)
+                # every poll for the whole bar.
                 run_once(client, cfg, spec, day)
                 last_bar_time = bar_time
+                failed_bar, failed_attempts = None, 0
             heartbeat.mark_cycle_success()
             sleep_seconds = cfg.poll_seconds
         except KeyboardInterrupt:
@@ -725,8 +785,18 @@ def main(argv: list | None = None) -> int:
                     CLAUDE_UNAVAILABLE_BACKOFF_SECONDS // 60, cfg.poll_seconds, exc)
                 sleep_seconds = CLAUDE_UNAVAILABLE_BACKOFF_SECONDS
         except Exception:
-            log.exception("Error during evaluation cycle - will retry next poll")
             sleep_seconds = cfg.poll_seconds
+            if bar_time is not None and bar_time == failed_bar:
+                failed_attempts += 1
+            else:
+                failed_bar, failed_attempts = bar_time, 1
+            if bar_time is not None and failed_attempts >= MAX_ATTEMPTS_PER_BAR:
+                log.exception("Error during evaluation cycle - failed %d times on this bar; SKIPPING "
+                              "it and waiting for the next one", failed_attempts)
+                last_bar_time = bar_time
+                failed_bar, failed_attempts = None, 0
+            else:
+                log.exception("Error during evaluation cycle - will retry next poll")
 
         if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
             if heartbeat.due_heartbeat(cfg):

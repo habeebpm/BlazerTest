@@ -200,6 +200,34 @@ int EconCollect(const string currencies, datetime fromUtc, datetime toUtc, EconE
 }
 
 //+------------------------------------------------------------------+
+//| Writes `text` to Common\Files\<filename> ATOMICALLY: a temp file  |
+//| then a rename, so python/ never reads a half-written file (an      |
+//| empty pause file would read as "running"). If the rename is        |
+//| refused - Windows does that while Python has the file open, for a  |
+//| few ms - it falls back to writing in place. Shared by every EA     |
+//| that includes this file.                                           |
+//+------------------------------------------------------------------+
+bool CommonFileWriteAtomic(const string filename, const string text)
+{
+   string tmp = filename + ".tmp";
+   int h = FileOpen(tmp, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h != INVALID_HANDLE)
+   {
+      FileWriteString(h, text);
+      FileClose(h);
+      if(FileMove(tmp, FILE_COMMON, filename, FILE_COMMON|FILE_REWRITE))
+         return(true);
+      FileDelete(tmp, FILE_COMMON);
+   }
+   h = FileOpen(filename, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return(false);
+   FileWriteString(h, text);
+   FileClose(h);
+   return(true);
+}
+
+//+------------------------------------------------------------------+
 //| Writes events from `backHours` ago to `aheadDays` ahead to        |
 //| Common\Files\<filename>. First line is "# exported_at_utc=...",    |
 //| then a CSV header. An empty result is NOT written (the calendar     |
@@ -223,21 +251,19 @@ bool EconExportCsv(const string filename, const string currencies, int backHours
    }
    g_econWarnedEmpty = false;
 
-   int h = FileOpen(filename, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h == INVALID_HANDLE)
+   string csv = "# exported_at_utc=" + EconTimeText(nowUtc) + "\r\n"
+                + "time_utc,currency,importance,event,actual,forecast,previous,impact\r\n";
+   for(int i = 0; i < n; i++)
+      csv += EconTimeText(events[i].timeUtc) + "," + events[i].currency + "," +
+             EconImportanceName(events[i].importance) + "," +
+             EconCsvQuote(events[i].name) + "," + events[i].actual + "," +
+             events[i].forecast + "," + events[i].previous + "," +
+             events[i].impact + "\r\n";
+   if(!CommonFileWriteAtomic(filename, csv))
    {
       PrintFormat("EconCalendar: could not write %s (error %d).", filename, GetLastError());
       return(false);
    }
-   FileWriteString(h, "# exported_at_utc=" + EconTimeText(nowUtc) + "\r\n");
-   FileWriteString(h, "time_utc,currency,importance,event,actual,forecast,previous,impact\r\n");
-   for(int i = 0; i < n; i++)
-      FileWriteString(h, EconTimeText(events[i].timeUtc) + "," + events[i].currency + "," +
-                         EconImportanceName(events[i].importance) + "," +
-                         EconCsvQuote(events[i].name) + "," + events[i].actual + "," +
-                         events[i].forecast + "," + events[i].previous + "," +
-                         events[i].impact + "\r\n");
-   FileClose(h);
    return(true);
 }
 

@@ -94,7 +94,8 @@ keys - it just proves the program works on your PC.
    bottom you'll see each Telegram message the bot receives, with its chat
    id. Copy the signal channel's id into `InpChannelId1` and restart the EA.
    (While `InpChannelId1` is `0`, the EA treats *any* chat as a signal
-   source - that's why `InpDryRun` must stay `true` until this is done.)
+   source - so it refuses to start with `InpDryRun=false` until this is
+   done.)
 
 Run **only one** copy of this EA per MT5 terminal.
 
@@ -110,6 +111,7 @@ set TELEGRAM_ALERT_BOT_TOKEN=...the same bot token as the EA...
 set TELEGRAM_ALERT_CHAT_ID=...your own chat id from step 3...
 python main.py --check
 python main.py --test-alert
+python main.py --test-feeds
 python main.py --test-news-check buy
 python main.py --once -v
 ```
@@ -118,11 +120,10 @@ python main.py --once -v
 - `--test-alert` sends you a sample **trade alert** in Telegram, like the
   one you'll get whenever Claude is fully convinced: direction, entry, SL,
   TP1/TP2/TP3 and the news check.
+- `--test-feeds` checks the free news feeds (Google News, FXStreet, CNBC)
+  from your PC and lists which work - no MT5 or Claude needed.
 - `--test-news-check buy` runs the **breaking-news check** once (see
-  below) and tells you whether web search is working. If it says web
-  search was refused, ask whoever manages your Anthropic account to enable
-  web search in the Anthropic Console. Until then it uses free news
-  headlines only.
+  below) and shows what it found in the news.
 
 `set` only lasts while this window is open. To keep the three values for
 good, run each once with `setx` instead of `set` (e.g.
@@ -199,7 +200,7 @@ check (no Claude cost, no trades); the EA keeps managing any open trades.
 | Max loss per day | 10% of account - no new trade is opened if it could push the day past 10%, counting trades already open |
 | Max open trades | 5 per direction (Telegram + Claude together) |
 | News filter | No new trades from 15 minutes before to 15 minutes after a high-impact USD event (NFP, CPI, FOMC...), from MT5's own economic calendar |
-| Breaking news | Just before each Claude entry, Claude searches the web and recent headlines for **surprise** news on gold or the dollar (war, emergency Fed moves, tariffs...) and cancels the entry if it points the other way |
+| Breaking news | Just before each Claude entry, Claude reads the last 3 hours of free news headlines for **surprise** news on gold or the dollar (war, emergency Fed moves, tariffs...) and cancels the entry if it points the other way |
 | Exit | Stop at $6, lock profit at $6, then trail $3 (per 0.01 lot, scaled with lot size) |
 
 To change them: `--risk-percent 1` / `--max-daily-loss 5` on the Python
@@ -228,8 +229,9 @@ sides the same**.
 | "Why" says no verdict yet | `main.py` isn't running, or hasn't finished its first cycle |
 | Claude "out of credits", retries every 30 min | Add credits at console.anthropic.com - open trades are still managed meanwhile |
 | "daily loss budget" in the logs | Working as intended: that trade could have taken the day past 10% |
+| "Could not write ... trades.csv (is it open in Excel?)" | Close the file in Excel (or open a copy). Trading carries on meanwhile - the missing rows are printed in the log instead |
 | No trade alerts in Telegram | Run `python main.py --test-alert` - it says what's wrong. Send your bot any message first |
-| "News check: unavailable" in an alert | The news check couldn't run (no internet, or web search refused and no headlines) - the trade went ahead. Add `--news-check-fail-closed` to skip such trades instead |
+| "News check: unavailable" in an alert | The news check couldn't run (no internet, or every news feed down - see `--test-feeds`) - the trade went ahead. Add `--news-check-fail-closed` to skip such trades instead |
 | `python` not found | Reinstall Python with "Add to PATH" ticked |
 
 More detail: `SETUP.md` (every system, every option) and the `README.md`

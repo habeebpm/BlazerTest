@@ -2054,8 +2054,28 @@ def test_main_cli_config() -> bool:
                 not main_mod.claude_paused(cfg, FakePauseFile("running")))
     ok &= check("no pause file at all (no UnifiedTrader_EA) means running",
                 not main_mod.claude_paused(cfg, FakePauseFile(None)))
-    ok &= check("an unreadable pause file counts as running rather than halting trading",
-                not main_mod.claude_paused(cfg, FakePauseFile(fail=True)))
+    main_mod.claude_paused(cfg, FakePauseFile("running"), retry_delay=0)
+    ok &= check("an unreadable pause file keeps the last state read (running) rather than halting trading",
+                not main_mod.claude_paused(cfg, FakePauseFile(fail=True), retry_delay=0))
+    main_mod.claude_paused(cfg, FakePauseFile("paused"), retry_delay=0)
+    ok &= check("...and a read failure while PAUSED keeps it paused - a hiccup never lifts a pause",
+                main_mod.claude_paused(cfg, FakePauseFile(fail=True), retry_delay=0))
+    ok &= check("a half-written/empty file (caught mid-write) also keeps the last state",
+                main_mod.claude_paused(cfg, FakePauseFile(""), retry_delay=0)
+                and main_mod.claude_paused(cfg, FakePauseFile("pau"), retry_delay=0))
+
+    class FlakyOnce(FakePauseFile):
+        def __init__(self):
+            super().__init__("running")
+            self.calls = 0
+
+        def read_common_file(self, filename):
+            self.calls += 1
+            return "" if self.calls == 1 else self.text
+    flaky = FlakyOnce()
+    ok &= check("one bad read is retried, and the retry's real content wins",
+                not main_mod.claude_paused(cfg, flaky, retry_delay=0) and flaky.calls == 2)
+    main_mod.claude_paused(cfg, FakePauseFile("running"), retry_delay=0)
     ok &= check("claude_pause_filename='' disables the check",
                 not main_mod.claude_paused(AdvisorConfig(claude_pause_filename=""),
                                            FakePauseFile("paused")))
@@ -2483,7 +2503,8 @@ def test_breaking_news_check() -> bool:
                 atom)
     ok &= check("unparseable XML returns [] instead of raising", news_check.parse_feed("<rss><oops") == [])
 
-    cfg = AdvisorConfig(news_feeds=["rss://a", "atom://b", "dead://c"], news_check_lookback_minutes=180)
+    cfg = AdvisorConfig(news_feeds=["rss://a", "atom://b", "dead://c"], news_check_lookback_minutes=180,
+                        news_check_web_search=True)
     feeds = {"rss://a": SAMPLE_RSS, "atom://b": SAMPLE_ATOM}
 
     def fetcher(url):
@@ -2573,14 +2594,15 @@ def test_breaking_news_check() -> bool:
                                       fetcher=fetcher)
     ok &= check("with no check possible, fail-open (default) trades and says so",
                 not r.ran and r.block_reason == "" and r.note.startswith("unavailable"), r.note)
-    cfg_closed = AdvisorConfig(news_feeds=cfg.news_feeds, news_check_fail_closed=True)
+    cfg_closed = AdvisorConfig(news_feeds=cfg.news_feeds, news_check_fail_closed=True,
+                               news_check_web_search=True)
     r = news_check.check_before_trade(FakeNewsClient(list(boom)), cfg_closed, "buy", 2650.0,
                                       now=NEWS_NOW, fetcher=fetcher)
     ok &= check("news_check_fail_closed=True refuses the entry instead",
                 r.block_reason.startswith("breaking-news check unavailable"), r.block_reason)
 
     # 8) No headlines + web search failing -> no blind headline-only call.
-    cfg_nofeeds = AdvisorConfig(news_feeds=[])
+    cfg_nofeeds = AdvisorConfig(news_feeds=[], news_check_web_search=True)
     client = FakeNewsClient([RuntimeError("web search disabled")])
     r = news_check.check_before_trade(client, cfg_nofeeds, "buy", 2650.0, now=NEWS_NOW)
     ok &= check("with no headlines, a failed web search is NOT followed by a blind call with nothing to read",
@@ -2604,13 +2626,91 @@ def test_breaking_news_check() -> bool:
     ok &= check("breaking_news_check=False makes no call and never blocks",
                 client.calls == [] and r.block_reason == "" and not r.ran)
 
-    cfg_noweb = AdvisorConfig(news_feeds=cfg.news_feeds, news_check_web_search=False,
-                              news_check_model="claude-sonnet-5")
+    cfg_noweb = AdvisorConfig(news_feeds=cfg.news_feeds, news_check_model="claude-sonnet-5")
     client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json())])])
-    news_check.check_before_trade(client, cfg_noweb, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
-    ok &= check("news_check_web_search=False sends no tools; news_check_model overrides the model",
-                "tools" not in client.calls[0] and client.calls[0]["model"] == "claude-sonnet-5",
-                client.calls[0].get("model"))
+    r = news_check.check_before_trade(client, cfg_noweb, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("DEFAULT is free news only: no web search tool is sent, the free headlines are judged; "
+                "news_check_model overrides the model",
+                not AdvisorConfig().news_check_web_search and "tools" not in client.calls[0]
+                and client.calls[0]["model"] == "claude-sonnet-5" and r.ran
+                and r.note == "clear - no surprise news [3 headlines]", (client.calls[0].get("model"), r.note))
+    client = FakeNewsClient([])
+    r = news_check.check_before_trade(client, AdvisorConfig(news_feeds=["dead://x"]), "buy", 2650.0,
+                                      now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("free-only with every feed down makes NO Claude call and reports unavailable (fail-open)",
+                client.calls == [] and not r.ran and r.block_reason == "" and r.note.startswith("unavailable"),
+                r.note)
+    defaults = AdvisorConfig().news_feeds
+    ok &= check("the default free feeds are several independent https publishers",
+                len(defaults) >= 4 and all(u.startswith("https://") for u in defaults)
+                and len({u.split("/")[2] for u in defaults}) >= 3, defaults)
+
+    # --- hardening against hostile / broken feeds ---
+    bomb = ('<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;">]>'
+            '<rss><channel><item><title>gold &lol2;</title><pubDate>Wed, 23 Sep 2026 11:30:00 GMT'
+            '</pubDate></item></channel></rss>')
+    ok &= check("XML declaring entities (billion-laughs vector) is refused", news_check.parse_feed(bomb) == [])
+    doctype_only = ('<?xml version="1.0"?><!DOCTYPE rss PUBLIC "-//Netscape Communications//DTD RSS 0.91//EN" '
+                    '"http://my.netscape.com/publish/formats/rss-0.91.dtd"><rss><channel><item>'
+                    '<title>Gold rallies</title><pubDate>Wed, 23 Sep 2026 11:30:00 GMT</pubDate></item>'
+                    '</channel></rss>')
+    ok &= check("a plain DOCTYPE line (old RSS 0.91) still parses - no external DTD is fetched",
+                [h.title for h in news_check.parse_feed(doctype_only)] == ["Gold rallies"])
+    long_rss = SAMPLE_RSS.replace("Gold jumps as Fed", "Gold " + "x" * 5000 + " jumps as Fed")
+    ok &= check("titles are whitespace-collapsed and capped (limits prompt size and injected text)",
+                max(len(h.title) for h in news_check.parse_feed(long_rss)) == news_check.MAX_TITLE_CHARS)
+    try:
+        news_check._http_get("file:///etc/passwd")
+        ok &= check("a non-http(s) feed URL is refused", False)
+    except ValueError:
+        ok &= check("a non-http(s) feed URL (file://...) is refused before any read", True)
+
+    class _BigResp:
+        def __init__(self, n):
+            self.n = n
+
+        def read(self, limit=-1):
+            return b"x" * (self.n if limit < 0 else min(self.n, limit))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    import urllib.request as _ur
+    real_urlopen = _ur.urlopen
+    try:
+        _ur.urlopen = lambda req, timeout=None: _BigResp(news_check.MAX_FEED_BYTES + 50)
+        try:
+            news_check._http_get("https://example.com/huge.xml")
+            ok &= check("an oversized feed is refused", False)
+        except ValueError:
+            ok &= check("an oversized feed is refused after reading at most the cap (+1 byte)", True)
+        _ur.urlopen = lambda req, timeout=None: _BigResp(1000)
+        ok &= check("a normal-size feed downloads", len(news_check._http_get("https://example.com/ok.xml")) == 1000)
+    finally:
+        _ur.urlopen = real_urlopen
+
+    import threading as _th
+    release = _th.Event()
+
+    def stalling_fetcher(url):
+        if url == "slow://x":
+            release.wait(5)      # a server dripping bytes forever
+            return SAMPLE_RSS
+        return fetcher(url)
+    t0 = datetime.now()
+    got = news_check._download_all(["rss://a", "slow://x"], stalling_fetcher, deadline=0.3)
+    elapsed = (datetime.now() - t0).total_seconds()
+    release.set()
+    ok &= check("an overall deadline caps the download step; a stalled feed is reported, the rest kept",
+                elapsed < 2 and got[0][1] == SAMPLE_RSS and "timed out" in got[1][2], (elapsed, got[1][2]))
+
+    rows = news_check.feed_report(cfg, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("feed_report: one row per feed, in order, with items/relevant counts and the dead feed's error",
+                [r["ok"] for r in rows] == [True, True, False] and rows[0]["items"] == 5
+                and rows[0]["relevant_recent"] == 2 and rows[0]["newest_minutes_ago"] == 10
+                and "feed down" in rows[2]["error"], rows)
     return ok
 
 
@@ -2772,6 +2872,59 @@ def test_entry_levels_and_alert() -> bool:
                 make_verdict().take_profit_targets == [])
 
     ok &= _run_once_wiring(spec)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        # trades.csv/decisions.csv "locked" (a directory can't be opened for
+        # append - the same OSError family as Excel's lock on Windows).
+        os.makedirs(os.path.join(tmp, "trades.csv"))
+        os.makedirs(os.path.join(tmp, "decisions.csv"))
+        cfg_locked = AdvisorConfig(dry_run=False, use_risk_percent=False, log_dir=tmp)
+        fg_locked = FakeGateway()
+        try:
+            d = executor.execute(fg_locked, cfg_locked, make_verdict("buy", 3, "full"), spec, trades_today=0)
+            raised = None
+        except Exception as exc:
+            raised, d = exc, None
+        ok &= check("a locked trades.csv/decisions.csv (e.g. open in Excel) never aborts execute() after "
+                    "the order - it is reported executed exactly once, so main.py can't resend it",
+                    raised is None and d.executed and len(fg_locked.orders_sent) == 1, raised or d)
+
+    posted = []
+
+    def invalid_url_poster(url, payload):
+        raise ValueError(f"URL can't contain control characters. {url!r}")
+    telegram_alert.send_alert("123:SECRET\n", "42", "x", poster=lambda u, p: posted.append((u, p)))
+    ok &= check("a token/chat id with stray whitespace (env var paste) is stripped before use",
+                posted and posted[0][0].endswith("/bot123:SECRET/sendMessage") and posted[0][1]["chat_id"] == "42",
+                posted)
+    import io
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    logging.getLogger("telegram_alert").addHandler(handler)
+    try:
+        telegram_alert.send_alert("123:SECRET", "42", "x", poster=invalid_url_poster)
+    finally:
+        logging.getLogger("telegram_alert").removeHandler(handler)
+    ok &= check("a failed send never writes the bot token into the log", "SECRET" not in buf.getvalue()
+                and "<bot-token>" in buf.getvalue(), buf.getvalue().strip())
+    long_posted = []
+    telegram_alert.send_alert("t", "c", "y" * 9000, poster=lambda u, p: long_posted.append(p))
+    ok &= check("messages are capped under Telegram's 4096-char limit instead of being rejected",
+                len(long_posted[0]["text"]) == 4000)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "day_state.json")
+        day = main_mod.DayRoll(state_path=path)
+        day.day_start_equity, day.daily_loss_hit = 10000.0, True
+        day.save()
+        ok &= check("DayRoll.save() writes atomically (no .tmp left behind) and restores the breaker",
+                    not os.path.exists(path + ".tmp") and main_mod.DayRoll(state_path=path).daily_loss_hit)
+        with open(path, "w") as f:
+            f.write("[1, 2, 3]")
+        ok &= check("a state file with the wrong JSON shape starts fresh instead of crashing",
+                    main_mod.DayRoll(state_path=path).trades_today == 0)
 
     saved = {k: os.environ.get(k) for k in ("TELEGRAM_ALERT_BOT_TOKEN", "TELEGRAM_ALERT_CHAT_ID")}
     try:

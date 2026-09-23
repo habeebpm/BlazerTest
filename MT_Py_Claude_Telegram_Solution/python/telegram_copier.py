@@ -246,7 +246,10 @@ class Copier:
         # not count against max_trades_per_day - neither one actually opened
         # a position, and counting them would let a string of rejections
         # lock out real signals for the rest of the day.
-        if result is not None and result.retcode == mc.mt5().TRADE_RETCODE_DONE:
+        m = mc.mt5()
+        ok_codes = (m.TRADE_RETCODE_DONE, getattr(m, "TRADE_RETCODE_DONE_PARTIAL", 10010),
+                    getattr(m, "TRADE_RETCODE_PLACED", 10008))
+        if result is not None and result.retcode in ok_codes:
             self.trades_today += 1
         self.verify_execution(ev, result)
         record_signal({
@@ -351,6 +354,13 @@ def run_live(cfg: CopierConfig, args) -> int:
         log.error("The 'telethon' package is required for live listening: pip install telethon")
         return 1
 
+    if args.live and not cfg.allowed_chats:
+        # This is a USER account session: with no allow-list, every chat it is
+        # in - including a DM from a stranger - would be copied as a signal.
+        log.error("Refusing --live with no chat allow-list: any chat this Telegram account can see "
+                  "(including a stranger's DM) could open a real trade. Set TELEGRAM_CHANNELS or "
+                  "--channels to the signal channel(s) first (dry-run shows their ids).")
+        return 1
     copier = Copier(cfg, dry_run=not args.live)
     copier.start()
     chats = cfg.allowed_chats or None

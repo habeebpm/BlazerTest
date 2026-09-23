@@ -162,13 +162,18 @@ def send_alert(bot_token: str, chat_id: str, text: str, poster=_post_json) -> bo
     except for the blank-credentials no-op case, which is the normal "alerts
     just aren't configured" state, not a failure worth logging every cycle).
     """
+    # A token pasted with a trailing newline/space (common in environment
+    # variables) would otherwise make http.client raise InvalidURL - whose
+    # message contains the URL, i.e. the token, straight into the log.
+    bot_token, chat_id = (bot_token or "").strip(), str(chat_id or "").strip()
     if not bot_token or not chat_id:
         return False
     url = f"{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage"
     try:
-        poster(url, {"chat_id": chat_id, "text": text})
+        poster(url, {"chat_id": chat_id, "text": text[:4000]})   # Telegram's limit is 4096
         return True
     except Exception as exc:
-        log.warning("Telegram full-conviction alert failed (bad bot token/chat id, network "
-                    "down, or rate limited) - trading continues unaffected: %s", exc)
+        log.warning("Telegram alert failed (bad bot token/chat id, network down, or rate "
+                    "limited) - trading continues unaffected: %s",
+                    str(exc).replace(bot_token, "<bot-token>"))
         return False

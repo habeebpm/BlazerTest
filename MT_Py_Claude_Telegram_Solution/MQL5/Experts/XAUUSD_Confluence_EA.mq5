@@ -384,6 +384,11 @@ void OnDeinit(const int reason)
    if(hAdx      != INVALID_HANDLE) IndicatorRelease(hAdx);
    if(hAtr      != INVALID_HANDLE) IndicatorRelease(hAtr);
    if(hBands    != INVALID_HANDLE) IndicatorRelease(hBands);
+   // Globals survive a re-init (timeframe/input change) - never release or
+   // read a stale handle on the next pass.
+   hEmaTrend = INVALID_HANDLE; hEmaFast = INVALID_HANDLE; hEmaSlow = INVALID_HANDLE;
+   hMacd = INVALID_HANDLE; hRsi = INVALID_HANDLE; hAdx = INVALID_HANDLE;
+   hAtr = INVALID_HANDLE; hBands = INVALID_HANDLE;
    Comment("");
 }
 
