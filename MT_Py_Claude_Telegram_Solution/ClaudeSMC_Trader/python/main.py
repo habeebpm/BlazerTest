@@ -595,6 +595,53 @@ def send_test_alert(cfg: AdvisorConfig, spec) -> int:
     return 1
 
 
+# Settings saved with `setx` (INSTALL.md) - permanent in the Windows user
+# account, so they survive a restart. (name, secret, when it is needed)
+SAVED_SETTINGS = [
+    ("ANTHROPIC_API_KEY", True, "always"),
+    ("TELEGRAM_ALERT_BOT_TOKEN", True, "alerts"),
+    ("TELEGRAM_ALERT_CHAT_ID", False, "alerts"),
+    ("TELEGRAM_API_ID", False, "relay"),
+    ("TELEGRAM_API_HASH", True, "relay"),
+    ("TELEGRAM_SOURCE_CHANNELS", False, "relay"),
+    ("TELEGRAM_RELAY_GROUP", False, "relay"),
+    ("MT5_PASSWORD", True, "optional"),
+]
+
+
+def settings_report(relay_on: bool, env=None) -> tuple[list, list]:
+    """(lines, missing required names) for the saved environment settings.
+    Secrets are masked to their last 4 characters - never printed whole."""
+    env = os.environ if env is None else env
+    lines, missing = [], []
+    for name, secret, need in SAVED_SETTINGS:
+        value = (env.get(name) or "").strip()
+        required = need == "always" or (need == "relay" and relay_on)
+        if value:
+            shown = ("*" * 8 + value[-4:]) if secret and len(value) > 4 else ("set" if secret else value)
+            lines.append(f"  {name:<26} OK       {shown}")
+        else:
+            status = "MISSING" if required else "not set"
+            note = {"always": "required", "alerts": "no Telegram alerts/buttons from Python",
+                    "relay": "needed for the relay bridge", "optional": "fine if MT5 is logged in"}[need]
+            lines.append(f"  {name:<26} {status:<8} ({note})")
+            if required:
+                missing.append(name)
+    return lines, missing
+
+
+def log_settings_report(args, full: bool = True) -> None:
+    """--check: every setting; otherwise only a missing required one."""
+    preset = services.load_preset(args.preset)
+    lines, missing = settings_report(args.relay or preset.relay_bridge.enabled)
+    if full:
+        log.info("Saved settings (Windows user environment, kept across restarts):\n%s",
+                 "\n".join(lines))
+    if missing:
+        log.error("Missing: %s - set with setx (INSTALL.md step 5 / 7), then open a NEW Command "
+                  "Prompt.", ", ".join(missing))
+
+
 def start_companions(cfg: AdvisorConfig, preset_path: str, force_relay: bool = False, **kw) -> list:
     """The optional companion programs switched on in main_preset.ini (relay
     bridge, Python Drive export, weekly ML retrain / calibration report -
@@ -771,6 +818,7 @@ def main(argv: list | None = None) -> int:
 
     # MT5_PASSWORD keeps the password out of the process list / shell
     # history; normally neither is needed (MT5 already logged in).
+    log_settings_report(args, full=args.check)
     gw.connect(login=args.login, password=args.password or os.environ.get("MT5_PASSWORD") or None,
                server=args.server, terminal_path=args.terminal_path)
     spec = gw.symbol_spec(cfg.symbol)

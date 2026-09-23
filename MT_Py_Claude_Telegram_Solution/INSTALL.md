@@ -234,6 +234,25 @@ Never start `telegram_relay_bridge.py`, `xtr_export.py`, `train_ml_model.py`
 or `calibration_report.py` by hand while `main.py` runs them. Never run
 `python/telegram_copier.py` alongside `UnifiedTrader_EA` (duplicate trades).
 
+## After a PC restart
+
+Nothing to re-enter: `setx` values (API key, bot token, chat id, relay
+settings) are saved permanently in your Windows user account; MT5 reopens
+its charts with the EA and its inputs; the relay login and the
+`main_preset.ini` switches are files.
+
+1. Start MT5 (log in if asked) -> check **Algo Trading** is on.
+2. New Command Prompt:
+   ```bat
+   cd MT_Py_Claude_Telegram_Solution\ClaudeSMC_Trader\python
+   python main.py --check
+   ```
+   Under **Saved settings** every required line must say `OK`.
+3. Start the step 6 command again.
+
+Change a saved value: run its `setx` line again, then open a new
+Command Prompt. Remove one: `reg delete HKCU\Environment /v NAME /f`.
+
 ## Real money (after a good demo)
 
 1. MT5 -> log in to the real account (small balance).

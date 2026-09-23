@@ -3442,6 +3442,18 @@ def test_relay_supervisor() -> bool:
     real_preset = services.load_preset()
     ok &= check("the shipped main_preset.ini parses, every companion off by default",
                 not real_preset.errors and real_preset.enabled_names() == [], real_preset.errors)
+    env = {"ANTHROPIC_API_KEY": "sk-ant-abcdefgh1234", "TELEGRAM_ALERT_CHAT_ID": "12345",
+           "TELEGRAM_API_ID": "999"}
+    lines, missing = main_mod.settings_report(relay_on=True, env=env)
+    text = "\n".join(lines)
+    ok &= check("settings report: secrets masked to the last 4, plain values shown, required-but-"
+                "missing listed (relay on)",
+                "********1234" in text and "sk-ant-abcdefgh" not in text and "12345" in text
+                and missing == ["TELEGRAM_API_HASH", "TELEGRAM_SOURCE_CHANNELS", "TELEGRAM_RELAY_GROUP"],
+                (text, missing))
+    _, missing_off = main_mod.settings_report(relay_on=False, env={})
+    ok &= check("relay off: only ANTHROPIC_API_KEY is required", missing_off == ["ANTHROPIC_API_KEY"],
+                missing_off)
     args = main_mod.build_parser().parse_args(["--relay"])
     ok &= check("--relay / --relay-login / --preset parse", args.relay and not args.relay_login
                 and args.preset == services.DEFAULT_PRESET
