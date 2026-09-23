@@ -1,0 +1,11 @@
+# Everything GoldTrader needs - installed by setup.bat (pip install -r requirements.txt).
+MetaTrader5>=5.0.45; sys_platform == "win32"   # Windows-only: drives the local MT5 terminal
+pandas>=2.0
+numpy>=1.24
+anthropic>=1.7              # Claude API
+pydantic>=2.0               # Claude's structured verdict
+scikit-learn>=1.3           # local ML advisor (about 170 MB with SciPy)
+joblib>=1.3
+telethon>=1.45              # relay bridge (only used when it is switched on)
+google-api-python-client>=2.100   # Python Drive export (VPS only)
+google-auth>=2.23

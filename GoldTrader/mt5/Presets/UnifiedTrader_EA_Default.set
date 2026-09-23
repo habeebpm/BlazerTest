@@ -1,0 +1,87 @@
+; UnifiedTrader_EA - GoldTrader preset
+; Chart > EA Inputs > Load. Then fill in InpBotToken, InpControlChatId and
+; InpChannelId1 (2/3) - see GoldTrader/README.md.
+;
+; Ships with BOTH sources on (Telegram signals + managing Claude's trades)
+; and InpDryRun=true (nothing is sent until you set it false). Everything
+; here already matches GoldTrader/app/config.py: magic numbers, $6 SL /
+; $6 TP1 lock / $3 trail at 0.01 reference lot, 2% risk, 10% daily cap,
+; 5 per direction, and the shared file names. InpXtrExportCopyTo: your
+; Google Drive folder (check the exact path in Explorer - Google's default
+; is G:\My Drive\...); empty = keep the price files in MT5's Common\Files.
+;
+; InpExitStyle applies to InpClaudeMagicNumber positions ONLY (Telegram-
+; sourced positions always use plain lock-then-trail) - 0 is EXIT_SL_TO_TP1
+; (the default, matches AdvisorConfig.exit_style="sl_to_tp1"). Set it to 1
+; (EXIT_BREAKEVEN_R_DECAY) only if AdvisorConfig.exit_style is also
+; "breakeven_r_decay" - see config.py's module docstring - and keep
+; InpBreakevenAtrMult/InpAtrPeriod/InpDecayWindowMinutes in sync with
+; breakeven_atr_mult/breakeven_atr_period/decay_window_minutes there by
+; hand. InpAtrTimeframe=5 is PERIOD_M5 (MT5's raw ENUM_TIMEFRAMES value).
+;
+; InpControlChatId=0 (default) disables remote control entirely. Set it to
+; your own DM chat id with this bot (never the signal channel's) to enable
+; PauseHab/ResumeHab/PauseTelHab/ResumeTelHab/PauseClaudeHab/ResumeClaudeHab/
+; Why - see the .mq5 file
+; header's REMOTE CONTROL section. Needs InpBotToken set even if
+; InpEnableTelegramSignals is false. InpLastVerdictFilename (Why button)
+; MUST match GoldTrader/app/config.py's
+; AdvisorConfig.last_verdict_filename, and InpClaudePauseFilename (how
+; PauseClaudeHab/ResumeClaudeHab reach app/main.py) MUST match
+; AdvisorConfig.claude_pause_filename.
+;
+InpEnableTelegramSignals=true
+InpEnableClaudeManagement=true
+InpFixedLot=0.01
+InpReferenceLot=0.01
+InpUseRiskPercent=true
+InpRiskPercent=2.0
+InpMaxLotSize=5.0
+InpMaxPositionsPerDirection=5
+InpSlDollars=6.0
+InpTp1Dollars=6.0
+InpTrailDollars=3.0
+InpTelegramMagicNumber=20260922
+InpClaudeMagicNumber=20260921
+InpDryRun=true
+InpExitStyle=0
+InpBreakevenAtrMult=0.5
+InpAtrTimeframe=5
+InpAtrPeriod=14
+InpDecayWindowMinutes=15.0
+InpBotToken=
+InpChannelId1=0
+InpChannelId2=0
+InpChannelId3=0
+InpMaxMessageChars=400
+InpMaxCommandChars=60
+InpAcceptPhotoCaptions=false
+InpLogSkippedMessages=false
+InpPollSeconds=5
+InpHttpTimeoutMs=5000
+InpMaxSignalAgeSec=180
+InpTradeXAUUSDOnly=true
+InpMaxTradesPerDay=0
+InpMaxDailyLossPct=10.0
+InpPendingExpiryMin=240
+InpMaxEntryDeviationPips=200.0
+InpControlChatId=0
+InpLastVerdictFilename=claudesmc_last_verdict.txt
+InpClaudePauseFilename=claudesmc_pause.txt
+InpNotifyTradeClosed=true
+InpXtrHtfFilter=true
+InpXtrHtf1=15
+InpXtrHtf2=16385
+InpNewsFilter=true
+InpNewsCurrencies=USD
+InpNewsMinImportance=3
+InpNewsBlockBeforeMin=15
+InpNewsBlockAfterMin=15
+InpCalendarExportFile=econ_calendar.csv
+InpCalendarRefreshMin=5
+InpXtrExport=true
+InpXtrExportFolder=XTR_Data
+InpXtrExportName=XAUUSD
+InpXtrExportBars=200
+InpXtrExportM1=false
+InpXtrExportCopyTo=G:\MyDrive\MyMQChartDrive

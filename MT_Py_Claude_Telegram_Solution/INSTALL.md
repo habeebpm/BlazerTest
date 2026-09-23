@@ -1,5 +1,10 @@
 # Installation - start to end
 
+> **Superseded:** use [`../GoldTrader/`](../GoldTrader/) - the complete,
+> self-contained package with its own setup guide. This folder is kept for
+> reference only and is no longer updated.
+
+
 Everything runs from **one folder**: `MT_Py_Claude_Telegram_Solution`.
 Double-click the `.bat` files there, or open a Command Prompt in that folder
 (Explorer address bar -> type `cmd` -> Enter) and type the commands below.

@@ -1,5 +1,10 @@
 # XAUUSD Confluence EA (MQL5)
 
+> **Superseded:** use [`../GoldTrader/`](../GoldTrader/) - the complete,
+> self-contained package with its own setup guide. This folder is kept for
+> reference only and is no longer updated.
+
+
 > **One folder, one launcher:** everything runs from this folder with
 > `solution.py` or the double-click `setup.bat` / `keys.bat` / `check.bat` /
 > `start.bat` / `relay_login.bat` - it installs the Python packages, copies
