@@ -337,15 +337,32 @@ chat even if these two fields are set.
 
 Everything below is off by default (or takes effect only once the Telegram
 alert credentials from step 3 above are set) - none of it changes existing
-behavior until you opt in. Every field lives in `config.py`'s `AdvisorConfig`
-with its own comment there; most have a matching `main.py` CLI flag too (see
-`python main.py --help`).
+behavior until you opt in, **except the two risk-sizing fields covered in
+"Risk parameters" just below, which ship on at recommended values.** Every
+field lives in `config.py`'s `AdvisorConfig` with its own comment there;
+most have a matching `main.py` CLI flag too (see `python main.py --help`).
+
+#### Risk parameters (on by default)
+
+`max_daily_loss_pct` defaults to `10.0` (stop new entries once the account
+is down 10% of capital on the UTC day) and `use_risk_percent`/
+`risk_percent` default to `true`/`2.0` (risk 2% of equity per trade instead
+of a flat `fixed_lot`). `2.0` is `max_daily_loss_pct / 5`, so the daily
+breaker absorbs roughly 5 losing trades before halting - enough to ride out
+ordinary variance (at a rough 5 trades/day and 50% win rate, ~2.4 losers/day
+is typical) without the breaker itself becoming the strategy - and it also
+sits inside the conventional 1-2%-per-trade risk-management band that
+professional/prop-desk sizing rules use. Set either to `0`/`false` in
+`config.py` to opt back out; both are ordinary fields, not a special mode.
+`UnifiedTrader_EA.mq5`'s matching inputs (`InpMaxDailyLossPct`,
+`InpUseRiskPercent`, `InpRiskPercent`) ship at the same values - see
+`../UnifiedTrader/README.md`'s "Optional risk features" section.
 
 | Feature | Config field(s) | What it does |
 |---|---|---|
-| Daily loss circuit breaker | `max_daily_loss_pct`, `use_daily_target`, `daily_target_pct` | `main.py`'s `DayRoll` tracks equity from the first cycle of each UTC day and withholds **new** entries (never touches open positions) once the day is down `max_daily_loss_pct`, or up `daily_target_pct` if `use_daily_target` is set. Mirrors `../../python/trader.py`'s own daily-loss pattern. |
+| Daily loss circuit breaker | `max_daily_loss_pct` (default `10.0`), `use_daily_target`, `daily_target_pct` | `main.py`'s `DayRoll` tracks equity from the first cycle of each UTC day and withholds **new** entries (never touches open positions) once the day is down `max_daily_loss_pct`, or up `daily_target_pct` if `use_daily_target` is set. Mirrors `../../python/trader.py`'s own daily-loss pattern. |
 | Recent-performance feedback | (always on) | `market_intel.recent_performance_summary()` feeds Claude a win/loss/net-P&L summary of this system's own last 10 closed trades (from MT5's real deal history, not just `trades.csv`) as context - it can narrow conviction toward "partial" on a cold streak, but never raises or lowers the bar mechanically. |
-| Equity-scaled lot sizing | `use_risk_percent`, `risk_percent`, `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `ClaudeSMC_TradeManager.mq5` needs no change either way - it already recomputes its dollar-based lock/trail distances from each position's real volume. |
+| Equity-scaled lot sizing | `use_risk_percent` (default `true`), `risk_percent` (default `2.0`), `max_lot_size` | Sizes each trade from current equity instead of always `fixed_lot`, holding risk a constant fraction of the account as it grows or shrinks. `ClaudeSMC_TradeManager.mq5` needs no change either way - it already recomputes its dollar-based lock/trail distances from each position's real volume. |
 | DXY correlation context | `dxy_symbol` | Optional US Dollar Index read (no fixed broker symbol - set this to whatever your broker calls it) fed to Claude as corroborating/contradicting context for gold's usual inverse correlation with the dollar. Gracefully no-ops if the symbol isn't available. |
 | News/calendar blackout windows | `news_blackout_windows` | A hand-maintained list of UTC `(start, end)` pairs (no economic-calendar data source is wired up) - `executor.gate()` rejects any new entry whose evaluation falls inside one, checked before every other gate. |
 | ATR-adaptive initial stop-loss | `sl_mode`, `sl_atr_mult`, `sl_atr_period`, `sl_atr_timeframe`, `sl_dollars_min/max` | `sl_mode="atr"` derives the entry stop from recent ATR instead of the fixed `sl_dollars`, clamped to `[sl_dollars_min, sl_dollars_max]`. Entry SL only - `tp1_dollars`/`trail_dollars` stay fixed either way, since the MQL5 trade manager only ever reads those two INPUT values. |

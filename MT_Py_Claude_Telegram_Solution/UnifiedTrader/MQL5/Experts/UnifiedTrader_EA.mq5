@@ -228,8 +228,8 @@ input bool    InpEnableClaudeManagement = false;  // Manage exits for ClaudeSMC_
 
 input group "=== Shared business rules - apply to BOTH sources ==="
 input double  InpFixedLot               = 0.01;   // Lot size for every Telegram-sourced entry (or the reference lot for InpSlDollars' price distance when InpUseRiskPercent is true - see below)
-input bool    InpUseRiskPercent         = false;   // Size Telegram-sourced entries from equity instead of always InpFixedLot
-input double  InpRiskPercent            = 0.2;     // InpUseRiskPercent only: risk this % of equity per trade
+input bool    InpUseRiskPercent         = true;    // Size Telegram-sourced entries from equity instead of always InpFixedLot
+input double  InpRiskPercent            = 2.0;     // InpUseRiskPercent only: risk this % of equity per trade (recommended: InpMaxDailyLossPct / 5)
 input double  InpMaxLotSize             = 5.0;     // InpUseRiskPercent only: hard cap on a risk-sized lot
 input int     InpMaxPositionsPerDirection = 5;     // SHARED cap, counted across BOTH magics together
 input double  InpSlDollars              = 6.0;     // Initial stop-loss (USD-equivalent price distance)
@@ -263,7 +263,7 @@ input int     InpHttpTimeoutMs     = 5000;         // WebRequest timeout (ms)
 input int     InpMaxSignalAgeSec   = 180;          // Reject a signal/control command older than this many seconds (0 = no limit)
 input bool    InpTradeXAUUSDOnly   = true;         // Require chart symbol to contain "XAU"
 input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-sourced trades only)
-input double  InpMaxDailyLossPct   = 0.0;          // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
+input double  InpMaxDailyLossPct   = 10.0;         // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity - kept from TelegramSMC_Copier.mq5 (pips; 1 pip = 10 broker points) ==="

@@ -375,7 +375,7 @@ def make_verdict(direction="buy", confluence_count=3, conviction="full") -> Conf
 def test_executor() -> bool:
     print("\n=== 5. executor gating ===")
     ok = True
-    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
+    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False)
     spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0,
                          spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                          tick_value=1.0, tick_size=0.01)
@@ -383,7 +383,7 @@ def test_executor() -> bool:
     fg = FakeGateway(same_dir_open=0)
     d = executor.execute(fg, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("a 3/3 full-conviction buy is executed", d.executed, d.reject_reason)
-    ok &= check("the fake order was actually sent with the right lot size",
+    ok &= check("the fake order was actually sent with the right lot size (use_risk_percent=False here)",
                 fg.orders_sent and fg.orders_sent[0][1] == cfg.fixed_lot, fg.orders_sent)
     ok &= check("exit_style=sl_to_tp1 (the default) sends tp=0.0 - no broker take-profit at all",
                 fg.orders_sent[0][3] == 0.0, fg.orders_sent)
@@ -565,8 +565,8 @@ def test_executor() -> bool:
                 raised_bad_sl_mode is not None, raised_bad_sl_mode)
 
     # --- equity-scaled lot sizing (position_size()) ---
-    cfg_fixed = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
-    ok &= check("use_risk_percent=False (the default) always returns fixed_lot",
+    cfg_fixed = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False)
+    ok &= check("use_risk_percent=False always returns fixed_lot",
                 executor.position_size(FakeGateway(equity=50000.0), cfg_fixed, spec, sl_dist=1.0)
                 == cfg_fixed.fixed_lot)
 
@@ -1447,12 +1447,12 @@ def test_backtest_day_state() -> bool:
                 "silently never applying the way it would if backtest.py never called this",
                 state.block_reason(g, cfg) == "", state.block_reason(g, cfg))
 
-    cfg_off = AdvisorConfig()  # max_daily_loss_pct=0 (disabled)
+    cfg_off = AdvisorConfig(max_daily_loss_pct=0.0)  # explicitly disabled
     state_off = backtest.BacktestDayState()
     g_off = FakeDayStateGateway(day1, 10000.0)
     state_off.block_reason(g_off, cfg_off)
     g_off._equity = 5000.0  # -50%
-    ok &= check("max_daily_loss_pct=0 (the default) never blocks anything, even a 50% drawdown",
+    ok &= check("max_daily_loss_pct=0 never blocks anything, even a 50% drawdown",
                 state_off.block_reason(g_off, cfg_off) == "", state_off.block_reason(g_off, cfg_off))
 
     return ok
@@ -1614,11 +1614,11 @@ def test_day_roll_daily_limits() -> bool:
     ok &= check("a 2.5% gain trips the daily profit target",
                 day2.block_reason() == "daily profit target already reached", day2.block_reason())
 
-    cfg_off = AdvisorConfig()
+    cfg_off = AdvisorConfig(max_daily_loss_pct=0.0)
     day3 = main_mod.DayRoll()
     day3.roll(10000.0)
     day3.check_daily_limits(cfg_off, 5000.0)
-    ok &= check("max_daily_loss_pct=0 (the default) disables the breaker even on a 50% drawdown",
+    ok &= check("max_daily_loss_pct=0 disables the breaker even on a 50% drawdown",
                 day3.block_reason() == "", day3.block_reason())
 
     yesterday = main_mod.datetime.now(main_mod.timezone.utc).date() - timedelta(days=1)

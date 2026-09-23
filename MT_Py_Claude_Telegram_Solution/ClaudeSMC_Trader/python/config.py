@@ -89,8 +89,16 @@ class AdvisorConfig:
     #     DollarsToPrice()), so a bigger lot still locks/trails at the same
     #     dollar amounts. Off by default: fixed_lot keeps its old meaning
     #     (the ONLY lot ever traded) until this is turned on.
-    use_risk_percent: bool = False
-    risk_percent: float = 0.2       # 0.2% = a 1.0% max_daily_loss_pct / 5 - see config.py's daily-loss fields
+    # Recommended live setting (see README's "Risk parameters" section for
+    # the full standard-practice reasoning): risk_percent = max_daily_loss_pct
+    # / 5, so the daily breaker absorbs ~5 losing trades before halting -
+    # enough to ride out ordinary variance (at ~5 trades/day, 50% win rate,
+    # ~2.4 losers/day is typical) without the breaker itself becoming the
+    # strategy. On by default at 2.0% (= this file's max_daily_loss_pct of
+    # 10.0% / 5), which also sits inside the conventional 1-2%-per-trade
+    # risk-management band professional/prop-desk sizing rules use.
+    use_risk_percent: bool = True
+    risk_percent: float = 2.0       # 2.0% = this file's max_daily_loss_pct (10.0%) / 5
     max_lot_size: float = 5.0       # hard cap on a risk-sized lot, regardless of how large equity grows
 
     # --- Daily loss circuit breaker (mirrors ../../python/trader.py's
@@ -100,8 +108,8 @@ class AdvisorConfig:
     #     limits. Existing open positions are left alone -
     #     ClaudeSMC_TradeManager.mq5 already owns exit management, so this
     #     never closes anything itself, only executor.gate() refusing new
-    #     signals. Off by default: max_daily_loss_pct=0 disables the check.
-    max_daily_loss_pct: float = 0.0        # 0 = disabled; e.g. 3.0 = stop new entries after -3% on the day
+    #     signals. Set to 0 to disable the check entirely.
+    max_daily_loss_pct: float = 10.0       # stop new entries once the account is down this many pct on the UTC day
     use_daily_target: bool = False         # also stop new entries once daily_target_pct is reached
     daily_target_pct: float = 2.0
 
