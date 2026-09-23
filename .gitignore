@@ -4,6 +4,9 @@ MT_Py_Claude_Telegram_Solution/python/logs/*.log
 MT_Py_Claude_Telegram_Solution/python/logs/*.csv
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.log
 MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.csv
+# ml_advisor.py's locally-trained model (see train_ml_model.py) - a binary
+# artifact regenerated from this account's own trade history, not source.
+MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/logs/**/*.joblib
 MT_Py_Claude_Telegram_Solution/XTR_Export/python/xtr_data/
 # A service account key is a secret - never committed, whatever it's named.
 # xtr_export.py's own --help text uses "sa.json" as its example filename,

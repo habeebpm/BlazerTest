@@ -1,0 +1,53 @@
+name: Offline self-tests
+
+# Every self-test/integration script in this repo is explicitly designed to
+# run without a live MT5 terminal, MetaTrader5 package, Anthropic/Google
+# API key, or network access (see each script's own docstring) - so all
+# five can run unattended on every push/PR with no secrets configured.
+# MetaTrader5 itself is Windows-only (see each requirements.txt's own
+# `sys_platform == "win32"` marker) and is simply skipped on this
+# Linux runner, exactly as it already is for local development here.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  selftests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ClaudeSMC_Trader
+            dir: MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python
+            requirements: MT_Py_Claude_Telegram_Solution/ClaudeSMC_Trader/python/requirements.txt
+            script: selftest.py
+          - name: XTR_Export
+            dir: MT_Py_Claude_Telegram_Solution/XTR_Export/python
+            requirements: MT_Py_Claude_Telegram_Solution/XTR_Export/python/requirements.txt
+            script: selftest.py
+          - name: Mechanical-bot (System A)
+            dir: MT_Py_Claude_Telegram_Solution/python
+            requirements: MT_Py_Claude_Telegram_Solution/python/requirements.txt
+            script: selftest.py
+          - name: Telegram copier + verifier
+            dir: MT_Py_Claude_Telegram_Solution/python
+            requirements: MT_Py_Claude_Telegram_Solution/python/requirements.txt
+            script: copier_selftest.py
+          - name: Mechanical-bot integration (fake MT5)
+            dir: MT_Py_Claude_Telegram_Solution/python
+            requirements: MT_Py_Claude_Telegram_Solution/python/requirements.txt
+            script: test_integration.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ${{ matrix.name }} dependencies
+        run: pip install -r ${{ matrix.requirements }}
+      - name: Run ${{ matrix.name }} (${{ matrix.script }})
+        working-directory: ${{ matrix.dir }}
+        run: python ${{ matrix.script }}
