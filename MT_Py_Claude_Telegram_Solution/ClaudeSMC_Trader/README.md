@@ -468,7 +468,11 @@ so one command and one window run everything (`services.py`):
 | `[ml_retrain]` | `train_ml_model.py` | every `every_days` |
 | `[calibration_report]` | `calibration_report.py` | every `every_days` |
 
-All ship `enabled = false`; `args` passes extra options. Continuous ones
+`[ml_retrain]` (daily - it only trains once 30+ trades exist) and
+`[calibration_report]` ship enabled, since they need nothing from you; the
+relay bridge and the Python Drive export ship disabled (they need your own
+ids - the first-run questions switch the relay on). `args` passes extra
+options. Continuous ones
 are supervised child processes - restarted after a crash, stopped for good
 on a configuration error with one Telegram alert, stopped with `main.py`.
 Scheduled ones run when due (last run kept in `logs/services_state.json`,

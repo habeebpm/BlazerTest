@@ -5,7 +5,7 @@ Double-click the `.bat` files there, or open a Command Prompt in that folder
 (Explorer address bar -> type `cmd` -> Enter) and type the commands below.
 No other folder is ever needed.
 
-Required: steps 1-6. Optional: steps 7-13, any order, any time.
+Required: steps 1-6. Optional: steps 7-10 and 13, any order, any time (11-12 are automatic).
 
 ## 1. Get ready
 
@@ -157,16 +157,17 @@ Needs step 9.
 5. Browse to `http://localhost/dashboard/Dashboard.aspx`.
 6. Do not expose it to the internet (no login built in).
 
-## 11. Optional - ML advisor (after ~30 closed demo trades)
+## 11. ML advisor - automatic
 
-`ClaudeSMC_Trader\python\main_preset.ini` -> `[ml_retrain]` ->
-`enabled = true` -> save -> restart `start.bat`. Retrains every 7 days;
-output in `ClaudeSMC_Trader\python\logs\ml_retrain.log`.
+Nothing to do. `start.bat` logs every trade's market snapshot, retrains
+the local model daily once 30+ trades have closed, and Claude sees its
+win-probability from then on. Output: `ClaudeSMC_Trader\python\logs\ml_retrain.log`.
+Off: `main_preset.ini` -> `[ml_retrain]` -> `enabled = false`.
 
-## 12. Optional - Conviction report (weekly)
+## 12. Conviction report - automatic
 
-`main_preset.ini` -> `[calibration_report]` -> `enabled = true` -> save ->
-restart `start.bat`. Output in `ClaudeSMC_Trader\python\logs\calibration_report.log`.
+Nothing to do - written weekly to
+`ClaudeSMC_Trader\python\logs\calibration_report.log`.
 
 ## 13. Optional - Backtest (free, mechanical)
 
@@ -187,7 +188,7 @@ python solution.py backtest --bars-csv C:\data\m15.csv --trend-csv C:\data\h4.cs
 | Window | Needed |
 |---|---|
 | MT5 + `UnifiedTrader_EA` (+ Trade Logger chart, step 9) | Always |
-| `start.bat` | Always - also runs whatever `main_preset.ini` switches on (steps 7, 8 B, 11, 12) |
+| `start.bat` | Always - also runs ML retraining + the conviction report, and whatever else `main_preset.ini` switches on (steps 7, 8 B) |
 | IIS | Step 10 only (runs as a Windows service) |
 
 Never start the relay bridge, `xtr_export.py`, `train_ml_model.py` or

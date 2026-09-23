@@ -3441,8 +3441,10 @@ def test_relay_supervisor() -> bool:
         ok &= check("the last run survives a main.py restart (state file)", not again.due())
 
     real_preset = services.load_preset()
-    ok &= check("the shipped main_preset.ini parses, every companion off by default",
-                not real_preset.errors and real_preset.enabled_names() == [], real_preset.errors)
+    ok &= check("the shipped main_preset.ini parses: ML retrain (daily) + conviction report on by "
+                "default, relay + Drive export off (they need your own ids)",
+                not real_preset.errors and real_preset.enabled_names() == ["ml_retrain", "calibration_report"]
+                and real_preset.ml_retrain.every_days == 1.0, (real_preset.errors, real_preset.enabled_names()))
     env = {"ANTHROPIC_API_KEY": "sk-ant-abcdefgh1234", "TELEGRAM_ALERT_CHAT_ID": "12345",
            "TELEGRAM_API_ID": "999"}
     lines, missing = main_mod.settings_report(relay_on=True, env=env)
