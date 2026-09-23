@@ -999,10 +999,26 @@
                 return true;
             };
 
+            function showToast(text, kind) {
+                var t = document.createElement('div');
+                t.className = 'toast toast-' + (kind || 'info');
+                t.textContent = text;
+                t.addEventListener('click', function () { t.classList.add('toast-hide'); });
+                document.body.appendChild(t);
+            }
+
             if (window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
                 var prm = Sys.WebForms.PageRequestManager.getInstance();
                 prm.add_beginRequest(function () { window.showLoader(); });
-                prm.add_endRequest(function () { window.hideLoader(); });
+                prm.add_endRequest(function (sender, args) {
+                    window.hideLoader();
+                    var err = args.get_error();
+                    if (err) {
+                        args.set_errorHandled(true);   // replaces the default alert() box
+                        showToast('The details could not be loaded: ' + (err.message || err) +
+                                  ' (your session may have expired - reload the page).', 'error');
+                    }
+                });
             }
 
             /* ---------- Sidebar ---------- */
@@ -1028,12 +1044,20 @@
                 if (hasActive) { g.classList.add('has-active'); }
                 var saved = getPref(key);
                 // The group holding the current report is always open; others remember their state.
-                g.open = hasActive || saved === '1';
+                setOpen(g, hasActive || saved === '1');
                 g.addEventListener('toggle', function () {
+                    if (g.getAttribute('data-auto') === '1') { g.removeAttribute('data-auto'); return; }
                     if (!navFind.value) { setPref(key, g.open ? '1' : '0'); }
                 });
             });
-            if (!groups.some(function (g) { return g.open; }) && groups[0]) { groups[0].open = true; }
+            if (!groups.some(function (g) { return g.open; }) && groups[0]) { setOpen(groups[0], true); }
+
+            // Open/close without it counting as the user's choice.
+            function setOpen(g, open) {
+                if (g.open === open) { return; }
+                g.setAttribute('data-auto', '1');
+                g.open = open;
+            }
 
             document.querySelector('.js-nav-toggle-all').addEventListener('click', function () {
                 var open = !groups.every(function (g) { return g.open; });
@@ -1061,7 +1085,7 @@
                         if (hit) { hits++; }
                     });
                     g.classList.toggle('find-hidden', q && hits === 0);
-                    if (q) { g.open = hits > 0; } else if (openBeforeFind) { g.open = openBeforeFind[i]; }
+                    if (q) { setOpen(g, hits > 0); } else if (openBeforeFind) { setOpen(g, openBeforeFind[i]); }
                     if (hits > 0) { any = true; }
                 });
                 if (!q) { openBeforeFind = null; }
@@ -1221,6 +1245,13 @@
             });
 
             document.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('grid-input')) {
+                    e.preventDefault();
+                    var tr = e.target.closest('tr');
+                    var save = tr && tr.querySelector('.btn-success');
+                    if (save) { save.click(); }
+                    return;
+                }
                 if (e.key === 'Escape') {
                     if (document.activeElement === navFind && navFind.value) { navFind.value = ''; navFind.dispatchEvent(new Event('input')); return; }
                     closeDrawer(); body.classList.remove('sidebar-open'); return;

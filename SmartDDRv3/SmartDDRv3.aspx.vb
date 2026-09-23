@@ -110,6 +110,8 @@ Public Class SmartDDRv3
     Private _gridBound As Boolean
     Private _fetchFailed As Boolean
     Private _suppressRender As Boolean
+    Private _projectFilterApplied As Boolean
+    Private _discFilterNote As String = ""
     Private ReadOnly _percentScale As New Dictionary(Of String, Double)(StringComparer.OrdinalIgnoreCase)
 
     Private Property CurrentView As String
@@ -256,15 +258,20 @@ Public Class SmartDDRv3
                              "nav-item active", "nav-item")
         Next
 
-        SetTableSections(MyCommonGrid)
-        SetTableSections(grdCTD)
-        SetTableSections(grdDrawer)
-
-        lblFilterChip.Visible = IsGroupView(CurrentView) AndAlso GroupProjectFilter.Length > 0
-        lblFilterChip.Text = "Project: " & HttpUtility.HtmlEncode(GroupProjectFilter)
+        Dim def As ViewDef = Nothing
+        If Views.TryGetValue(CurrentView, def) Then Page.Title = "SmartDDR · " & def.Title
 
         lnkDeepLink.NavigateUrl = BuildDeepLink()
         Push.Visible = SelectedProject.Length > 0
+    End Sub
+
+    ' Runs after every control's own PreRender, so grids that re-bind themselves
+    ' (e.g. grdCTD after a save) still get their <thead>/<tfoot>.
+    Private Sub Page_PreRenderComplete(sender As Object, e As EventArgs) Handles Me.PreRenderComplete
+        If _suppressRender Then Return
+        SetTableSections(MyCommonGrid)
+        SetTableSections(grdCTD)
+        SetTableSections(grdDrawer)
     End Sub
 
     Private Function NavButtons() As LinkButton()
@@ -452,6 +459,9 @@ Public Class SmartDDRv3
         End If
         If Not def.IsGroup AndAlso SelectedProject.Length = 0 Then
             ShowMessage("Select a project first.", "warn")
+            GridData = Nothing
+            _fetchFailed = True
+            lblRowCount.Text = ""
             Return
         End If
 
@@ -690,20 +700,27 @@ Public Class SmartDDRv3
                AND A.DISCIPLINE NOT LIKE 'ZV%'
                AND A.Status NOT LIKE '%Longer%'")
         If singleDoc Then sb.Append(" AND LEFT(A.Document_No, 32) = @DOC")
-        If forInsert Then
-            ' Guard against double clicks / re-runs inserting the same document twice.
-            sb.Append(" AND NOT EXISTS (SELECT 1 FROM CTD_DDR_DISC X
-                                        WHERE X.CTD_ID = C.CTD_ID AND LEFT(X.DOCUMENT_NO, 32) = LEFT(A.Document_No, 32))")
-        Else
+        If Not forInsert Then
             sb.Append(" ORDER BY A.DATE_MODIFIED DESC")
+            Return sb.ToString()
         End If
-        Return sb.ToString()
+
+        ' Insert: never re-insert what is already there (double clicks / re-runs), and
+        ' insert each 32-char document number once even if Aconex lists it twice.
+        sb.Append(" AND NOT EXISTS (SELECT 1 FROM CTD_DDR_DISC X
+                                    WHERE X.CTD_ID = C.CTD_ID AND LEFT(X.DOCUMENT_NO, 32) = LEFT(A.Document_No, 32))")
+        Dim inner As String = sb.ToString().Replace(
+            "0 AS MAN_HOURS",
+            "0 AS MAN_HOURS, ROW_NUMBER() OVER (PARTITION BY LEFT(A.Document_No, 32) ORDER BY A.DATE_MODIFIED DESC) AS RN")
+        Return "SELECT CTD_ID, RAMZ_ID, DOCUMENT_NO, PLIP_ID, SOFTWARE, DOCUMENT_TITLE, CRITICALITY, HO_STATUS, MAN_HOURS FROM (" &
+               inner & ") Q WHERE Q.RN = 1"
     End Function
 
     Private Sub ApplyFilters()
         _gridBound = True
 
         If CurrentView = "CTD_EDIT" Then
+            lblFilterChip.Visible = False
             grdCTD.DataBind()
             Return
         End If
@@ -723,7 +740,10 @@ Public Class SmartDDRv3
         Dim shown As Integer = If(_boundView Is Nothing, 0, _boundView.Count)
         lblRowCount.Text = If(shown = total,
                               String.Format("{0:N0} rows", shown),
-                              String.Format("{0:N0} of {1:N0} rows", shown, total))
+                              String.Format("{0:N0} of {1:N0} rows", shown, total)) & _discFilterNote
+
+        lblFilterChip.Visible = _projectFilterApplied
+        lblFilterChip.Text = "Project: " & HttpUtility.HtmlEncode(GroupProjectFilter)
     End Sub
 
     Private Function EnsureGridData() As DataTable
@@ -744,17 +764,29 @@ Public Class SmartDDRv3
     Private Function BuildFilteredView(dt As DataTable) As DataView
         Dim dv As New DataView(dt)
         Dim clauses As New List(Of String)()
+        _projectFilterApplied = False
+        _discFilterNote = ""
 
-        Dim disc As String = If(DDLDISCIPLINE.SelectedValue, "")
+        Dim disc As String = If(DDLDISCIPLINE.SelectedValue, "").Trim()
         Dim discCol As String = FindColumn(dt, "Discipline")
-        If disc.Length > 0 AndAlso Not disc.Equals("All", StringComparison.OrdinalIgnoreCase) AndAlso discCol IsNot Nothing Then
-            clauses.Add(String.Format("Convert({0}, 'System.String') LIKE '%{1}%'", ColRef(discCol), EscapeLike(disc)))
+        Dim discExact As String = Nothing
+        Dim discLoose As String = Nothing
+        If disc.Length > 0 AndAlso Not disc.Equals("All", StringComparison.OrdinalIgnoreCase) Then
+            If discCol Is Nothing Then
+                _discFilterNote = " · discipline filter n/a for this report"
+            Else
+                ' Exact match first ("1.Civil" must not pull in "11.Civil"); fall back to
+                ' "contains" only when a report spells disciplines differently.
+                discExact = String.Format("TRIM(Convert({0}, 'System.String')) = '{1}'", ColRef(discCol), disc.Replace("'", "''"))
+                discLoose = String.Format("Convert({0}, 'System.String') LIKE '%{1}%'", ColRef(discCol), EscapeLike(disc))
+            End If
         End If
 
         If IsGroupView(CurrentView) AndAlso GroupProjectFilter.Length > 0 Then
             Dim projCol As String = If(FindColumn(dt, "Project_No"), FindColumn(dt, "Project"))
             If projCol IsNot Nothing Then
-                clauses.Add(String.Format("Convert({0}, 'System.String') = '{1}'", ColRef(projCol), GroupProjectFilter.Replace("'", "''")))
+                clauses.Add(String.Format("TRIM(Convert({0}, 'System.String')) = '{1}'", ColRef(projCol), GroupProjectFilter.Replace("'", "''")))
+                _projectFilterApplied = True
             End If
         End If
 
@@ -768,7 +800,12 @@ Public Class SmartDDRv3
         End If
 
         Try
-            dv.RowFilter = String.Join(" AND ", clauses)
+            If discExact Is Nothing Then
+                dv.RowFilter = String.Join(" AND ", clauses)
+            Else
+                dv.RowFilter = String.Join(" AND ", clauses.Concat({discExact}))
+                If dv.Count = 0 Then dv.RowFilter = String.Join(" AND ", clauses.Concat({discLoose}))
+            End If
         Catch ex As Exception
             dv.RowFilter = ""
             ShowMessage("The filter could not be applied: " & ex.Message, "warn")
@@ -781,7 +818,7 @@ Public Class SmartDDRv3
         _percentScale.Clear()
         If dt Is Nothing Then Return
         For Each col As DataColumn In dt.Columns
-            If Not MatchesAny(col.ColumnName, PercentCols, False) Then Continue For
+            If Not UsesPercentBar(col) Then Continue For
             If MatchesAny(col.ColumnName, AlreadyPercentCols, False) Then
                 _percentScale(col.ColumnName) = 1
                 Continue For
@@ -794,6 +831,20 @@ Public Class SmartDDRv3
             _percentScale(col.ColumnName) = If(maxAbs <= 1, 100, 1)
         Next
     End Sub
+
+    ' Status names such as AFC / IFR are also used for document COUNTS (e.g. the PLIP
+    ' matrix). Only treat them as percentages when they hold fractional weights.
+    Private Function UsesPercentBar(col As DataColumn) As Boolean
+        If CurrentView = "G_PLIP" Then Return False
+        If Not MatchesAny(col.ColumnName, PercentCols, False) Then Return False
+        If col.ColumnName.Contains("%") Then Return True
+        Return Not IsIntegerType(col.DataType)
+    End Function
+
+    Private Shared Function IsIntegerType(t As Type) As Boolean
+        Return t Is GetType(Byte) OrElse t Is GetType(Short) OrElse t Is GetType(Integer) OrElse t Is GetType(Long) OrElse
+               t Is GetType(SByte) OrElse t Is GetType(UShort) OrElse t Is GetType(UInteger) OrElse t Is GetType(ULong)
+    End Function
 
     Private Function PercentScale(colName As String) As Double
         Dim scale As Double
@@ -831,7 +882,7 @@ Public Class SmartDDRv3
 
             If MatchesAny(colName, CenterCols, True) Then AddClass(cell, "c")
 
-            If MatchesAny(colName, PercentCols, False) Then
+            If UsesPercentBar(dt.Columns(i)) Then
                 If hasValue AndAlso TryGetNumber(value, number) Then
                     Dim pct As Double = Math.Round(number * PercentScale(colName), 2)
                     cell.Text = ProgressBarHtml(pct)
@@ -847,6 +898,8 @@ Public Class SmartDDRv3
                 cell.Text = FormatDate(dateValue)
                 AddClass(cell, "c")
                 If MatchesAny(colName, DoneDateCols, False) Then isDone = True
+            ElseIf TypeOf value Is DateTime AndAlso IsNoDate(DirectCast(value, DateTime)) Then
+                cell.Text = "&nbsp;"
             End If
 
             If MatchesAny(colName, CheckCols, False) Then
@@ -939,7 +992,6 @@ Public Class SmartDDRv3
             Case "CTD"
                 Dim ctdHrs As Double = SumOf("CTD Hrs")
                 Dim ddrHrs As Double = SumOf("DDR Hrs")
-                SetFooter(row, "Deliverable", "Total")
                 SetFooter(row, "CTD Hrs", Fmt2(ctdHrs))
                 SetFooter(row, "DDR Hrs", Fmt2(ddrHrs))
                 SetFooter(row, "CTD Qty", Fmt0(SumOf("CTD Qty")))
@@ -954,7 +1006,6 @@ Public Class SmartDDRv3
                     Dim ddrHrs As Double = SumAt(b)
                     SetFooterAt(row, a, Fmt2(ctdHrs))
                     SetFooterAt(row, b, Fmt2(ddrHrs))
-                    SetFooterAt(row, 1, "Total")
                     SetFooterAt(row, Math.Max(a, b) + 1, ProgressBarHtml(PercentOf(ddrHrs, ctdHrs)))
                 End If
 
@@ -1059,6 +1110,8 @@ Public Class SmartDDRv3
             If TryGetDate(drv(i), dt.Columns(i).ColumnName, d) Then
                 e.Row.Cells(i).Text = FormatDate(d)
                 AddClass(e.Row.Cells(i), "c")
+            ElseIf TypeOf drv(i) Is DateTime Then
+                e.Row.Cells(i).Text = "&nbsp;"
             End If
         Next
     End Sub
@@ -1241,7 +1294,7 @@ Public Class SmartDDRv3
         Dim name As String = If(TryCast(ViewState("FileName"), String), "SmartDDR")
         Dim disc As String = If(DDLDISCIPLINE.SelectedValue, "")
         If disc.Length > 0 AndAlso Not disc.Equals("All", StringComparison.OrdinalIgnoreCase) Then name &= "_" & disc
-        If IsGroupView(CurrentView) AndAlso GroupProjectFilter.Length > 0 Then name &= "_" & GroupProjectFilter
+        If _projectFilterApplied Then name &= "_" & GroupProjectFilter
         Return SafeFileName(name)
     End Function
 
@@ -1279,7 +1332,10 @@ Public Class SmartDDRv3
 
     Private Shared Function ExportText(value As Object) As String
         If value Is Nothing OrElse Convert.IsDBNull(value) Then Return ""
-        If TypeOf value Is DateTime Then Return FormatDate(DirectCast(value, DateTime))
+        If TypeOf value Is DateTime Then
+            Dim d As DateTime = DirectCast(value, DateTime)
+            Return If(IsNoDate(d), "", FormatDate(d))
+        End If
         Dim f As IFormattable = TryCast(value, IFormattable)
         If f IsNot Nothing AndAlso IsNumericValue(value) Then Return f.ToString(Nothing, CultureInfo.InvariantCulture)
         Return Convert.ToString(value, CultureInfo.CurrentCulture)
@@ -1413,6 +1469,7 @@ Public Class SmartDDRv3
 
         If TypeOf value Is DateTime Then
             Dim d As DateTime = DirectCast(value, DateTime)
+            If IsNoDate(d) Then Return New S.Cell()
             shownLength = 11
             Return New S.Cell() With {
                 .CellValue = New S.CellValue(d.ToOADate().ToString(CultureInfo.InvariantCulture)),
@@ -1468,7 +1525,9 @@ Public Class SmartDDRv3
     End Function
 
     Private Shared Function P(name As String, value As String) As SqlParameter
-        Dim prm As New SqlParameter(name, SqlDbType.NVarChar, 255)
+        ' VARCHAR: an NVARCHAR parameter against a VARCHAR column forces an implicit
+        ' conversion of the column and can turn index seeks into scans.
+        Dim prm As New SqlParameter(name, SqlDbType.VarChar, 255)
         If value Is Nothing Then
             prm.Value = DBNull.Value
         Else
@@ -1508,7 +1567,8 @@ Public Class SmartDDRv3
 
     Private Shared Function ExecNonQuery(sql As String, ParamArray prms As SqlParameter()) As Integer
         Using con As New SqlConnection(ConnString())
-            Using cmd As New SqlCommand(sql, con)
+            ' NOCOUNT OFF so the affected-row count is reported even if the server default is ON.
+            Using cmd As New SqlCommand("SET NOCOUNT OFF; " & sql, con)
                 cmd.CommandTimeout = 180
                 If prms IsNot Nothing Then cmd.Parameters.AddRange(prms)
                 con.Open()
@@ -1665,23 +1725,28 @@ Public Class SmartDDRv3
         Return False
     End Function
 
+    ' SQL Server turns '' into 1900-01-01, so anything that early means "no date".
+    Private Shared Function IsNoDate(d As DateTime) As Boolean
+        Return d.Year <= 1900
+    End Function
+
     Private Shared Function TryGetDate(value As Object, colName As String, ByRef result As DateTime) As Boolean
         result = DateTime.MinValue
         If value Is Nothing OrElse Convert.IsDBNull(value) Then Return False
         If TypeOf value Is DateTime Then
             result = DirectCast(value, DateTime)
-            Return result <> DateTime.MinValue
+            Return Not IsNoDate(result)
         End If
         If TypeOf value Is DateTimeOffset Then
             result = DirectCast(value, DateTimeOffset).DateTime
-            Return True
+            Return Not IsNoDate(result)
         End If
         ' Some views return dates as text: only parse those in date-like columns.
         Dim s As String = TryCast(value, String)
         If s Is Nothing OrElse Not MatchesAny(colName, DateHintCols, True) Then Return False
         s = s.Trim()
         If s.Length < 6 OrElse s.IndexOfAny({"-"c, "/"c, " "c}) < 0 Then Return False
-        Return DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.None, result) AndAlso result <> DateTime.MinValue
+        Return DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.None, result) AndAlso Not IsNoDate(result)
     End Function
 
     Private Shared Function FormatDate(d As DateTime) As String
