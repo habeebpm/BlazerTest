@@ -28,11 +28,21 @@ for how this relates to running the Telegram copier stack independently.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import AdvisorConfig
+
+log = logging.getLogger(__name__)
+
+# Server-side refusal fallback: if Claude's safety classifiers decline a
+# request, the API re-runs it on Anthropic's recommended fallback model in
+# the same call instead of returning a refusal. The "default" scalar form
+# needs exactly this beta header.
+REFUSAL_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+_fallbacks_rejected = {"value": False}
 
 SYSTEM_PROMPT = """\
 You are a disciplined XAUUSD (gold) trading analyst. You will be given a JSON \
@@ -322,9 +332,42 @@ def _wrap_api_error(exc: Exception) -> ClaudeUnavailableError:
     return ClaudeUnavailableError(f"Claude API call failed unexpectedly: {exc}", retryable=False)
 
 
+def _is_fallback_rejection(exc: Exception) -> bool:
+    return getattr(exc, "status_code", None) == 400 and "fallback" in str(exc).lower()
+
+
+def call_with_fallbacks(client, cfg: AdvisorConfig, method: str, **kwargs):
+    """client.beta.messages.<method>(**kwargs) with refusal fallbacks on
+    (cfg.claude_refusal_fallbacks), else client.messages.<method>. If the
+    API rejects the fallbacks option itself (a 400 naming it - e.g. an
+    account or platform without the beta), the call is retried once
+    without it and fallbacks stay off for the rest of the run."""
+    if cfg.claude_refusal_fallbacks and not _fallbacks_rejected["value"]:
+        try:
+            return getattr(client.beta.messages, method)(
+                betas=[REFUSAL_FALLBACK_BETA], fallbacks="default", **kwargs)
+        except Exception as exc:
+            if not _is_fallback_rejection(exc):
+                raise
+            _fallbacks_rejected["value"] = True
+            log.warning("Claude API rejected refusal fallbacks (%s) - continuing without them.", exc)
+    return getattr(client.messages, method)(**kwargs)
+
+
+def neutral_verdict(reason: str) -> ConfluenceVerdict:
+    """A "no trade" verdict for a cycle where Claude gave no usable answer
+    (declined, or ran out of max_tokens) - gate() then rejects it as "no
+    actionable direction", so nothing trades and nothing is retried."""
+    leg = ConfluenceLeg(direction="neutral", passes=False, confirmed=False, note=reason)
+    return ConfluenceVerdict(trend=leg, momentum=leg, strength=leg, confluence_count=0,
+                             direction="none", conviction="none", smc_alignment="n/a",
+                             reasoning=f"No verdict this cycle: {reason}.")
+
+
 def get_verdict(client, cfg: AdvisorConfig, features: dict) -> ConfluenceVerdict:
     try:
-        response = client.messages.parse(
+        response = call_with_fallbacks(
+            client, cfg, "parse",
             model=cfg.claude_model,
             max_tokens=cfg.claude_max_tokens,
             system=SYSTEM_PROMPT,
@@ -333,4 +376,15 @@ def get_verdict(client, cfg: AdvisorConfig, features: dict) -> ConfluenceVerdict
         )
     except Exception as exc:
         raise _wrap_api_error(exc) from exc
-    return response.parsed_output
+    stop = getattr(response, "stop_reason", None)
+    parsed = getattr(response, "parsed_output", None)
+    if stop == "refusal" or parsed is None:
+        details = getattr(response, "stop_details", None)
+        reason = ("Claude declined the request" + (f" ({details.category})" if getattr(details, "category", None)
+                                                   else "")
+                  if stop == "refusal" else
+                  f"Claude's answer was cut off or unreadable (stop_reason={stop}) - raise claude_max_tokens"
+                  if stop == "max_tokens" else f"no structured verdict (stop_reason={stop})")
+        log.warning("%s - treating this cycle as no trade.", reason)
+        return neutral_verdict(reason)
+    return parsed

@@ -10,7 +10,7 @@ numpy>=1.24
 # selftest.py never makes a real API call - but it does import `anthropic`
 # to build realistic SDK exceptions for testing claude_advisor's error
 # classification (skips that one suite gracefully if the package is absent).
-anthropic>=0.75
+anthropic>=1.7
 
 # Structured-output schema for claude_advisor.ConfluenceVerdict.
 pydantic>=2.0

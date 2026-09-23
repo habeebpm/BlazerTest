@@ -787,8 +787,10 @@ def test_stale_csv_header_warning() -> bool:
 # claude_advisor wiring (fake Anthropic client)
 # --------------------------------------------------------------------------- #
 class FakeParsedResponse:
-    def __init__(self, parsed_output):
+    def __init__(self, parsed_output, stop_reason="end_turn", stop_details=None):
         self.parsed_output = parsed_output
+        self.stop_reason = stop_reason
+        self.stop_details = stop_details
 
 
 class FakeMessages:
@@ -803,7 +805,9 @@ class FakeMessages:
 
 class FakeAnthropicClient:
     def __init__(self, canned: ConfluenceVerdict):
+        from types import SimpleNamespace
         self.messages = FakeMessages(canned)
+        self.beta = SimpleNamespace(messages=self.messages)   # refusal-fallback path
 
 
 def test_claude_advisor_wiring() -> bool:
@@ -826,6 +830,49 @@ def test_claude_advisor_wiring() -> bool:
     dumped = json.loads(fake_client.messages.last_call["messages"][0]["content"])
     ok &= check("the feature snapshot round-trips through JSON cleanly",
                 dumped == fake_features, dumped)
+    call = fake_client.messages.last_call
+    ok &= check("rollout settings: claude-opus-5, max_tokens 16000 (thinking counts toward it), "
+                "server-side refusal fallbacks 'default' with its beta header",
+                cfg.claude_model == "claude-opus-5" and call["max_tokens"] == 16000
+                and call.get("fallbacks") == "default"
+                and call.get("betas") == ["server-side-fallback-2026-07-01"], call.get("betas"))
+
+    from types import SimpleNamespace
+    for label, resp in [
+        ("a refusal", FakeParsedResponse(None, "refusal", SimpleNamespace(category="cyber"))),
+        ("a max_tokens cut-off", FakeParsedResponse(None, "max_tokens")),
+    ]:
+        c = FakeAnthropicClient(canned)
+        c.messages.parse = lambda _r=resp, **kw: _r
+        v = claude_advisor.get_verdict(c, cfg, fake_features)
+        ok &= check(f"{label} becomes a 'no trade' verdict (no crash, no paid retry of the bar)",
+                    v.direction == "none" and v.conviction == "none"
+                    and v.reasoning.startswith("No verdict this cycle"), v.reasoning)
+
+    class _Rejecting:
+        def __init__(self):
+            self.calls = []
+
+        def parse(self, **kw):
+            self.calls.append(kw)
+            if "fallbacks" in kw:
+                err = RuntimeError("fallbacks: unknown parameter")
+                err.status_code = 400
+                raise err
+            return FakeParsedResponse(canned)
+    rej = _Rejecting()
+    c = SimpleNamespace(messages=rej, beta=SimpleNamespace(messages=rej))
+    claude_advisor._fallbacks_rejected["value"] = False
+    try:
+        v1 = claude_advisor.get_verdict(c, cfg, fake_features)
+        v2 = claude_advisor.get_verdict(c, cfg, fake_features)
+    finally:
+        claude_advisor._fallbacks_rejected["value"] = False
+    ok &= check("if the API rejects the fallbacks option, the call is retried once without it and "
+                "later calls skip it (never a dead trader)",
+                v1 is canned and v2 is canned and len(rej.calls) == 3
+                and "fallbacks" in rej.calls[0] and "fallbacks" not in rej.calls[1]
+                and "fallbacks" not in rej.calls[2], [sorted(k for k in c_ if k in ("fallbacks",)) for c_ in rej.calls])
 
     return ok
 
@@ -842,7 +889,9 @@ class FakeMessagesRaising:
 
 class FakeClientRaising:
     def __init__(self, exc: Exception):
+        from types import SimpleNamespace
         self.messages = FakeMessagesRaising(exc)
+        self.beta = SimpleNamespace(messages=self.messages)
 
 
 def test_claude_error_classification() -> bool:
@@ -2470,9 +2519,11 @@ class FakeNewsClient:
     """client.messages.create(**kw) replays `script` (a response or an
     exception per call) and records every call's kwargs."""
     def __init__(self, script):
+        from types import SimpleNamespace
         self.script = list(script)
         self.calls = []
         self.messages = self
+        self.beta = SimpleNamespace(messages=self)
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -2538,7 +2589,8 @@ def test_breaking_news_check() -> bool:
                 r.ran and r.block_reason == "" and r.used_web_search and r.headline_count == 3
                 and r.note.startswith("clear") and "2 web searches + 3 headlines" in r.note, r.note)
     ok &= check("the web search server tool is passed, and the headlines + trade reach Claude",
-                call["tools"] == [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+                call["tools"] == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
+                and call.get("fallbacks") == "default"
                 and '"entry_direction": "buy"' in call["messages"][0]["content"]
                 and "Treasury yields spike" in call["messages"][0]["content"]
                 and "180 minutes" in call["system"], call.get("tools"))

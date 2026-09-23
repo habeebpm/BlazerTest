@@ -108,12 +108,12 @@ class AdvisorConfig:
     #     feeds work from your PC.
     breaking_news_check: bool = True
     news_check_web_search: bool = False
-    news_web_search_tool: str = "web_search_20250305"
+    news_web_search_tool: str = "web_search_20260209"   # dynamic filtering (Opus 5)
     news_web_search_max_uses: int = 3
     news_check_lookback_minutes: int = 180
     news_check_fail_closed: bool = False     # True = refuse the entry when no check could run
     news_check_model: str = ""               # "" = claude_model
-    news_check_max_tokens: int = 2000
+    news_check_max_tokens: int = 16000
     news_max_headlines: int = 40
     # Free, public, no-key feeds from independent publishers, so one being
     # down or slow (all are fetched in parallel, 8 s timeout) still leaves
@@ -337,7 +337,13 @@ class AdvisorConfig:
 
     # --- Claude ---
     claude_model: str = "claude-opus-5"
-    claude_max_tokens: int = 2000
+    # Opus 5 thinks by default and thinking counts toward max_tokens - 2000
+    # could cut a verdict off. It is a ceiling, not a spend target.
+    claude_max_tokens: int = 16000
+    # Server-side refusal fallback ("default" routing) - see
+    # claude_advisor.call_with_fallbacks(). Auto-disables for the run if
+    # the API rejects it.
+    claude_refusal_fallbacks: bool = True
 
     # --- Loop ---
     poll_seconds: int = 30            # how often to check for a new closed bar

@@ -51,6 +51,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 
+from claude_advisor import call_with_fallbacks
 from config import AdvisorConfig
 
 log = logging.getLogger(__name__)
@@ -323,7 +324,7 @@ def _ask_claude(client, cfg: AdvisorConfig, user_text: str, web_search: bool):
     messages = [{"role": "user", "content": user_text}]
     text, searches = "", 0
     for _ in range(4):
-        response = client.messages.create(messages=messages, **kwargs)
+        response = call_with_fallbacks(client, cfg, "create", messages=messages, **kwargs)
         text += _response_text(response)
         searches += _web_searches_used(response)
         if getattr(response, "stop_reason", "") != "pause_turn":
