@@ -33,6 +33,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,7 @@ import executor
 import main as main_mod
 import market_intel
 import ml_advisor
+import news_check
 import telegram_alert
 import mt5_gateway as gw
 from claude_advisor import ConfluenceLeg, ConfluenceVerdict
@@ -2401,6 +2403,401 @@ def test_econ_calendar() -> bool:
     return ok
 
 
+
+# --------------------------------------------------------------------------- #
+# breaking-news check (fake feeds + fake Claude client - no network)
+# --------------------------------------------------------------------------- #
+NEWS_NOW = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+
+SAMPLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Google News</title>
+<item><title>Gold jumps as Fed signals surprise emergency cut - Reuters</title>
+  <link>https://example.com/1</link><pubDate>Wed, 23 Sep 2026 11:30:00 GMT</pubDate>
+  <source url="https://reuters.com">Reuters</source></item>
+<item><title>Dollar slides after missile strike near Gulf shipping lane - Bloomberg</title>
+  <pubDate>Wed, 23 Sep 2026 11:45:00 GMT</pubDate><source url="x">Bloomberg</source></item>
+<item><title>Celebrity chef opens new restaurant</title>
+  <pubDate>Wed, 23 Sep 2026 11:50:00 GMT</pubDate></item>
+<item><title>Gold steady ahead of payrolls - old story</title>
+  <pubDate>Wed, 23 Sep 2026 06:00:00 GMT</pubDate></item>
+<item><title>No date on this gold headline</title></item>
+</channel></rss>"""
+
+SAMPLE_ATOM = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>FX</title>
+<entry><title>Treasury yields spike on tariff announcement</title>
+  <updated>2026-09-23T11:55:00Z</updated></entry>
+<entry><title>Gold jumps as Fed signals surprise emergency cut - Reuters</title>
+  <updated>2026-09-23T11:31:00Z</updated></entry>
+</feed>"""
+
+
+class _NewsBlock:
+    def __init__(self, type_, text=""):
+        self.type, self.text = type_, text
+
+
+class _NewsResponse:
+    def __init__(self, blocks, stop_reason="end_turn", searches=None):
+        from types import SimpleNamespace
+        self.content = blocks
+        self.stop_reason = stop_reason
+        self.usage = SimpleNamespace(server_tool_use=(SimpleNamespace(web_search_requests=searches)
+                                                      if searches is not None else None))
+
+
+class FakeNewsClient:
+    """client.messages.create(**kw) replays `script` (a response or an
+    exception per call) and records every call's kwargs."""
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _news_json(**overrides):
+    base = {"surprise_news": False, "severity": "none", "impact_on_trade": "neutral",
+            "block_trade": False, "headline": "", "summary": "Nothing unscheduled in the window."}
+    base.update(overrides)
+    return json.dumps(base)
+
+
+def test_breaking_news_check() -> bool:
+    print("\n=== 29. breaking-news check before entry (fake feeds + fake Claude, no network) ===")
+    ok = True
+
+    rss = news_check.parse_feed(SAMPLE_RSS)
+    ok &= check("RSS 2.0 items parse with title, source and UTC time",
+                len(rss) == 5 and rss[0].source == "Reuters"
+                and rss[0].published_utc == datetime(2026, 9, 23, 11, 30, tzinfo=timezone.utc), rss[:1])
+    atom = news_check.parse_feed(SAMPLE_ATOM)
+    ok &= check("Atom entries parse too (namespaced tags, ISO timestamps)",
+                len(atom) == 2 and atom[0].published_utc == datetime(2026, 9, 23, 11, 55, tzinfo=timezone.utc),
+                atom)
+    ok &= check("unparseable XML returns [] instead of raising", news_check.parse_feed("<rss><oops") == [])
+
+    cfg = AdvisorConfig(news_feeds=["rss://a", "atom://b", "dead://c"], news_check_lookback_minutes=180)
+    feeds = {"rss://a": SAMPLE_RSS, "atom://b": SAMPLE_ATOM}
+
+    def fetcher(url):
+        if url not in feeds:
+            raise OSError("feed down")
+        return feeds[url]
+
+    errors = []
+    heads = news_check.fetch_headlines(cfg, NEWS_NOW, fetcher, errors)
+    titles = [h.title for h in heads]
+    ok &= check("headlines are filtered to the lookback window and to gold/dollar keywords, "
+                "deduplicated across feeds, newest first",
+                titles == ["Treasury yields spike on tariff announcement",
+                           "Dollar slides after missile strike near Gulf shipping lane - Bloomberg",
+                           "Gold jumps as Fed signals surprise emergency cut - Reuters"], titles)
+    ok &= check("a dead feed is recorded and skipped, never raised", len(errors) == 1 and "feed down" in errors[0],
+                errors)
+
+    ok &= check("extract_json_object picks the LAST verdict object, ignoring braces in the prose",
+                news_check.extract_json_object('I checked {Reuters}. {"a": 1} Then: {"block_trade": false,'
+                                               ' "x": {"y": 2}}') == {"block_trade": False, "x": {"y": 2}})
+
+    # 1) Clear, via web search.
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("server_tool_use"),
+                                            _NewsBlock("web_search_tool_result"),
+                                            _NewsBlock("text", "Searched gold and Fed news. "),
+                                            _NewsBlock("text", _news_json())], searches=2)])
+    r = news_check.check_before_trade(client, cfg, "buy", 2650.35, now=NEWS_NOW, fetcher=fetcher)
+    call = client.calls[0]
+    ok &= check("a clear verdict does not block, and reports its sources",
+                r.ran and r.block_reason == "" and r.used_web_search and r.headline_count == 3
+                and r.note.startswith("clear") and "2 web searches + 3 headlines" in r.note, r.note)
+    ok &= check("the web search server tool is passed, and the headlines + trade reach Claude",
+                call["tools"] == [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+                and '"entry_direction": "buy"' in call["messages"][0]["content"]
+                and "Treasury yields spike" in call["messages"][0]["content"]
+                and "180 minutes" in call["system"], call.get("tools"))
+
+    # 2) pause_turn continuation.
+    client = FakeNewsClient([
+        _NewsResponse([_NewsBlock("server_tool_use"), _NewsBlock("text", "Still searching...")],
+                      stop_reason="pause_turn", searches=1),
+        _NewsResponse([_NewsBlock("text", _news_json())], searches=1)])
+    r = news_check.check_before_trade(client, cfg, "sell", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("a pause_turn response is continued (assistant turn sent back) until Claude finishes",
+                len(client.calls) == 2 and client.calls[1]["messages"][-1]["role"] == "assistant"
+                and r.ran and r.block_reason == "", [c["messages"][-1]["role"] for c in client.calls])
+
+    # 3) Blocking news.
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json(
+        surprise_news=True, severity="high", impact_on_trade="against", block_trade=True,
+        headline="Fed emergency hike", summary="Surprise 50bp emergency hike - dollar spiking."))],
+        searches=1)])
+    r = news_check.check_before_trade(client, cfg, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("high-severity news against the trade blocks it, naming the story",
+                "breaking news (high, against): Fed emergency hike" == r.block_reason
+                and r.note.startswith("BLOCKED"), r.block_reason)
+
+    # 4) Mechanical override: Claude forgot block_trade on a high/against surprise.
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json(
+        surprise_news=True, severity="high", impact_on_trade="against", block_trade=False,
+        headline="Ceasefire announced"))], searches=1)])
+    r = news_check.check_before_trade(client, cfg, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("a high-severity surprise against the trade blocks even if block_trade came back false",
+                r.block_reason.startswith("breaking news (high, against)"), r.block_reason)
+
+    # 5) Supportive medium news: trades, but the note says so.
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json(
+        surprise_news=True, severity="medium", impact_on_trade="supports",
+        summary="Missile strike lifts safe-haven demand."))], searches=1)])
+    r = news_check.check_before_trade(client, cfg, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("supportive surprise news does not block, and the note describes it",
+                r.block_reason == "" and r.note.startswith("medium surprise, supports this trade"), r.note)
+
+    # 6) Web search refused -> headline-only retry.
+    client = FakeNewsClient([RuntimeError("web search is not enabled for this organization"),
+                             _NewsResponse([_NewsBlock("text", _news_json())])])
+    r = news_check.check_before_trade(client, cfg, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("if the web-search call fails, it retries once WITHOUT tools on the headlines alone",
+                len(client.calls) == 2 and "tools" not in client.calls[1] and r.ran
+                and not r.used_web_search and "3 headlines" in r.note
+                and any("not enabled" in e for e in r.errors), (r.note, r.errors))
+
+    # 7) Everything fails: fail-open vs fail-closed.
+    boom = [RuntimeError("Claude unreachable"), RuntimeError("Claude unreachable")]
+    r = news_check.check_before_trade(FakeNewsClient(list(boom)), cfg, "buy", 2650.0, now=NEWS_NOW,
+                                      fetcher=fetcher)
+    ok &= check("with no check possible, fail-open (default) trades and says so",
+                not r.ran and r.block_reason == "" and r.note.startswith("unavailable"), r.note)
+    cfg_closed = AdvisorConfig(news_feeds=cfg.news_feeds, news_check_fail_closed=True)
+    r = news_check.check_before_trade(FakeNewsClient(list(boom)), cfg_closed, "buy", 2650.0,
+                                      now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("news_check_fail_closed=True refuses the entry instead",
+                r.block_reason.startswith("breaking-news check unavailable"), r.block_reason)
+
+    # 8) No headlines + web search failing -> no blind headline-only call.
+    cfg_nofeeds = AdvisorConfig(news_feeds=[])
+    client = FakeNewsClient([RuntimeError("web search disabled")])
+    r = news_check.check_before_trade(client, cfg_nofeeds, "buy", 2650.0, now=NEWS_NOW)
+    ok &= check("with no headlines, a failed web search is NOT followed by a blind call with nothing to read",
+                len(client.calls) == 1 and not r.ran and r.block_reason == "", len(client.calls))
+
+    # 9) Web search answered without searching and no headlines -> can't count as checked.
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json())], searches=0)])
+    r = news_check.check_before_trade(client, cfg_nofeeds, "buy", 2650.0, now=NEWS_NOW)
+    ok &= check("a verdict with zero searches and zero headlines is treated as 'unavailable', not 'clear'",
+                not r.ran and r.note.startswith("unavailable"), r.note)
+
+    # 10) Malformed verdict.
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json(severity="extreme"))], searches=1)])
+    r = news_check.check_before_trade(client, cfg, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("a verdict with an invalid field value is treated as unavailable, never as clear",
+                not r.ran and "unreadable verdict" in r.note, r.note)
+
+    # 11) Switched off.
+    client = FakeNewsClient([])
+    r = news_check.check_before_trade(client, AdvisorConfig(breaking_news_check=False), "buy", 2650.0)
+    ok &= check("breaking_news_check=False makes no call and never blocks",
+                client.calls == [] and r.block_reason == "" and not r.ran)
+
+    cfg_noweb = AdvisorConfig(news_feeds=cfg.news_feeds, news_check_web_search=False,
+                              news_check_model="claude-sonnet-5")
+    client = FakeNewsClient([_NewsResponse([_NewsBlock("text", _news_json())])])
+    news_check.check_before_trade(client, cfg_noweb, "buy", 2650.0, now=NEWS_NOW, fetcher=fetcher)
+    ok &= check("news_check_web_search=False sends no tools; news_check_model overrides the model",
+                "tools" not in client.calls[0] and client.calls[0]["model"] == "claude-sonnet-5",
+                client.calls[0].get("model"))
+    return ok
+
+
+
+class FakeRunOnceGateway(FakeGateway):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.files = {}
+
+    def write_common_file(self, name, text):
+        self.files[name] = text
+
+
+def _run_once_wiring(spec) -> bool:
+    """main.run_once() end to end with every external piece faked: the news
+    check gets the live plan, a block reaches the alert, and a clear check
+    lets the order through with the levels in the alert."""
+    import threading
+    ok = True
+    verdict = make_verdict("buy", 3, "full")
+    verdict.take_profit_targets = [2365.0]
+    originals = (main_mod.gw, main_mod.market_intel.build_feature_snapshot,
+                 main_mod.claude_advisor.get_verdict, main_mod.news_check.check_before_trade,
+                 main_mod.telegram_alert.send_alert, main_mod.claude_paused)
+    sent, news_calls = [], []
+    try:
+        main_mod.market_intel.build_feature_snapshot = lambda g, c: {"fake": True}
+        main_mod.claude_advisor.get_verdict = lambda client, c, f: verdict
+        main_mod.telegram_alert.send_alert = lambda token, chat, text, **kw: sent.append(text) or True
+        main_mod.claude_paused = lambda c, gateway=None: False
+        for blocked in (True, False):
+            sent.clear()
+            fake = FakeRunOnceGateway(bid=2350.0, ask=2350.2)
+            main_mod.gw = fake
+
+            def fake_news(client, c, direction, price, **kw):
+                news_calls.append((direction, price))
+                return news_check.NewsCheckResult(
+                    ran=True, block_reason="breaking news (high, against): tariff shock" if blocked else "",
+                    note="BLOCKED - tariff shock" if blocked else "clear - no surprise news [1 web search]")
+            main_mod.news_check.check_before_trade = fake_news
+            cfg = AdvisorConfig(dry_run=True, use_risk_percent=False, log_dir="/tmp/claudesmc_selftest_logs",
+                                telegram_alert_bot_token="T", telegram_alert_chat_id="C",
+                                claude_pause_filename="", send_performance_digest=False)
+            day = main_mod.DayRoll()
+            main_mod.run_once(object(), cfg, spec, day)
+            for t in threading.enumerate():
+                if t is not threading.current_thread() and t.daemon:
+                    t.join(timeout=2)
+            msg = sent[-1] if sent else ""
+            if blocked:
+                ok &= check("run_once: a news block stops the order, and the alert shows why plus the levels",
+                            fake.orders_sent == [] and "NOT executed - breaking news (high, against): "
+                            "tariff shock" in msg and "SL: 2344.20" in msg and "News check: BLOCKED" in msg
+                            and news_calls[-1] == ("buy", 2350.2) and day.trades_today == 0, msg)
+            else:
+                ok &= check("run_once: a clear check sends the order; the alert has entry, SL, TP1, TP2 "
+                            "and the news result",
+                            len(fake.orders_sent) == 1 and "EXECUTED (dry-run" in msg
+                            and "Entry: 2350.20" in msg and "TP1: 2356.20" in msg and "TP2: 2365.00" in msg
+                            and "News check: clear" in msg and day.trades_today == 1, msg)
+    finally:
+        (main_mod.gw, main_mod.market_intel.build_feature_snapshot, main_mod.claude_advisor.get_verdict,
+         main_mod.news_check.check_before_trade, main_mod.telegram_alert.send_alert,
+         main_mod.claude_paused) = originals
+    return ok
+
+def test_entry_levels_and_alert() -> bool:
+    print("\n=== 30. entry levels, pre-trade check wiring and the full-conviction alert ===")
+    ok = True
+    spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0,
+                         spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
+                         tick_value=1.0, tick_size=0.01)
+    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False)
+
+    fg = FakeGateway(bid=2350.0, ask=2350.2)
+    plan = executor.build_plan(fg, cfg, spec, "buy")
+    ok &= check("build_plan: buy at ask, SL $6 / TP1 $6 / trail $3 at the 0.01 reference lot",
+                abs(plan.entry_price - 2350.2) < 1e-9 and abs(plan.sl_price - 2344.2) < 1e-9
+                and abs(plan.tp1_price - 2356.2) < 1e-9 and abs(plan.trail_distance - 3.0) < 1e-9
+                and plan.broker_tp == 0.0 and abs(plan.risk_money - 6.0) < 1e-9, plan)
+    sell = executor.build_plan(fg, cfg, spec, "sell")
+    ok &= check("build_plan: sell at bid mirrors the levels",
+                abs(sell.sl_price - 2356.0) < 1e-9 and abs(sell.tp1_price - 2344.0) < 1e-9, sell)
+
+    seen = []
+
+    def blocking_check(direction, p):
+        seen.append((direction, p.entry_price))
+        return "breaking news (high, against): Fed emergency hike", "BLOCKED - Fed emergency hike"
+
+    fg_block = FakeGateway()
+    d = executor.execute(fg_block, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                         pre_trade_check=blocking_check)
+    ok &= check("a blocking pre-trade check stops the order and is the reject reason",
+                not d.executed and fg_block.orders_sent == [] and d.reject_reason.startswith("breaking news")
+                and d.news_note.startswith("BLOCKED") and d.plan is not None and seen == [("buy", 2350.2)],
+                (d, seen))
+
+    fg_moving = FakeGateway(bid=2350.0, ask=2350.2)
+
+    def clear_check_price_moves(direction, p):
+        fg_moving.bid, fg_moving.ask = 2352.0, 2352.2   # price moved during the check
+        return "", "clear - no surprise news [1 web search]"
+
+    d = executor.execute(fg_moving, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                         pre_trade_check=clear_check_price_moves)
+    ok &= check("after a clear check the entry is RE-PRICED from a fresh tick (SL still $6 from the new price)",
+                d.executed and abs(fg_moving.orders_sent[0][2] - 2346.2) < 1e-9
+                and abs(d.plan.tp1_price - 2358.2) < 1e-9 and d.news_note.startswith("clear"),
+                fg_moving.orders_sent)
+
+    calls = []
+    d = executor.execute(FakeGateway(), cfg, make_verdict("buy", 2, "partial"), spec, trades_today=0,
+                         pre_trade_check=lambda *a: calls.append(a) or ("", ""))
+    ok &= check("the (paid) news check never runs for a verdict the other gates already reject",
+                not d.executed and calls == [], calls)
+
+    verdict = make_verdict("buy", 3, "full")
+    verdict.take_profit_targets = [2353.0, 2361.5, 2370.0, 2390.0]
+    msg = telegram_alert.format_full_conviction_message(
+        "XAUUSD", verdict, executed=True, plan=plan, news_note="clear - no surprise news [2 web searches]",
+        dry_run=True)
+    ok &= check("the alert shows direction, entry, SL and TP1 with money, then the trail",
+                "BUY XAUUSD" in msg and "Entry: 2350.20 (market, 0.01 lot)" in msg
+                and "SL: 2344.20 (risk $6.00)" in msg
+                and "TP1: 2356.20 - stop moves here to lock +$6.00, then trails 3.00 behind price" in msg, msg)
+    ok &= check("Claude's structure targets beyond TP1 become TP2/TP3 (a level short of TP1 is not a TP)",
+                "TP2: 2361.50" in msg and "TP3: 2370.00" in msg and "2353.00" not in msg
+                and "TP4" not in msg, msg)
+    ok &= check("dry-run and the news check result are spelled out",
+                "EXECUTED (dry-run - no real order sent)" in msg
+                and "News check: clear - no surprise news [2 web searches]" in msg, msg)
+    sell_verdict = make_verdict("sell", 3, "full")
+    sell_verdict.take_profit_targets = [2340.0, 2346.0, 2330.0]
+    sell_msg = telegram_alert.format_full_conviction_message("XAUUSD", sell_verdict, False,
+                                                             "already 5 open sell position(s) (max 5)",
+                                                             plan=sell)
+    ok &= check("sell targets are filtered below TP1, nearest first; a rejection still shows its levels",
+                "TP2: 2340.00" in sell_msg and "TP3: 2330.00" in sell_msg and "2346.00" not in sell_msg
+                and "SL: 2356.00" in sell_msg and "NOT executed - already 5" in sell_msg, sell_msg)
+
+    cfg_fixed = AdvisorConfig(dry_run=True, use_risk_percent=False, exit_style="fixed_tp")
+    fixed_plan = executor.build_plan(FakeGateway(), cfg_fixed, spec, "buy")
+    fixed_msg = telegram_alert.format_full_conviction_message("XAUUSD", verdict, True, plan=fixed_plan)
+    ok &= check("exit_style=fixed_tp shows TP1 as a real broker take-profit, and no TP2/TP3 beyond it",
+                abs(fixed_plan.broker_tp - 2356.2) < 1e-9 and "TP1: 2356.20 broker take-profit" in fixed_msg
+                and "TP2" not in fixed_msg,
+                fixed_msg)
+
+    try:
+        from anthropic.lib._parse._transform import transform_schema
+        required = transform_schema(ConfluenceVerdict).get("required", [])
+        ok &= check("take_profit_targets is REQUIRED in the schema Claude receives",
+                    "take_profit_targets" in required, required)
+    except ImportError:
+        print("  [SKIP] anthropic not installed - schema check skipped")
+    ok &= check("...but optional in Python (mechanical/backtest verdicts don't set it)",
+                make_verdict().take_profit_targets == [])
+
+    ok &= _run_once_wiring(spec)
+
+    saved = {k: os.environ.get(k) for k in ("TELEGRAM_ALERT_BOT_TOKEN", "TELEGRAM_ALERT_CHAT_ID")}
+    try:
+        os.environ["TELEGRAM_ALERT_BOT_TOKEN"] = "ENVTOKEN"
+        os.environ["TELEGRAM_ALERT_CHAT_ID"] = "ENVCHAT"
+        parser = main_mod.build_parser()
+        c_env = main_mod.build_config(parser.parse_args([]))
+        c_flag = main_mod.build_config(parser.parse_args(["--telegram-alert-chat-id", "FLAGCHAT"]))
+        ok &= check("alert credentials fall back to TELEGRAM_ALERT_* environment variables; flags win",
+                    c_env.telegram_alert_bot_token == "ENVTOKEN" and c_env.telegram_alert_chat_id == "ENVCHAT"
+                    and c_flag.telegram_alert_chat_id == "FLAGCHAT", (c_env.telegram_alert_chat_id,
+                                                                      c_flag.telegram_alert_chat_id))
+        c_news = main_mod.build_config(parser.parse_args(["--news-check-no-web-search",
+                                                          "--news-check-fail-closed"]))
+        c_off = main_mod.build_config(parser.parse_args(["--no-news-check"]))
+        ok &= check("--news-check-no-web-search / --news-check-fail-closed / --no-news-check map to config",
+                    not c_news.news_check_web_search and c_news.news_check_fail_closed
+                    and c_news.breaking_news_check and not c_off.breaking_news_check)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return ok
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -2432,6 +2829,8 @@ def main() -> int:
         test_heartbeat(),
         test_ml_advisor(),
         test_econ_calendar(),
+        test_breaking_news_check(),
+        test_entry_levels_and_alert(),
     ]
     print()
     if all(results):

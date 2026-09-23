@@ -2,7 +2,9 @@
 All tunables for the Claude-advised XAUUSD trader in one place.
 
 Deliberately a plain dataclass with CLI overrides in main.py (see --help) -
-no env-var magic, no config file format to learn. The defaults below are
+no env-var magic (the one exception: the Telegram alert credentials may
+come from TELEGRAM_ALERT_BOT_TOKEN/TELEGRAM_ALERT_CHAT_ID, to keep a bot
+token off the command line), no config file format to learn. The defaults below are
 the trading rules requested: fixed 0.01 lot, max 5 concurrent same-direction
 positions, $6 stop-loss, SL moved to lock in $6 profit once TP1 is reached,
 trailing $3 behind price from there (exit_style="sl_to_tp1" - see below).
@@ -92,6 +94,40 @@ class AdvisorConfig:
     news_block_before_minutes: int = 15
     news_block_after_minutes: int = 15
     econ_calendar_max_age_minutes: int = 30   # warn when the EA's export is older than this
+
+    # --- Breaking-news check (on by default) - see news_check.py. Right
+    #     before a full-conviction entry is sent (after every other gate
+    #     passed), one extra Claude call looks for SURPRISE, unscheduled
+    #     news on gold/the dollar - with Claude's web search tool plus free
+    #     RSS headlines - and refuses the entry if such news points against
+    #     it. Runs only a few times a day, never on ordinary cycles. Web
+    #     search must be enabled for your API organization by an admin in
+    #     the Anthropic Console; if it isn't, the check falls back to the
+    #     RSS headlines alone (python main.py --test-news-check buy shows
+    #     which one ran).
+    breaking_news_check: bool = True
+    news_check_web_search: bool = True
+    news_web_search_tool: str = "web_search_20250305"
+    news_web_search_max_uses: int = 3
+    news_check_lookback_minutes: int = 180
+    news_check_fail_closed: bool = False     # True = refuse the entry when no check could run
+    news_check_model: str = ""               # "" = claude_model
+    news_check_max_tokens: int = 2000
+    news_max_headlines: int = 40
+    news_feeds: list = field(default_factory=lambda: [
+        "https://news.google.com/rss/search?q=gold+OR+XAUUSD+OR+%22US+dollar%22+OR+%22Federal+Reserve%22"
+        "+OR+Powell+OR+%22Treasury+yields%22+when:1d&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=war+OR+missile+OR+sanctions+OR+tariff+OR+ceasefire"
+        "+OR+%22central+bank%22+OR+%22emergency%22+when:1d&hl=en-US&gl=US&ceid=US:en",
+    ])
+    # A headline is kept only if it contains one of these (word-start match).
+    news_keywords: list = field(default_factory=lambda: [
+        "gold", "xau", "bullion", "dollar", "usd", "dxy", "fed", "powell", "fomc", "treasury",
+        "yield", "rate", "inflation", "cpi", "payroll", "jobs", "tariff", "sanction", "war",
+        "missile", "strike", "attack", "invasion", "ceasefire", "nuclear", "central bank",
+        "emergency", "crisis", "default", "shutdown", "bank", "recession", "intervention",
+        "iran", "israel", "russia", "ukraine", "china", "taiwan", "opec", "oil",
+    ])
 
     # --- Execution rules (requested, fixed) ---
     fixed_lot: float = 0.01          # the traded lot when use_risk_percent is off (and the fallback lot)
@@ -206,9 +242,12 @@ class AdvisorConfig:
     # daily trade limit, confluence floor - the alert message says so either
     # way). Completely independent of the Telegram signal-copying stack
     # elsewhere in this repo (../../python/, ../../MQL5/, ../UnifiedTrader/'s
-    # own Telegram side) - a dedicated bot is recommended so this alert
-    # traffic never mixes with that stack's chat. Off by default: leave
-    # either field blank and send_alert() is a safe no-op.
+    # own Telegram side). Reusing UnifiedTrader_EA's bot with your own chat
+    # id is fine - this only sends. Also read from the TELEGRAM_ALERT_BOT_TOKEN
+    # / TELEGRAM_ALERT_CHAT_ID environment variables (see main.py). Off when
+    # either is blank: send_alert() is then a safe no-op. Each alert shows
+    # entry, SL, TP1 (+ Claude's TP2/TP3 structure targets) and the
+    # breaking-news check result - see format_full_conviction_message().
     telegram_alert_bot_token: str = ""   # from @BotFather
     telegram_alert_chat_id: str = ""     # your own chat id - DM the bot, then GET
                                          # https://api.telegram.org/bot<token>/getUpdates to find it

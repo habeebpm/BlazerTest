@@ -10,7 +10,9 @@ outage here can never affect trading, and vice versa.
 
 Fires on EVERY "full" conviction verdict, whether or not the trade actually
 executes - executor.gate() can still reject it (position cap, daily trade
-limit, confluence floor), and the alert message says so either way. Off by
+limit, confluence floor, the breaking-news check), and the alert message
+says so either way. It carries the entry, SL, TP1 lock (+ trail) and
+Claude's TP2/TP3 structure targets, plus the news-check result. Off by
 default: config.py's telegram_alert_bot_token/telegram_alert_chat_id are
 both "" until you set them (see README.md), and send_alert() is a safe
 no-op with either blank.
@@ -42,19 +44,53 @@ def _post_json(url: str, payload: dict, timeout: float = 10.0) -> None:
         resp.read()
 
 
+def structure_targets(plan, targets, limit: int = 2) -> list[float]:
+    """Claude's take_profit_targets that lie BEYOND TP1 in the trade's
+    direction, nearest first - a level short of the TP1 lock is not a take
+    profit for this exit shape, so it is not shown as one."""
+    if plan is None:
+        return []
+    if plan.direction == "buy":
+        beyond = sorted(t for t in targets if t > plan.tp1_price)
+    else:
+        beyond = sorted((t for t in targets if 0 < t < plan.tp1_price), reverse=True)
+    return beyond[:limit]
+
+
 def format_full_conviction_message(symbol: str, verdict, executed: bool,
-                                    reject_reason: str = "") -> str:
+                                    reject_reason: str = "", plan=None, news_note: str = "",
+                                    dry_run: bool = False, digits: int = 2) -> str:
     """verdict is a claude_advisor.ConfluenceVerdict. `executed`/
-    `reject_reason` come straight from the executor.Decision this verdict
-    produced - see main.py's run_once()."""
-    status = "EXECUTED" if executed else ("NOT executed - " + reject_reason if reject_reason
-                                          else "NOT executed")
-    return (
+    `reject_reason`/`plan`/`news_note` come straight from the
+    executor.Decision this verdict produced (plan is an executor.TradePlan,
+    or None when no levels could be priced) - see main.py's run_once()."""
+    if executed:
+        status = "EXECUTED" + (" (dry-run - no real order sent)" if dry_run else "")
+    else:
+        status = "NOT executed - " + reject_reason if reject_reason else "NOT executed"
+    lines = [
         f"Claude full conviction: {verdict.direction.upper()} {symbol} "
-        f"(confluence {verdict.confluence_count}/3)\n"
-        f"Status: {status}\n"
-        f"Reasoning: {verdict.reasoning}"
-    )
+        f"(confluence {verdict.confluence_count}/3)",
+        f"Status: {status}",
+    ]
+    if plan is not None:
+        f = f"{{:.{digits}f}}".format
+        lines.append(f"Entry: {f(plan.entry_price)} (market, {plan.lots:.2f} lot)")
+        lines.append(f"SL: {f(plan.sl_price)} (risk ${plan.risk_money:,.2f})")
+        if plan.broker_tp:
+            # The broker TP closes the whole position at TP1 - nothing further to show.
+            lines.append(f"TP1: {f(plan.tp1_price)} broker take-profit (+${plan.tp1_money:,.2f})")
+        else:
+            lines.append(f"TP1: {f(plan.tp1_price)} - stop moves here to lock +${plan.tp1_money:,.2f}, "
+                         f"then trails {f(plan.trail_distance)} behind price")
+            for i, target in enumerate(structure_targets(plan, verdict.take_profit_targets), start=2):
+                lines.append(f"TP{i}: {f(target)} (Claude's structure target - the trail decides the exit)")
+    elif verdict.take_profit_targets:
+        lines.append("Targets: " + ", ".join(f"{t:.{digits}f}" for t in verdict.take_profit_targets[:3]))
+    if news_note:
+        lines.append(f"News check: {news_note}")
+    lines.append(f"Reasoning: {verdict.reasoning}")
+    return "\n".join(lines)
 
 
 def format_account_line(equity: float | None, day_start_equity: float | None = None) -> str:

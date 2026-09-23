@@ -27,6 +27,7 @@ import executor
 import market_intel
 import ml_advisor
 import mt5_gateway as gw
+import news_check
 import telegram_alert
 from config import AdvisorConfig
 
@@ -84,10 +85,14 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.breakeven_atr_period = args.breakeven_atr_period
     if args.decay_window_minutes is not None:
         cfg.decay_window_minutes = args.decay_window_minutes
-    if args.telegram_alert_bot_token:
-        cfg.telegram_alert_bot_token = args.telegram_alert_bot_token
-    if args.telegram_alert_chat_id:
-        cfg.telegram_alert_chat_id = args.telegram_alert_chat_id
+    # Flags win; otherwise the TELEGRAM_ALERT_BOT_TOKEN/TELEGRAM_ALERT_CHAT_ID
+    # environment variables (keeps the token off the command line).
+    cfg.telegram_alert_bot_token = (args.telegram_alert_bot_token
+                                    or os.environ.get("TELEGRAM_ALERT_BOT_TOKEN", "")
+                                    or cfg.telegram_alert_bot_token)
+    cfg.telegram_alert_chat_id = (args.telegram_alert_chat_id
+                                  or os.environ.get("TELEGRAM_ALERT_CHAT_ID", "")
+                                  or cfg.telegram_alert_chat_id)
     if args.no_performance_digest:
         cfg.send_performance_digest = False
     if args.heartbeat_hours is not None:
@@ -100,6 +105,12 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.poll_seconds = args.poll_seconds
     if args.no_news_blackout:
         cfg.news_auto_blackout = False
+    if args.no_news_check:
+        cfg.breaking_news_check = False
+    if args.news_check_no_web_search:
+        cfg.news_check_web_search = False
+    if args.news_check_fail_closed:
+        cfg.news_check_fail_closed = True
     if args.min_confluence is not None:
         cfg.min_confluence_count = args.min_confluence
     if args.allow_partial_conviction:
@@ -391,8 +402,21 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     block = day.block_reason() or (
         "paused from Telegram (PauseClaudeHab/PauseHab) during this evaluation"
         if claude_paused(cfg) else "")
+
+    def pre_trade_check(direction: str, plan) -> tuple[str, str]:
+        # Only reached by an entry that cleared every other gate: look for
+        # surprise breaking news (news_check.py), then re-check the pause,
+        # since the news check itself can take tens of seconds.
+        result = news_check.check_before_trade(client, cfg, direction, plan.entry_price)
+        if result.block_reason:
+            return result.block_reason, result.note
+        if claude_paused(cfg):
+            return "paused from Telegram (PauseClaudeHab/PauseHab) during the news check", result.note
+        return "", result.note
+
     decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, block,
-                                day_start_equity=day.day_start_equity)
+                                day_start_equity=day.day_start_equity,
+                                pre_trade_check=pre_trade_check)
     if decision.executed:
         day.trades_today += 1
         day.save()
@@ -427,13 +451,49 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
         # inline, so a slow/unreachable Telegram API (up to the 10s urlopen
         # timeout) never delays the next poll cycle - send_alert() itself
         # never raises, so there's nothing here to join or catch.
+        plan = decision.plan
+        if plan is None:
+            # Rejected before any levels were priced (position cap, trade
+            # limit, ...) - still show where the entry/SL/TPs would be.
+            try:
+                plan = executor.build_plan(gw, cfg, spec, verdict.direction)
+            except Exception:
+                log.debug("Could not price the alert's levels.", exc_info=True)
         message = telegram_alert.format_full_conviction_message(
-            cfg.symbol, verdict, decision.executed, decision.reject_reason)
+            cfg.symbol, verdict, decision.executed, decision.reject_reason, plan=plan,
+            news_note=decision.news_note, dry_run=cfg.dry_run, digits=getattr(spec, "digits", 2))
         threading.Thread(
             target=telegram_alert.send_alert,
             args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, message),
             daemon=True,
         ).start()
+
+
+def send_test_alert(cfg: AdvisorConfig, spec) -> int:
+    """--test-alert: a sample full-conviction message, priced at the live
+    tick, sent synchronously so a bad token/chat id is reported here."""
+    if not (cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id):
+        log.error("No alert credentials - pass --telegram-alert-bot-token and --telegram-alert-chat-id "
+                  "(or set TELEGRAM_ALERT_BOT_TOKEN / TELEGRAM_ALERT_CHAT_ID).")
+        return 1
+    leg = claude_advisor.ConfluenceLeg(direction="buy", passes=True, confirmed=True, note="sample")
+    plan = executor.build_plan(gw, cfg, spec, "buy")
+    step = plan.tp1_price - plan.entry_price
+    sample = claude_advisor.ConfluenceVerdict(
+        trend=leg, momentum=leg, strength=leg, confluence_count=3, direction="buy",
+        conviction="full", smc_alignment="sample",
+        take_profit_targets=[plan.tp1_price + step, plan.tp1_price + 2 * step],
+        reasoning="TEST MESSAGE - not a real signal, sample levels. On a real alert TP2/TP3 are "
+                  "Claude's own structure targets.")
+    message = telegram_alert.format_full_conviction_message(
+        cfg.symbol, sample, executed=False, reject_reason="test alert only", plan=plan,
+        news_note="(not run for a test alert)", dry_run=cfg.dry_run, digits=spec.digits)
+    if telegram_alert.send_alert(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id, message):
+        log.info("Test alert sent - check Telegram.")
+        return 0
+    log.error("Test alert failed - see the warning above (bad token/chat id, or you haven't sent "
+              "the bot a message yet).")
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -497,6 +557,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="exit_style=breakeven_r_decay only: force the SL to breakeven after this "
                              "many minutes even short of the ATR trigger (default 15) - enforced by "
                              "the MQL5 EA's InpDecayWindowMinutes, not this script")
+    parser.add_argument("--no-news-check", action="store_true", dest="no_news_check",
+                        help="skip the pre-trade breaking-news check (news_check.py) - by default "
+                             "every entry that passes all other gates first gets one extra Claude "
+                             "call looking for surprise news on gold/the dollar")
+    parser.add_argument("--news-check-no-web-search", action="store_true",
+                        dest="news_check_no_web_search",
+                        help="run the breaking-news check on free RSS headlines only, without "
+                             "Claude's web search tool")
+    parser.add_argument("--news-check-fail-closed", action="store_true", dest="news_check_fail_closed",
+                        help="refuse the entry when the breaking-news check cannot run at all "
+                             "(default: trade anyway and say so in the log and alert)")
     parser.add_argument("--telegram-alert-bot-token", dest="telegram_alert_bot_token",
                         help="bot token from @BotFather - sends a one-way Telegram message on every "
                              "'full' conviction verdict, executed or not (default: unset, alerts off). "
@@ -525,6 +596,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="how often to check for a new closed bar (default 30)")
     parser.add_argument("--live", action="store_true", help="send real orders (default is dry-run)")
     parser.add_argument("--once", action="store_true", help="run a single evaluation cycle and exit")
+    parser.add_argument("--test-alert", action="store_true", dest="test_alert",
+                        help="send a SAMPLE full-conviction alert (levels priced at the current tick, "
+                             "no Claude call, no order) to check the Telegram alert setup, then exit")
+    parser.add_argument("--test-news-check", choices=["buy", "sell"], dest="test_news_check",
+                        help="run the breaking-news check once for a hypothetical entry at the current "
+                             "price (one Claude call, no order) and print the result, then exit")
     parser.add_argument("--check", action="store_true",
                         help="connect to MT5, print the symbol spec, exit - no Claude call")
     parser.add_argument("--login", type=int, help="MT5 account login (optional, if not already logged in)")
@@ -578,12 +655,30 @@ def main(argv: list | None = None) -> int:
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off",
                   f"after {cfg.stale_cycle_alert_minutes:g}min" if (cfg.stale_cycle_alert_minutes > 0
                       and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id) else "off")
+        log.info("Breaking-news check before each entry: %s",
+                 "off" if not cfg.breaking_news_check else
+                 ("web search + " if cfg.news_check_web_search else "")
+                 + f"{len(cfg.news_feeds)} RSS feed(s), last {cfg.news_check_lookback_minutes} min, "
+                 + ("refuse entry if unavailable" if cfg.news_check_fail_closed
+                    else "trade anyway if unavailable"))
         return 0
+
+    if args.test_alert:
+        return send_test_alert(cfg, spec)
 
     if cfg.dry_run:
         log.info("Running in DRY-RUN - no real orders will be sent. Pass --live to trade for real.")
 
     client = claude_advisor.build_client()
+    if args.test_news_check:
+        tick = gw.get_tick(cfg.symbol)
+        price = tick.ask if args.test_news_check == "buy" else tick.bid
+        result = news_check.check_before_trade(client, cfg, args.test_news_check, price)
+        log.info("News check result: %s", result.note or "(no note)")
+        log.info("Blocks the entry: %s | web search used: %s | headlines: %d%s",
+                 result.block_reason or "no", result.used_web_search, result.headline_count,
+                 f" | problems: {'; '.join(result.errors)}" if result.errors else "")
+        return 0
     day = DayRoll(state_path=os.path.join(cfg.log_dir, "day_state.json"))
 
     if args.once:

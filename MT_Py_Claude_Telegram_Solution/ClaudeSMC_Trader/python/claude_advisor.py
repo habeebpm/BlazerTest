@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from config import AdvisorConfig
 
@@ -201,6 +201,16 @@ and conservative:
 
 direction is "none" only when you would not take either side.
 
+TAKE-PROFIT TARGETS - when direction is buy or sell, list in \
+`take_profit_targets` up to 3 price levels in the trade's direction, nearest \
+first, where price is likely to react: unswept liquidity pools, \
+prev_day/prev_week highs and lows, the opposite order block, an \
+opposite-direction FVG. Use real levels from the snapshot, not round-number \
+guesses. They are shown to the trader in the entry notification only - the \
+exit itself is managed mechanically (stop locked at TP1, then trailed) - so \
+they never change whether or how the trade executes. Empty list when \
+direction is "none".
+
 Respond with the structured verdict. `reasoning` should be 2-4 sentences a \
 trader could actually use to understand your call - name the specific \
 numbers that drove it, don't just restate the rule text.
@@ -223,6 +233,13 @@ class ConfluenceVerdict(BaseModel):
     conviction: Literal["none", "partial", "full"]
     smc_alignment: str
     reasoning: str
+    # Defaulted in Python (mechanical backtest verdicts and tests build this
+    # model without it) but REQUIRED in the schema sent to Claude, so a real
+    # verdict always carries it.
+    take_profit_targets: list[float] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_schema_extra=lambda schema, _model: schema.setdefault(
+        "required", []).append("take_profit_targets"))
 
 
 def build_client():

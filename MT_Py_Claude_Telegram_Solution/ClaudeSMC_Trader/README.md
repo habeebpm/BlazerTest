@@ -44,7 +44,9 @@ python/claude_advisor.py       <- sends the snapshot to Claude, gets back a
         v
 python/executor.py             <- gates on confluence_count / conviction /
         |                          same-direction cap / daily cap, then
-        |                          places the order (fixed lot, $6 SL, $6 TP)
+        |                          asks python/news_check.py for surprise
+        |                          breaking news, then places the order
+        |                          (risk-sized lot, $6 SL, lock at $6, trail $3)
         v
 MT5 terminal (order placed)
         |
@@ -133,10 +135,12 @@ chase entries all had momentum still accelerating.
 Not included, and worth knowing about before treating this as more complete
 than it is:
 
-- **Economic calendar, but no headline news.** Scheduled releases (NFP,
-  CPI, FOMC, ...) come from MT5's own calendar via the MQL5 EA's export
-  (see "Economic calendar" in the features table) - but an unscheduled
-  headline or a surprise speech is still invisible to this system.
+- **Headline news is checked once, right before an entry - not
+  continuously.** Scheduled releases come from MT5's own calendar; surprise
+  news is looked up by the pre-trade breaking-news check (Setup step 4).
+  News that breaks *after* a position is open does not close it - the stop
+  and trail are its only protection. The check is only as good as what web
+  search and the headlines surface in that moment.
 - **No order flow / DOM / real volume.** MT5 only exposes tick volume (trade
   count, not traded size), which is what's used here - there's no Level 2
   data.
@@ -297,12 +301,32 @@ Python places no broker take-profit at all - if the MQL5 EA isn't running,
 a trade is protected by nothing but its initial $6 SL, with no lock-in and
 no trail (see "Exit design" above).
 
-### 3. Telegram full-conviction alerts (optional)
+### 3. Telegram full-conviction alerts (recommended)
 
 `python/telegram_alert.py` sends a one-way Telegram message every time
 Claude issues a **"full"** conviction verdict - whether or not the trade
 actually executes (`executor.gate()` can still reject it: position cap,
-daily trade limit, confluence floor - the message says so either way). This
+daily trade limit, confluence floor, breaking news - the message says so
+either way). Each alert carries the whole entry:
+
+```
+Claude full conviction: BUY XAUUSD (confluence 3/3)
+Status: EXECUTED
+Entry: 2650.35 (market, 0.33 lot)
+SL: 2644.35 (risk $198.00)
+TP1: 2656.35 - stop moves here to lock +$198.00, then trails 3.00 behind price
+TP2: 2662.10 (Claude's structure target - the trail decides the exit)
+TP3: 2670.00 (Claude's structure target - the trail decides the exit)
+News check: clear - no surprise news [2 web searches + 14 headlines]
+Reasoning: ...
+```
+
+SL and TP1 are the real levels sent/managed (re-priced from the fill).
+TP2/TP3 are the next reaction levels Claude picked from the chart
+structure (liquidity pools, previous day/week highs and lows, order blocks)
+beyond TP1 - shown for information, since the EA's trail, not a broker
+order, decides the final exit. A rejected verdict still shows the levels it
+would have used. This
 is send-only and completely independent of the Telegram signal-copying
 stack elsewhere in this repo (`../python/`, `../MQL5/`,
 `../UnifiedTrader/`'s own Telegram side) - it never reads a channel, never
@@ -315,20 +339,26 @@ places an order, and a bad token here can't affect trading either direction.
 3. Find your chat id: open
    `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser right after
    step 2 and read `"chat":{"id": ...}` from the JSON response.
-4. Pass both to `main.py`:
+4. Set them as environment variables (keeps the token off the command line)
+   or pass them as flags:
+
+```bat
+set TELEGRAM_ALERT_BOT_TOKEN=<TOKEN>
+set TELEGRAM_ALERT_CHAT_ID=<CHAT_ID>
+python main.py --test-alert
+```
 
 ```bash
 python main.py --telegram-alert-bot-token <TOKEN> --telegram-alert-chat-id <CHAT_ID>
 ```
 
-(or set `AdvisorConfig.telegram_alert_bot_token`/`telegram_alert_chat_id`
-directly in `config.py`). Leave either blank and alerts are simply off -
-`send_alert()` is a no-op, and nothing else about the system changes. A
-dedicated bot (not one already used by the Telegram copier stack or
-`UnifiedTrader_EA.mq5`) is recommended, purely to keep this alert traffic
-out of that stack's own chat. `--check` prints `telegram_alerts=on|off`
-(never the token itself) so you can confirm it's wired up without spending
-a Claude API call.
+`--test-alert` sends a sample alert priced at the live tick (no Claude
+call, no order) so you can see the format and confirm delivery. Leave
+either value blank and alerts are simply off - `send_alert()` is a no-op,
+and nothing else about the system changes. Reusing the same bot as
+`UnifiedTrader_EA.mq5` with your own chat id is fine: this only sends, the
+EA's button polling is unaffected, and alerts land next to the Stats/News
+buttons. `--check` prints `telegram_alerts=on|off` (never the token itself).
 
 A Telegram outage, bad token, or rate limit here is caught and logged as a
 warning - it never raises, never blocks `run_once()`, and never affects
@@ -336,7 +366,42 @@ whether a trade executes. This alert is not simulated in `backtest.py`
 (`run_backtest()` never calls it), so a historical replay never spams your
 chat even if these two fields are set.
 
-### 4. Further optional enhancements
+### 4. Breaking-news check before every entry (on by default)
+
+The economic calendar covers *scheduled* releases. `python/news_check.py`
+covers the rest: right before an entry is sent - after every other gate has
+passed, so only a few times a day - one extra Claude call looks for
+**surprise, unscheduled news** from about the last 3 hours that could move
+gold or the dollar hard (military strikes, emergency Fed action, tariff or
+sanctions shocks, bank failures, central-bank gold moves, ...) and judges
+it against this entry's direction:
+
+- **Sources:** Claude's server-side **web search** tool, plus free
+  **Google News RSS** headlines (`news_feeds`, filtered by `news_keywords`
+  to the last `news_check_lookback_minutes`). Both go into one call.
+- **Blocks the entry** when a fresh medium/high-severity surprise points
+  against the trade, or a fresh high-severity shock makes the next minutes
+  too violent to trade either way. The reason lands in `decisions.csv`, the
+  log and the Telegram alert (`News check: BLOCKED - ...`).
+- **Re-prices after the check:** a web search can take tens of seconds, so
+  entry, SL and lot are recomputed from a fresh tick (and the pause and
+  daily budget re-checked) before the order goes out.
+- **Web search must be allowed for your API organization** (Anthropic
+  Console, web search setting). If it's refused, the check retries once on
+  the RSS headlines alone. If no check can run at all it trades anyway and
+  says `News check: unavailable` - pass `--news-check-fail-closed` to refuse
+  the entry instead.
+- **Cost:** only full-conviction entries that passed everything else pay
+  for it - typically cents per check (web search is billed per search, max
+  `news_web_search_max_uses=3`). `--news-check-no-web-search` uses the free
+  headlines only; `--no-news-check` turns it off.
+- **Try it:** `python main.py --test-news-check buy` runs one check for a
+  hypothetical buy at the current price and prints what it found, which
+  also confirms web search is enabled.
+
+Not simulated in `backtest.py` - there is no historical news feed.
+
+### 5. Further optional enhancements
 
 Everything below is off by default (or takes effect only once the Telegram
 alert credentials from step 3 above are set) - none of it changes existing

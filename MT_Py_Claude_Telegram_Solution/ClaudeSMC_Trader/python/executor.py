@@ -47,10 +47,27 @@ TRADE_FIELDS = ["time", "source", "direction", "lots", "entry_price", "sl", "tp"
 
 
 @dataclass
+class TradePlan:
+    """The levels an entry would use at the current tick - what execute()
+    sends, and what the Telegram full-conviction alert shows."""
+    direction: str
+    entry_price: float
+    sl_price: float
+    tp1_price: float        # profit-lock level (sl_to_tp1/breakeven_r_decay) or the broker TP (fixed_tp)
+    broker_tp: float        # 0.0 unless exit_style="fixed_tp"
+    trail_distance: float   # price distance the EA trails by once TP1 is locked
+    lots: float
+    risk_money: float       # loss at the SL for `lots`
+    tp1_money: float        # profit locked at TP1 for `lots`
+
+
+@dataclass
 class Decision:
     executed: bool
     reject_reason: str = ""
     ticket: str = ""
+    plan: TradePlan | None = None
+    news_note: str = ""
 
 
 def _csv_path(cfg: AdvisorConfig, name: str) -> str:
@@ -298,23 +315,19 @@ def atr_sl_distance(gateway, cfg: AdvisorConfig, spec) -> float | None:
     return max(min_dist, min(sl_dist, max_dist))
 
 
-def _reject(cfg: AdvisorConfig, verdict: ConfluenceVerdict, reason: str) -> Decision:
+def _reject(cfg: AdvisorConfig, verdict: ConfluenceVerdict, reason: str,
+            plan: TradePlan | None = None, news_note: str = "") -> Decision:
     log.info("REJECTED %s: %s", verdict.direction, reason)
     log_decision(cfg, verdict, executed=False, reject_reason=reason)
-    return Decision(executed=False, reject_reason=reason)
+    return Decision(executed=False, reject_reason=reason, plan=plan, news_note=news_note)
 
 
-def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
-            trades_today: int, daily_block_reason: str = "",
-            day_start_equity: float = 0.0) -> Decision:
-    """day_start_equity (main.DayRoll / backtest.BacktestDayState's anchor)
-    enables the daily_risk_budget_reason() check; 0 skips it."""
-    reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
-    if reason:
-        return _reject(cfg, verdict, reason)
-
+def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str) -> TradePlan:
+    """Entry/SL/TP1/trail/lots for a market entry in `direction` at the
+    current tick. Raises ValueError on an unrecognized sl_mode/exit_style."""
     tick = gateway.get_tick(cfg.symbol)
-    entry_price = tick.ask if verdict.direction == "buy" else tick.bid
+    entry_price = tick.ask if direction == "buy" else tick.bid
+    sign = 1.0 if direction == "buy" else -1.0
     # sl_dist is always solved at reference_lot - a fixed price distance,
     # independent of what lot actually ends up trading (see position_size()
     # and config.py's reference_lot comment).
@@ -327,23 +340,15 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     else:
         raise ValueError(f"Unrecognized sl_mode {cfg.sl_mode!r} - must be 'fixed' or 'atr'.")
     lots = position_size(gateway, cfg, spec, sl_dist)
-    if spec.tick_size > 0:
-        new_trade_risk = sl_dist / spec.tick_size * spec.tick_value * lots
-        budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, new_trade_risk)
-        if budget_reason:
-            return _reject(cfg, verdict, budget_reason)
-    if verdict.direction == "buy":
-        sl_price = entry_price - sl_dist
-    else:
-        sl_price = entry_price + sl_dist
+    tp1_dist = gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.reference_lot)
+    trail_dist = gateway.price_distance_for_dollars(spec, cfg.trail_dollars, cfg.reference_lot)
 
     if cfg.exit_style == "fixed_tp":
         # The original design: a real broker take-profit at entry+tp1_dist -
         # the SAME price ClaudeSMC_TradeManager.mq5's old logic would arm the
         # trail at, which is exactly the race condition exit_style=sl_to_tp1
         # exists to avoid. Kept only for backtest.py --compare.
-        tp_dist = gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.reference_lot)
-        tp_price = entry_price + tp_dist if verdict.direction == "buy" else entry_price - tp_dist
+        broker_tp = entry_price + sign * tp1_dist
     elif cfg.exit_style in ("sl_to_tp1", "breakeven_r_decay"):
         # Neither style places a broker take-profit at all - the position's
         # only exit mechanism is the stop-loss, which the live MQL5 EA (or
@@ -351,11 +356,60 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
         # is configured there (see config.py's module docstring). An
         # explicit allow-list here rather than a catch-all else: a typo'd
         # exit_style should fail loudly, not silently behave like sl_to_tp1.
-        tp_price = 0.0
+        broker_tp = 0.0
     else:
         raise ValueError(
             f"Unrecognized exit_style {cfg.exit_style!r} - must be one of "
             f"'sl_to_tp1', 'breakeven_r_decay', 'fixed_tp'.")
+
+    money_per_price = spec.tick_value / spec.tick_size if spec.tick_size > 0 else 0.0
+    return TradePlan(
+        direction=direction, entry_price=entry_price,
+        sl_price=entry_price - sign * sl_dist,
+        tp1_price=entry_price + sign * tp1_dist, broker_tp=broker_tp,
+        trail_distance=trail_dist, lots=lots,
+        risk_money=sl_dist * money_per_price * lots,
+        tp1_money=tp1_dist * money_per_price * lots,
+    )
+
+
+def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
+            trades_today: int, daily_block_reason: str = "",
+            day_start_equity: float = 0.0, pre_trade_check=None) -> Decision:
+    """day_start_equity (main.DayRoll / backtest.BacktestDayState's anchor)
+    enables the daily_risk_budget_reason() check; 0 skips it.
+
+    pre_trade_check(direction, plan) -> (block_reason, note), when given, is
+    the very last gate before the order - main.py passes the breaking-news
+    check (news_check.py); backtests pass nothing (no historical news)."""
+    reason = gate(gateway, cfg, verdict, trades_today, daily_block_reason)
+    if reason:
+        return _reject(cfg, verdict, reason)
+
+    plan = build_plan(gateway, cfg, spec, verdict.direction)
+    if spec.tick_size > 0:
+        budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, plan.risk_money)
+        if budget_reason:
+            return _reject(cfg, verdict, budget_reason, plan=plan)
+
+    news_note = ""
+    if pre_trade_check is not None:
+        # Last gate before the order (main.py: the breaking-news check, then
+        # a pause re-check) - only reached by an entry that passed all else.
+        block, news_note = pre_trade_check(verdict.direction, plan)
+        if block:
+            return _reject(cfg, verdict, block, plan=plan, news_note=news_note)
+        # That check can take tens of seconds (web search): re-price the
+        # entry, SL and lot from a fresh tick and re-check the budget, so
+        # the stop is still sl_dollars from the price actually filled.
+        plan = build_plan(gateway, cfg, spec, verdict.direction)
+        if spec.tick_size > 0:
+            budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity,
+                                                     plan.risk_money)
+            if budget_reason:
+                return _reject(cfg, verdict, budget_reason, plan=plan, news_note=news_note)
+
+    entry_price, sl_price, tp_price, lots = plan.entry_price, plan.sl_price, plan.broker_tp, plan.lots
 
     result = gateway.place_market_order(
         spec, verdict.direction, lots, sl_price, tp_price,
@@ -367,7 +421,8 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
         # A refused order (no money, invalid stops, market closed, unsupported
         # filling, requote, ...) must never be reported as a trade.
         comment = getattr(result, "comment", "") if result is not None else "order_send returned None"
-        return _reject(cfg, verdict, f"order rejected by broker: retcode={retcode} {comment}".strip())
+        return _reject(cfg, verdict, f"order rejected by broker: retcode={retcode} {comment}".strip(),
+                       plan=plan, news_note=news_note)
     fill_price = getattr(result, "price", entry_price)
     tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at ${cfg.tp1_dollars:g} via SL)"
     log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
@@ -376,4 +431,5 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     log_decision(cfg, verdict, executed=True, ticket=ticket)
     log_trade(cfg, verdict.direction, lots, fill_price, sl_price, tp_price,
               "dry-run" if cfg.dry_run else "live", retcode, ticket)
-    return Decision(executed=True, ticket=str(ticket))
+    plan.entry_price = fill_price
+    return Decision(executed=True, ticket=str(ticket), plan=plan, news_note=news_note)

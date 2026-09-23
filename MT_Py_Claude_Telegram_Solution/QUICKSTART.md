@@ -106,13 +106,30 @@ In the same Command Prompt (still in `ClaudeSMC_Trader\python`):
 
 ```bat
 set ANTHROPIC_API_KEY=sk-ant-...your key...
+set TELEGRAM_ALERT_BOT_TOKEN=...the same bot token as the EA...
+set TELEGRAM_ALERT_CHAT_ID=...your own chat id from step 3...
 python main.py --check
+python main.py --test-alert
+python main.py --test-news-check buy
 python main.py --once -v
 ```
 
-`--check` connects to MT5 and prints your settings. `--once` runs one full
-evaluation and shows Claude's reasoning. Then start it for real (still
-dry-run, no orders):
+- `--check` connects to MT5 and prints your settings.
+- `--test-alert` sends you a sample **trade alert** in Telegram, like the
+  one you'll get whenever Claude is fully convinced: direction, entry, SL,
+  TP1/TP2/TP3 and the news check.
+- `--test-news-check buy` runs the **breaking-news check** once (see
+  below) and tells you whether web search is working. If it says web
+  search was refused, ask whoever manages your Anthropic account to enable
+  web search in the Anthropic Console. Until then it uses free news
+  headlines only.
+
+`set` only lasts while this window is open. To keep the three values for
+good, run each once with `setx` instead of `set` (e.g.
+`setx TELEGRAM_ALERT_CHAT_ID 123456789`) and open a new Command Prompt.
+- `--once` runs one full evaluation and shows Claude's reasoning.
+
+Then start it for real (still dry-run, no orders):
 
 ```bat
 python main.py --shared-cap-magic 20260922
@@ -167,7 +184,9 @@ account, starting small.
 | `Why` | Show Claude's latest reasoning |
 
 You also get a message every time a trade closes: its profit/loss, your
-equity, and today's P/L and win %.
+equity, and today's P/L and win %. And whenever Claude is fully convinced
+of an entry you get its **direction, entry price, SL, TP1/TP2/TP3** and the
+news check result - even when a rule stopped it from being traded.
 
 While Claude is paused, the Python program keeps running but skips each
 check (no Claude cost, no trades); the EA keeps managing any open trades.
@@ -180,6 +199,7 @@ check (no Claude cost, no trades); the EA keeps managing any open trades.
 | Max loss per day | 10% of account - no new trade is opened if it could push the day past 10%, counting trades already open |
 | Max open trades | 5 per direction (Telegram + Claude together) |
 | News filter | No new trades from 15 minutes before to 15 minutes after a high-impact USD event (NFP, CPI, FOMC...), from MT5's own economic calendar |
+| Breaking news | Just before each Claude entry, Claude searches the web and recent headlines for **surprise** news on gold or the dollar (war, emergency Fed moves, tariffs...) and cancels the entry if it points the other way |
 | Exit | Stop at $6, lock profit at $6, then trail $3 (per 0.01 lot, scaled with lot size) |
 
 To change them: `--risk-percent 1` / `--max-daily-loss 5` on the Python
@@ -190,9 +210,8 @@ sides the same**.
 
 ## Optional extras (later)
 
-- **Telegram alerts and daily summary:** add
-  `--telegram-alert-bot-token <token> --telegram-alert-chat-id <your id>`
-  to the `main.py` command.
+- **Daily summary:** comes automatically with the trade alerts set up in
+  step 5.
 - **Machine-learning advisor:** after about 30 closed **live** trades, run
   `python train_ml_model.py` once a week. It learns from your own trades
   and gives Claude an extra hint. It never places or blocks trades.
@@ -209,6 +228,8 @@ sides the same**.
 | "Why" says no verdict yet | `main.py` isn't running, or hasn't finished its first cycle |
 | Claude "out of credits", retries every 30 min | Add credits at console.anthropic.com - open trades are still managed meanwhile |
 | "daily loss budget" in the logs | Working as intended: that trade could have taken the day past 10% |
+| No trade alerts in Telegram | Run `python main.py --test-alert` - it says what's wrong. Send your bot any message first |
+| "News check: unavailable" in an alert | The news check couldn't run (no internet, or web search refused and no headlines) - the trade went ahead. Add `--news-check-fail-closed` to skip such trades instead |
 | `python` not found | Reinstall Python with "Add to PATH" ticked |
 
 More detail: `SETUP.md` (every system, every option) and the `README.md`
