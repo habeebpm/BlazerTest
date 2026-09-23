@@ -104,7 +104,7 @@
 //| InpTelegramMagicNumber positions/pending orders only - never on    |
 //| InpClaudeMagicNumber ones, which are Python's to manage.            |
 //|                                                                    |
-//| REMOTE CONTROL (InpControlChatId, optional): four plain-text        |
+//| REMOTE CONTROL (InpControlChatId, optional): five plain-text        |
 //| commands, DM'd to this bot from InpControlChatId ONLY (a private    |
 //| 1:1 chat, never the signal channel/group) - a completely separate   |
 //| command path from trading-signal parsing, matched by EXACT text     |
@@ -131,11 +131,20 @@
 //|                      positions untouched.                            |
 //|   PauseClaudeHab   - closes this symbol's Claude-sourced             |
 //|                      (InpClaudeMagicNumber) positions only.          |
+//|   Why              - echoes the latest Claude verdict's reasoning,   |
+//|                      read from the shared Common\Files text file      |
+//|                      python/main.py writes it to (see ReadLastVerdict|
+//|                      File(), InpLastVerdictFilename - MUST match     |
+//|                      config.py's last_verdict_filename). Read-only:  |
+//|                      never touches a position or the pause state.    |
+//|                      "No Claude verdict on file yet" if main.py       |
+//|                      hasn't run a cycle, or the filenames don't match.|
 //| SCOPE: like every other position-management function in this file    |
-//| (CloseAllMine/CancelAllPendingMine/ManageAllPositions), all four      |
-//| commands only ever touch positions/orders on the symbol of the chart |
-//| this EA instance is attached to - a position opened by hand on a     |
-//| different symbol is untouched. RUN ONLY ONE INSTANCE OF THIS EA PER   |
+//| (CloseAllMine/CancelAllPendingMine/ManageAllPositions), the four      |
+//| position-affecting commands only ever touch positions/orders on the  |
+//| symbol of the chart this EA instance is attached to - a position     |
+//| opened by hand on a different symbol is untouched. RUN ONLY ONE       |
+//| INSTANCE OF THIS EA PER                                               |
 //| TERMINAL, on any symbol - this was already true before remote        |
 //| control existed (GV_LAST_UPDATE_ID is a terminal-wide Global          |
 //| Variable, not scoped per chart) and remains true for the new pause    |
@@ -262,6 +271,7 @@ input double  InpMaxEntryDeviationPips = 200.0;    // Reject if current price is
 
 input group "=== Remote control (optional) - see file header's REMOTE CONTROL section ==="
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
+input string  InpLastVerdictFilename = "claudesmc_last_verdict.txt"; // Why button: MUST match python/config.py's AdvisorConfig.last_verdict_filename
 
 //================================= TYPES ====================================
 
@@ -329,6 +339,7 @@ int      CancelAllPendingMine();
 int      CloseAllClaudeMine();
 void     SetTelegramPaused(bool paused);
 void     SendControlReply(const string &summary);
+string   ReadLastVerdictFile();
 void     ProcessControlCommand(const string &rawText);
 bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                            string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode,
@@ -1120,6 +1131,36 @@ void SendControlReply(const string &summary)
 }
 
 //+------------------------------------------------------------------+
+//| Why button: reads the shared Common\Files text file               |
+//| python/main.py writes the latest Claude verdict to (see            |
+//| mt5_gateway.write_common_file(), config.py's last_verdict_filename |
+//| - MUST match InpLastVerdictFilename). MQL5's file sandbox           |
+//| otherwise only sees THIS EA's own MQL5/Files directory, never       |
+//| Python's decisions.csv directly - the shared Common\Files folder is |
+//| the one place both processes can read/write, which is why this      |
+//| cross-process hand-off exists at all rather than parsing the CSV.   |
+//| Never raises: FileOpen() failing (file not written yet, filename    |
+//| mismatch, ClaudeSMC_Trader not running) just means no verdict text, |
+//| reported to the operator as such rather than as a crash.            |
+//+------------------------------------------------------------------+
+string ReadLastVerdictFile()
+{
+   if(StringLen(InpLastVerdictFilename) == 0)
+      return("");
+   int handle = FileOpen(InpLastVerdictFilename, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+      return("");
+   string text = "";
+   while(!FileIsEnding(handle))
+   {
+      string line = FileReadString(handle);
+      text += (StringLen(text) > 0 ? "\n" : "") + line;
+   }
+   FileClose(handle);
+   return(text);
+}
+
+//+------------------------------------------------------------------+
 //| Remote control commands from InpControlChatId - see file header's |
 //| REMOTE CONTROL section for the full semantics of each. Matched by  |
 //| EXACT text (trimmed, case-insensitive), not substring - unlike     |
@@ -1184,9 +1225,20 @@ void ProcessControlCommand(const string &rawText)
                   claudeClosed));
       return;
    }
+   if(cmd == "WHY")
+   {
+      string verdictText = ReadLastVerdictFile();
+      if(StringLen(verdictText) == 0)
+         SendControlReply("No Claude verdict on file yet - either ClaudeSMC_Trader's python/main.py "
+                           "hasn't completed an evaluation cycle since this EA started, or "
+                           "InpLastVerdictFilename doesn't match config.py's last_verdict_filename.");
+      else
+         SendControlReply("Last Claude verdict:\n" + verdictText);
+      return;
+   }
    SendControlReply(StringFormat(
                "Unrecognized control command: '%s' - tap a button below, or send exactly one of "
-               "PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab.", rawText));
+               "PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab / Why.", rawText));
 }
 
 //+------------------------------------------------------------------+
@@ -1742,7 +1794,7 @@ string JsonEscape(const string &s)
 
 //+------------------------------------------------------------------+
 //| Sends `text` to `chatId` with the PauseHab/ResumeHab/PauseTelHab/  |
-//| PauseClaudeHab reply keyboard attached, so the buttons stay        |
+//| PauseClaudeHab/Why reply keyboard attached, so the buttons stay    |
 //| visible in Telegram - a reply keyboard persists client-side once   |
 //| shown, so re-attaching it on every message (rather than once at    |
 //| startup only) is redundant but harmless, and simplest to reason    |
@@ -1770,7 +1822,7 @@ bool TelegramSendMessage(long chatId, const string &text)
    // own up-to-this-cap wait, one after another.
    int sendTimeoutMs = (int)MathMin(InpHttpTimeoutMs, 3000);
    string keyboardJson =
-      "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"PauseClaudeHab\"]],"
+      "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"PauseClaudeHab\"],[\"Why\"]],"
       "\"resize_keyboard\":true,\"is_persistent\":true}";
    string body = StringFormat("{\"chat_id\":%I64d,\"text\":\"%s\",\"reply_markup\":%s}",
                                chatId, JsonEscape(text), keyboardJson);

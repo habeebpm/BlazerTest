@@ -188,6 +188,17 @@ class AdvisorConfig:
     # those credentials are actually set; this flag alone changes nothing.
     send_performance_digest: bool = True
 
+    # --- "Why" button (optional; on by default, harmless if the EA side
+    #     isn't set up for it) - main.py writes the latest Claude verdict's
+    #     reasoning to this filename in MT5's shared Common\Files folder
+    #     (see mt5_gateway.write_common_file()) after every evaluation
+    #     cycle, so UnifiedTrader_EA.mq5's "Why" Telegram command/button can
+    #     echo it back on demand. MUST match that EA's own
+    #     InpLastVerdictFilename input, or the button will just report "no
+    #     verdict on file yet" forever. Set to "" to disable writing the
+    #     file at all.
+    last_verdict_filename: str = "claudesmc_last_verdict.txt"
+
     # --- Order plumbing ---
     magic: int = 20260921
     comment: str = "Claude_Sig"

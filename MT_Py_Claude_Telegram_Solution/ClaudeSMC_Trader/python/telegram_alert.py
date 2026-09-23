@@ -72,6 +72,24 @@ def format_performance_digest(symbol: str, period_label: str, trades: list[dict]
             f"{len(wins)}W/{len(losses)}L ({win_rate:.0f}% win rate), net P&L ${net:+.2f}")
 
 
+def format_verdict_digest(symbol: str, verdict, executed: bool, reject_reason: str = "") -> str:
+    """Plain-text summary of a Claude verdict at ANY conviction level -
+    unlike format_full_conviction_message() (which only ever fires for
+    conviction="full"), this is written after EVERY evaluation cycle (see
+    main.py's run_once()) so UnifiedTrader_EA.mq5's "Why" Telegram command
+    always has something current to echo back, even when Claude called
+    "none" or "partial". Plain ASCII-safe text - see mt5_gateway.
+    write_common_file()'s own note on why.
+    """
+    status = "EXECUTED" if executed else ("NOT executed - " + reject_reason if reject_reason
+                                          else "NOT executed")
+    return (
+        f"{verdict.direction.upper()} {symbol} | conviction={verdict.conviction} "
+        f"confluence={verdict.confluence_count}/3 | {status}\n"
+        f"Reasoning: {verdict.reasoning}"
+    )
+
+
 def send_alert(bot_token: str, chat_id: str, text: str, poster=_post_json) -> bool:
     """Never raises - a Telegram outage (bad token, network down, rate
     limited) must never interrupt the trading loop this is a side-effect of.

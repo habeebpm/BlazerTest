@@ -33,6 +33,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+import os
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -956,6 +957,64 @@ def test_mt5_gateway_recent_closed_trades() -> bool:
     return ok
 
 
+class FakeMt5Terminal:
+    """Stands in for the MetaTrader5 module's terminal_info(), so
+    mt5_gateway.write_common_file() is tested without a real terminal.
+    """
+    class TerminalInfo:
+        def __init__(self, commondata_path):
+            self.commondata_path = commondata_path
+
+    def __init__(self, commondata_path, fail=False):
+        self.commondata_path = commondata_path
+        self.fail = fail
+
+    def terminal_info(self):
+        return None if self.fail else FakeMt5Terminal.TerminalInfo(self.commondata_path)
+
+    def last_error(self):
+        return "simulated terminal_info() failure"
+
+
+def test_write_common_file() -> bool:
+    print("\n=== 8f. mt5_gateway.write_common_file() ===")
+    ok = True
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        gw._mt5 = FakeMt5Terminal(tmp)
+        try:
+            gw.write_common_file("claudesmc_last_verdict.txt", "BUY XAUUSD | conviction=full")
+            written_path = os.path.join(tmp, "Files", "claudesmc_last_verdict.txt")
+            ok &= check("the file is written under <commondata_path>/Files/<filename>",
+                        os.path.exists(written_path), written_path)
+            with open(written_path) as f:
+                content = f.read()
+            ok &= check("the file's content matches exactly what was written",
+                        content == "BUY XAUUSD | conviction=full", content)
+
+            gw.write_common_file("claudesmc_last_verdict.txt", "SELL XAUUSD | conviction=partial")
+            with open(written_path) as f:
+                overwritten = f.read()
+            ok &= check("a second write overwrites the file rather than appending",
+                        overwritten == "SELL XAUUSD | conviction=partial", overwritten)
+        finally:
+            gw._mt5 = None
+
+    gw._mt5 = FakeMt5Terminal("", fail=True)
+    raised_no_terminal = None
+    try:
+        gw.write_common_file("x.txt", "y")
+    except RuntimeError as exc:
+        raised_no_terminal = exc
+    finally:
+        gw._mt5 = None
+    ok &= check("terminal_info() returning None raises RuntimeError rather than crashing obscurely",
+                raised_no_terminal is not None, raised_no_terminal)
+
+    return ok
+
+
 def _flat_spec(**overrides) -> gw.SymbolSpec:
     base = dict(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
                volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
@@ -1247,6 +1306,19 @@ def test_telegram_alert() -> bool:
                                  "net P&L $+5.00",
                 mixed_digest)
 
+    verdict_digest_exec = telegram_alert.format_verdict_digest(
+        "XAUUSD", make_verdict("buy", 3, "full"), executed=True)
+    ok &= check("format_verdict_digest() works for an executed full-conviction verdict",
+                "BUY XAUUSD" in verdict_digest_exec and "conviction=full" in verdict_digest_exec
+                and "EXECUTED" in verdict_digest_exec, verdict_digest_exec)
+
+    verdict_digest_none = telegram_alert.format_verdict_digest(
+        "XAUUSD", make_verdict("none", 0, "none"), executed=False, reject_reason="no actionable direction")
+    ok &= check("format_verdict_digest() also works for a 'none' conviction verdict (the Why button "
+                "must always have something current to echo, not just full-conviction ones)",
+                "conviction=none" in verdict_digest_none and "NOT executed" in verdict_digest_none,
+                verdict_digest_none)
+
     return ok
 
 
@@ -1330,6 +1402,7 @@ def main() -> int:
         test_dxy_context(),
         test_consensus_context(),
         test_mt5_gateway_recent_closed_trades(),
+        test_write_common_file(),
         test_backtest_no_lookahead_and_reset(),
         test_backtest_exit_simulation(),
         test_backtest_exit_simulation_sl_to_tp1(),

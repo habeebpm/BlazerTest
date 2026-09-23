@@ -11,6 +11,7 @@ any platform (see selftest.py, which mocks this module entirely).
 from __future__ import annotations
 
 import logging
+import os
 import platform
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -141,6 +142,28 @@ def account_equity() -> float:
     if info is None:
         raise RuntimeError(f"account_info() failed: {m.last_error()}")
     return float(info.equity)
+
+
+def write_common_file(filename: str, text: str) -> None:
+    """Writes `text` into MT5's shared Common\\Files folder - the ONE
+    location both this Python process and a running MQL5 EA's FileOpen(...,
+    FILE_COMMON) can both reach (MQL5's file sandbox otherwise only sees
+    each EA's own MQL5/Files directory, never anything Python writes).
+    Used by main.py to hand UnifiedTrader_EA.mq5's "Why" Telegram command
+    the latest Claude verdict text - see that EA's ReadLastVerdictFile()
+    and InpLastVerdictFilename (must match config.py's
+    last_verdict_filename). Plain text only - MQL5 reads it with
+    FILE_TXT|FILE_ANSI, so anything outside that encoding would come back
+    mangled on the EA side.
+    """
+    m = mt5()
+    info = m.terminal_info()
+    if info is None:
+        raise RuntimeError(f"terminal_info() failed: {m.last_error()}")
+    files_dir = os.path.join(info.commondata_path, "Files")
+    os.makedirs(files_dir, exist_ok=True)
+    with open(os.path.join(files_dir, filename), "w", encoding="ascii", errors="replace") as f:
+        f.write(text)
 
 
 def open_positions(symbol: str, magic: int) -> list:

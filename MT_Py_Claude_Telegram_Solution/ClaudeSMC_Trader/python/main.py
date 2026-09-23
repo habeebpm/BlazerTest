@@ -202,6 +202,18 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, day.block_reason())
     if decision.executed:
         day.trades_today += 1
+    if cfg.last_verdict_filename:
+        # Local file I/O, not a network call - kept inline rather than
+        # threaded, but still never allowed to crash the evaluation cycle:
+        # a permissions/path problem here must never stop trading over a
+        # feature that's purely a convenience for the "Why" Telegram button.
+        try:
+            verdict_text = telegram_alert.format_verdict_digest(
+                cfg.symbol, verdict, decision.executed, decision.reject_reason)
+            gw.write_common_file(cfg.last_verdict_filename, verdict_text)
+        except Exception:
+            log.debug("Could not write the last-verdict file for UnifiedTrader_EA.mq5's 'Why' "
+                     "button - continuing.", exc_info=True)
     if verdict.conviction == "full" and verdict.direction in ("buy", "sell"):
         # Fires on EVERY full-conviction verdict, whether or not it actually
         # executed - gate() can still reject it (position cap, daily trade

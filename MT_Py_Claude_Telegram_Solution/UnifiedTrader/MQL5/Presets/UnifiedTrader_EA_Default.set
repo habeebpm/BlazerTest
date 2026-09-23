@@ -21,9 +21,11 @@
 ;
 ; InpControlChatId=0 (default) disables remote control entirely. Set it to
 ; your own DM chat id with this bot (never the signal channel's) to enable
-; PauseHab/ResumeHab/PauseTelHab/PauseClaudeHab - see the .mq5 file header's
-; REMOTE CONTROL section. Needs InpBotToken set even if
-; InpEnableTelegramSignals is false.
+; PauseHab/ResumeHab/PauseTelHab/PauseClaudeHab/Why - see the .mq5 file
+; header's REMOTE CONTROL section. Needs InpBotToken set even if
+; InpEnableTelegramSignals is false. InpLastVerdictFilename (Why button)
+; MUST match ../../../ClaudeSMC_Trader/python/config.py's
+; AdvisorConfig.last_verdict_filename.
 ;
 InpEnableTelegramSignals=false
 InpEnableClaudeManagement=false
@@ -55,3 +57,4 @@ InpMaxDailyLossPct=0.0
 InpPendingExpiryMin=240
 InpMaxEntryDeviationPips=200.0
 InpControlChatId=0
+InpLastVerdictFilename=claudesmc_last_verdict.txt
