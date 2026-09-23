@@ -155,14 +155,16 @@ account, starting small.
 
 | Button | What it does |
 |---|---|
-| `PauseHab` | Close everything and stop new Telegram trades |
-| `ResumeHab` | Allow new Telegram trades again |
+| `PauseHab` | Close everything and stop all new trades |
+| `ResumeHab` | Allow all new trades again |
 | `PauseTelHab` | Close only Telegram trades and stop new ones |
-| `PauseClaudeHab` | Close only Claude's trades |
+| `ResumeTelHab` | Allow new Telegram trades again |
+| `PauseClaudeHab` | Close only Claude's trades and stop new ones |
+| `ResumeClaudeHab` | Allow new Claude trades again |
 | `Why` | Show Claude's latest reasoning |
 
-To stop Claude opening *new* trades, close the Python window (the buttons
-can't stop the Python program).
+While Claude is paused, the Python program keeps running but skips each
+check (no Claude cost, no trades); the EA keeps managing any open trades.
 
 **Risk rules that are always on:**
 

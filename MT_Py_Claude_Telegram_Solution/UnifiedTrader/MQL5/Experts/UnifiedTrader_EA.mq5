@@ -106,7 +106,7 @@
 //| InpTelegramMagicNumber positions/pending orders only - never on    |
 //| InpClaudeMagicNumber ones, which are Python's to manage.            |
 //|                                                                    |
-//| REMOTE CONTROL (InpControlChatId, optional): five plain-text        |
+//| REMOTE CONTROL (InpControlChatId, optional): seven plain-text       |
 //| commands, DM'd to this bot from InpControlChatId ONLY (a private    |
 //| 1:1 chat, never the signal channel/group) - a completely separate   |
 //| command path from trading-signal parsing, matched by EXACT text     |
@@ -124,15 +124,22 @@
 //|   PauseHab        - closes every open position on THIS CHART'S       |
 //|                      SYMBOL under both magics, and cancels Telegram   |
 //|                      pending orders there, then blocks new Telegram   |
-//|                      entries until ResumeHab.                        |
-//|   ResumeHab        - re-enables new Telegram entries. Reopens        |
-//|                      nothing.                                        |
+//|                      AND new Claude entries until ResumeHab.         |
+//|   ResumeHab        - re-enables new Telegram and Claude entries.     |
+//|                      Reopens nothing.                                |
 //|   PauseTelHab      - closes this symbol's Telegram-sourced           |
 //|                      positions/orders only and blocks new Telegram   |
-//|                      entries until ResumeHab. Claude-sourced         |
-//|                      positions untouched.                            |
+//|                      entries until ResumeTelHab/ResumeHab.           |
+//|   ResumeTelHab     - re-enables new Telegram entries only.           |
 //|   PauseClaudeHab   - closes this symbol's Claude-sourced             |
-//|                      (InpClaudeMagicNumber) positions only.          |
+//|                      (InpClaudeMagicNumber) positions and blocks new |
+//|                      Claude entries until ResumeClaudeHab/ResumeHab. |
+//|   ResumeClaudeHab  - re-enables new Claude entries only.             |
+//|  Claude pause mechanics: this EA can't place or refuse Python's       |
+//|  orders directly, so it writes "paused"/"running" to the shared       |
+//|  Common\Files text file InpClaudePauseFilename (MUST match config.py's|
+//|  claude_pause_filename); python/main.py reads it every cycle and      |
+//|  skips its whole evaluation (no Claude call, no order) while paused.  |
 //|   Why              - echoes the latest Claude verdict's reasoning,   |
 //|                      read from the shared Common\Files text file      |
 //|                      python/main.py writes it to (see ReadLastVerdict|
@@ -156,12 +163,10 @@
 //| silently pausing/resuming a chart nobody sent a command to. (This     |
 //| does NOT affect g_currentDay/g_tradesToday - those are plain          |
 //| per-instance memory, never written to a Global Variable.)              |
-//| IMPORTANT LIMIT: this EA can gate its OWN new entries (Telegram)     |
-//| but never Python's - PauseHab/PauseClaudeHab close open Claude       |
-//| positions right now, but CANNOT stop python/main.py from opening a   |
-//| NEW Claude-sourced one on its very next evaluation cycle. Stop       |
-//| main.py separately if you need that blocked too. The pause state     |
-//| (Telegram entries blocked or not) is saved to a terminal Global      |
+//| Claude entries are blocked through the pause file above, which only  |
+//| works when python/main.py runs on the SAME machine as this terminal  |
+//| (the same requirement as the Why button). The pause states           |
+//| (Telegram / Claude entries blocked or not) are saved to terminal Global|
 //| Variable, the same mechanism InpControlChatId=0 already uses for     |
 //| g_lastUpdateId, so it survives a restart/reattach rather than        |
 //| silently resetting to "resumed". Leaving InpControlChatId=0 (the     |
@@ -211,6 +216,7 @@
 
 #define GV_LAST_UPDATE_ID "UnifiedTrader_EA_LastUpdateId"
 #define GV_TELEGRAM_PAUSED "UnifiedTrader_EA_TelegramPaused"
+#define GV_CLAUDE_PAUSED   "UnifiedTrader_EA_ClaudePaused"
 
 // Deliberately NOT TelegramSMC_Common.mqh's TSMC_SIGNAL_SOURCE ("Telegram_Sig")
 // - that constant's own doc comment reserves it for TelegramSMC_Copier.mq5
@@ -274,6 +280,7 @@ input double  InpMaxEntryDeviationPips = 200.0;    // Reject if current price is
 input group "=== Remote control (optional) - see file header's REMOTE CONTROL section ==="
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
 input string  InpLastVerdictFilename = "claudesmc_last_verdict.txt"; // Why button: MUST match python/config.py's AdvisorConfig.last_verdict_filename
+input string  InpClaudePauseFilename = "claudesmc_pause.txt";        // PauseClaudeHab/ResumeClaudeHab: MUST match python/config.py's AdvisorConfig.claude_pause_filename
 
 //================================= TYPES ====================================
 
@@ -309,7 +316,8 @@ int      g_tradesToday   = 0;
 double   g_dayStartEquity = 0.0;             // InpMaxDailyLossPct only - see UpdateDailyTracking/DailyLossBreakerActive
 bool     g_dailyLossHit   = false;           // latches for the rest of the day once InpMaxDailyLossPct is breached
 int      g_atrHandle     = INVALID_HANDLE;   // EXIT_BREAKEVEN_R_DECAY only - see OnInit/OnDeinit
-bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab - see file header
+bool     g_telegramPaused = false;           // PauseHab/PauseTelHab/ResumeHab/ResumeTelHab - see file header
+bool     g_claudePaused   = false;           // PauseHab/PauseClaudeHab/ResumeHab/ResumeClaudeHab - see file header
 bool     g_sentControlStartupMsg = false;    // one-shot: the buttons/keyboard intro, sent from TelegramPoll()
 long     g_lastControlChatSentTo = 0;        // which chat it was last actually sent to, this session
 
@@ -342,6 +350,8 @@ int      CloseAllMine();
 int      CancelAllPendingMine();
 int      CloseAllClaudeMine();
 void     SetTelegramPaused(bool paused);
+void     SetClaudePaused(bool paused);
+void     WriteClaudePauseFile();
 void     SendControlReply(const string &summary);
 string   ReadLastVerdictFile();
 void     ProcessControlCommand(const string &rawText);
@@ -456,7 +466,8 @@ int OnInit()
          return(INIT_PARAMETERS_INCORRECT);
       }
       PrintFormat("UnifiedTrader_EA: remote control ENABLED via chat %I64d (PauseHab/ResumeHab/"
-                  "PauseTelHab/PauseClaudeHab) - see file header's REMOTE CONTROL section.",
+                  "PauseTelHab/ResumeTelHab/PauseClaudeHab/ResumeClaudeHab/Why) - see file "
+                  "header's REMOTE CONTROL section.",
                   InpControlChatId);
    }
    if(InpDryRun)
@@ -531,8 +542,20 @@ int OnInit()
                        && GlobalVariableGet(GV_TELEGRAM_PAUSED, gvPaused) && (gvPaused != 0.0);
    if(g_telegramPaused)
       Print("UnifiedTrader_EA: restored PAUSED state from a previous PauseHab/PauseTelHab - new "
-            "Telegram entries remain BLOCKED until ResumeHab (persisted across restarts - see file "
-            "header's REMOTE CONTROL section).");
+            "Telegram entries remain BLOCKED until ResumeTelHab/ResumeHab (persisted across restarts "
+            "- see file header's REMOTE CONTROL section).");
+
+   // Same "only while InpControlChatId != 0" rule as g_telegramPaused just
+   // above. Always rewrites the pause file from this state, so a file left
+   // behind by an earlier session (or a dry-run test pause, which is never
+   // persisted) can't keep python/main.py blocked with no resume reachable.
+   double gvClaudePaused;
+   g_claudePaused = (InpControlChatId != 0)
+                     && GlobalVariableGet(GV_CLAUDE_PAUSED, gvClaudePaused) && (gvClaudePaused != 0.0);
+   if(g_claudePaused)
+      Print("UnifiedTrader_EA: restored PAUSED state from a previous PauseHab/PauseClaudeHab - new "
+            "Claude entries remain BLOCKED until ResumeClaudeHab/ResumeHab.");
+   WriteClaudePauseFile();
 
    trade.SetDeviationInPoints(30);
    trade.SetTypeFillingBySymbol(_Symbol);
@@ -1219,6 +1242,45 @@ void SetTelegramPaused(bool paused)
 }
 
 //+------------------------------------------------------------------+
+//| Claude-side twin of SetTelegramPaused(): same dry-run rule (the    |
+//| state applies for this run but is never persisted), plus it writes |
+//| the pause file python/main.py reads - see WriteClaudePauseFile().   |
+//+------------------------------------------------------------------+
+void SetClaudePaused(bool paused)
+{
+   g_claudePaused = paused;
+   if(InpDryRun)
+      PrintFormat("UnifiedTrader_EA: [DRY-RUN] claude-paused=%s for this run only - not persisted, "
+                  "so a restart/reattach starts unpaused.", paused ? "true" : "false");
+   else
+      GlobalVariableSet(GV_CLAUDE_PAUSED, paused ? 1.0 : 0.0);
+   WriteClaudePauseFile();
+}
+
+//+------------------------------------------------------------------+
+//| Writes "paused" or "running" to InpClaudePauseFilename in the      |
+//| shared Common\Files folder - the only place python/main.py can read |
+//| (the reverse direction of the Why button's verdict file). main.py   |
+//| skips its evaluation while it says "paused"; a missing file means    |
+//| "running". An empty filename disables the hand-off.                 |
+//+------------------------------------------------------------------+
+void WriteClaudePauseFile()
+{
+   if(StringLen(InpClaudePauseFilename) == 0)
+      return;
+   int handle = FileOpen(InpClaudePauseFilename, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+   {
+      PrintFormat("UnifiedTrader_EA: WARNING - could not write the Claude pause file %s (error %d) - "
+                  "python/main.py will not see the current pause state.",
+                  InpClaudePauseFilename, GetLastError());
+      return;
+   }
+   FileWriteString(handle, g_claudePaused ? "paused" : "running");
+   FileClose(handle);
+}
+
+//+------------------------------------------------------------------+
 //| Common tail for every ProcessControlCommand() branch below - logs |
 //| `summary` to the terminal (prefixed) and sends it, unprefixed, to |
 //| InpControlChatId as the command's confirmation reply. A single     |
@@ -1279,16 +1341,15 @@ void ProcessControlCommand(const string &rawText)
    if(cmd == "PAUSEHAB")
    {
       Print("UnifiedTrader_EA: PauseHab received - closing this symbol's positions under both "
-            "magics and pausing new Telegram entries.");
+            "magics and pausing new Telegram and Claude entries.");
       int telClosed    = CloseAllMine();
       int telCancelled = CancelAllPendingMine();
       int claudeClosed = CloseAllClaudeMine();
       SetTelegramPaused(true);
+      SetClaudePaused(true);
       SendControlReply(StringFormat(
                   "PauseHab %s %d Telegram position(s), %d pending order(s), %d Claude "
-                  "position(s). New Telegram entries are now BLOCKED until ResumeHab. Claude-side "
-                  "NEW entries are python/main.py's own decision - this EA cannot block those; "
-                  "stop main.py separately if you need to.",
+                  "position(s). New Telegram AND Claude entries are now BLOCKED until ResumeHab.",
                   InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
                   telClosed, telCancelled, claudeClosed));
       return;
@@ -1296,8 +1357,23 @@ void ProcessControlCommand(const string &rawText)
    if(cmd == "RESUMEHAB")
    {
       SetTelegramPaused(false);
-      SendControlReply("ResumeHab done - new Telegram entries re-enabled (still subject to "
-                        "InpEnableTelegramSignals). Nothing was reopened.");
+      SetClaudePaused(false);
+      SendControlReply("ResumeHab done - new Telegram and Claude entries re-enabled (Telegram still "
+                        "subject to InpEnableTelegramSignals). Nothing was reopened.");
+      return;
+   }
+   if(cmd == "RESUMETELHAB")
+   {
+      SetTelegramPaused(false);
+      SendControlReply("ResumeTelHab done - new Telegram entries re-enabled (still subject to "
+                        "InpEnableTelegramSignals). Claude's pause state is unchanged.");
+      return;
+   }
+   if(cmd == "RESUMECLAUDEHAB")
+   {
+      SetClaudePaused(false);
+      SendControlReply("ResumeClaudeHab done - new Claude entries re-enabled from python/main.py's "
+                        "next evaluation cycle. Telegram's pause state is unchanged.");
       return;
    }
    if(cmd == "PAUSETELHAB")
@@ -1309,20 +1385,22 @@ void ProcessControlCommand(const string &rawText)
       SetTelegramPaused(true);
       SendControlReply(StringFormat(
                   "PauseTelHab %s %d position(s), %d pending order(s). New Telegram entries are "
-                  "now BLOCKED until ResumeHab.",
+                  "now BLOCKED until ResumeTelHab or ResumeHab.",
                   InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
                   telClosed, telCancelled));
       return;
    }
    if(cmd == "PAUSECLAUDEHAB")
    {
-      Print("UnifiedTrader_EA: PauseClaudeHab received - closing Claude-sourced positions. Telegram-"
-            "sourced positions and its new-entry state are untouched.");
+      Print("UnifiedTrader_EA: PauseClaudeHab received - closing Claude-sourced positions and "
+            "pausing new Claude entries. Telegram-sourced positions and its new-entry state are "
+            "untouched.");
       int claudeClosed = CloseAllClaudeMine();
+      SetClaudePaused(true);
       SendControlReply(StringFormat(
-                  "PauseClaudeHab %s %d Claude position(s). This EA cannot stop python/main.py "
-                  "from opening a NEW Claude-sourced position on its next evaluation cycle - stop "
-                  "main.py separately if you need that blocked too.",
+                  "PauseClaudeHab %s %d Claude position(s). New Claude entries are now BLOCKED "
+                  "until ResumeClaudeHab or ResumeHab (python/main.py skips its evaluation while "
+                  "paused).",
                   InpDryRun ? "[DRY-RUN] would close" : "done - closed",
                   claudeClosed));
       return;
@@ -1340,7 +1418,8 @@ void ProcessControlCommand(const string &rawText)
    }
    SendControlReply(StringFormat(
                "Unrecognized control command: '%s' - tap a button below, or send exactly one of "
-               "PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab / Why.", rawText));
+               "PauseHab / ResumeHab / PauseTelHab / ResumeTelHab / PauseClaudeHab / "
+               "ResumeClaudeHab / Why.", rawText));
 }
 
 //+------------------------------------------------------------------+
@@ -1742,7 +1821,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    if(g_telegramPaused)
    {
       Print("UnifiedTrader_EA: new Telegram entries are PAUSED (PauseHab/PauseTelHab) - ignoring "
-            "signal. Send ResumeHab to re-enable.");
+            "signal. Send ResumeTelHab or ResumeHab to re-enable.");
       LogSignalRow(chatId, "OPEN", "", msg.symbolOk, msg.entryA, msg.entryB, "",
                    true, "paused via PauseHab/PauseTelHab", false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
@@ -1937,7 +2016,8 @@ bool TelegramSendMessage(long chatId, const string &text)
    // own up-to-this-cap wait, one after another.
    int sendTimeoutMs = (int)MathMin(InpHttpTimeoutMs, 3000);
    string keyboardJson =
-      "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"PauseClaudeHab\"],[\"Why\"]],"
+      "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"ResumeTelHab\"],"
+      "[\"PauseClaudeHab\",\"ResumeClaudeHab\"],[\"Why\"]],"
       "\"resize_keyboard\":true,\"is_persistent\":true}";
    string body = StringFormat("{\"chat_id\":%I64d,\"text\":\"%s\",\"reply_markup\":%s}",
                                chatId, JsonEscape(text), keyboardJson);

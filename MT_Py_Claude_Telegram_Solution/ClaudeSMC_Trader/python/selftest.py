@@ -1188,6 +1188,18 @@ def test_write_common_file() -> bool:
                 overwritten = f.read()
             ok &= check("a second write overwrites the file rather than appending",
                         overwritten == "SELL XAUUSD | conviction=partial", overwritten)
+
+            ok &= check("read_common_file() returns what was written",
+                        gw.read_common_file("claudesmc_last_verdict.txt")
+                        == "SELL XAUUSD | conviction=partial")
+            ok &= check("read_common_file() returns None for a file that doesn't exist (e.g. no "
+                        "UnifiedTrader_EA pause file yet)",
+                        gw.read_common_file("claudesmc_pause.txt") is None)
+            with open(os.path.join(tmp, "Files", "claudesmc_pause.txt"), "wb") as f:
+                f.write("paused".encode("utf-16"))   # BOM + UTF-16, as some MQL5 builds write
+            ok &= check("read_common_file() decodes a BOM-prefixed UTF-16 file from MQL5",
+                        gw.read_common_file("claudesmc_pause.txt") == "paused",
+                        gw.read_common_file("claudesmc_pause.txt"))
         finally:
             gw._mt5 = None
 
@@ -1878,6 +1890,28 @@ def test_main_cli_config() -> bool:
     cfg = cfg_for("--risk-percent", "0", "--max-daily-loss", "0")
     ok &= check("--risk-percent 0 / --max-daily-loss 0 turn both features off",
                 not cfg.use_risk_percent and cfg.max_daily_loss_pct == 0.0, cfg)
+
+    class FakePauseFile:
+        def __init__(self, text=None, fail=False):
+            self.text, self.fail = text, fail
+
+        def read_common_file(self, filename):
+            if self.fail:
+                raise RuntimeError("terminal_info() failed")
+            return self.text
+
+    cfg = AdvisorConfig()
+    ok &= check("PauseClaudeHab: the EA's pause file saying 'paused' pauses Claude entries",
+                main_mod.claude_paused(cfg, FakePauseFile("paused")))
+    ok &= check("ResumeClaudeHab: 'running' resumes them",
+                not main_mod.claude_paused(cfg, FakePauseFile("running")))
+    ok &= check("no pause file at all (no UnifiedTrader_EA) means running",
+                not main_mod.claude_paused(cfg, FakePauseFile(None)))
+    ok &= check("an unreadable pause file counts as running rather than halting trading",
+                not main_mod.claude_paused(cfg, FakePauseFile(fail=True)))
+    ok &= check("claude_pause_filename='' disables the check",
+                not main_mod.claude_paused(AdvisorConfig(claude_pause_filename=""),
+                                           FakePauseFile("paused")))
     return ok
 
 

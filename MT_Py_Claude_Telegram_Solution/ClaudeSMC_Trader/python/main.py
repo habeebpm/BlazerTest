@@ -301,6 +301,26 @@ def send_performance_digests(cfg: AdvisorConfig, gap_start, gap_end) -> None:
     threading.Thread(target=_send, daemon=True).start()
 
 
+CLAUDE_PAUSED_TEXT = ("Claude entries are PAUSED from Telegram (PauseClaudeHab/PauseHab) - no "
+                      "evaluation until ResumeClaudeHab or ResumeHab.")
+
+
+def claude_paused(cfg: AdvisorConfig, gateway=gw) -> bool:
+    """True while UnifiedTrader_EA.mq5's pause file says "paused" - see
+    config.py's claude_pause_filename. A missing or unreadable file counts
+    as running (a read hiccup must not silently halt trading); an unreadable
+    one is logged."""
+    if not cfg.claude_pause_filename:
+        return False
+    try:
+        text = gateway.read_common_file(cfg.claude_pause_filename)
+    except Exception as exc:
+        log.warning("Could not read the Claude pause file %r (%s) - treating as running.",
+                    cfg.claude_pause_filename, exc)
+        return False
+    return (text or "").strip().lower() == "paused"
+
+
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     equity = gw.account_equity()
     gap = day.roll(equity)
@@ -308,6 +328,16 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
             and cfg.telegram_alert_chat_id:
         send_performance_digests(cfg, gap[0], gap[1])
     day.check_daily_limits(cfg, equity)
+    if claude_paused(cfg):
+        # Checked before building the snapshot or calling Claude - a pause
+        # costs nothing. Open positions keep being managed by the EA.
+        log.info(CLAUDE_PAUSED_TEXT)
+        if cfg.last_verdict_filename:
+            try:
+                gw.write_common_file(cfg.last_verdict_filename, CLAUDE_PAUSED_TEXT)
+            except Exception:
+                log.debug("Could not update the last-verdict file while paused.", exc_info=True)
+        return
     features = market_intel.build_feature_snapshot(gw, cfg)
     verdict = claude_advisor.get_verdict(client, cfg, features)
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",

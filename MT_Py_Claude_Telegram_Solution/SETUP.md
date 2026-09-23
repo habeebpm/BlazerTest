@@ -347,13 +347,13 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
 6. Leave `InpDryRun=true` until you trust the logged behavior.
 
 **Optional remote control:** set `InpControlChatId` to your own DM chat id
-with the bot to enable `PauseHab`/`ResumeHab`/`PauseTelHab`/
-`PauseClaudeHab`/`Why` - shown as tappable buttons in that chat (typing the
-exact text also works), closing positions, pausing new Telegram entries,
-and echoing Claude's latest reasoning on demand. See
-`UnifiedTrader/README.md` § "Remote control" - note it can close open
-Claude-sourced positions but can't stop Python from
-opening a new one next cycle.
+with the bot to enable `PauseHab`/`ResumeHab`/`PauseTelHab`/`ResumeTelHab`/
+`PauseClaudeHab`/`ResumeClaudeHab`/`Why` - shown as tappable buttons in that
+chat (typing the exact text also works): closing positions, pausing and
+resuming new Telegram and/or Claude entries, and echoing Claude's latest
+reasoning on demand. The Claude pause reaches `python/main.py` through a
+shared file, so `main.py` must run on the same machine as MT5. See
+`UnifiedTrader/README.md` § "Remote control".
 
 **Making the shared cap symmetric (recommended):** this EA enforces the
 combined cap for its own Telegram entries only - it can't intercept an
@@ -433,8 +433,9 @@ formula, or config default.
   Python's `shared_cap_magic_numbers` to `[InpTelegramMagicNumber]` too
   (§ 6) - this EA alone can't intercept Python's own orders.
 - **PauseHab/PauseClaudeHab closed Claude positions but a new one opened
-  anyway** - expected (§ 6) - this EA can't stop `python/main.py` from
-  deciding a new entry; stop `main.py` itself if you need that blocked too.
+  anyway** - `main.py` isn't seeing the pause file: run it on the same
+  machine as MT5, and keep `InpClaudePauseFilename` equal to `config.py`'s
+  `claude_pause_filename` (both default `claudesmc_pause.txt`).
 - **PauseHab/ResumeHab don't seem to do anything** - `InpControlChatId`
   must be your own DM chat id with the bot, never `InpChannelId1`/
   `InpChannelId2` (OnInit refuses to start if they match) - see

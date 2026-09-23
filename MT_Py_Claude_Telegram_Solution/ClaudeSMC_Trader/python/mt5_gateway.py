@@ -170,14 +170,35 @@ def write_common_file(filename: str, text: str) -> None:
     FILE_TXT|FILE_ANSI, so anything outside that encoding would come back
     mangled on the EA side.
     """
+    files_dir = _common_files_dir()
+    os.makedirs(files_dir, exist_ok=True)
+    with open(os.path.join(files_dir, filename), "w", encoding="ascii", errors="replace") as f:
+        f.write(text)
+
+
+def read_common_file(filename: str) -> str | None:
+    """Reads a text file from MT5's shared Common\\Files folder (see
+    write_common_file()), or None if it doesn't exist. Used by main.py to
+    read UnifiedTrader_EA.mq5's Claude pause file (InpClaudePauseFilename /
+    config.py's claude_pause_filename). MQL5 writes FILE_TXT|FILE_ANSI, and
+    may prefix a UTF-8/UTF-16 BOM depending on build - stripped here.
+    """
+    path = os.path.join(_common_files_dir(), filename)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16").strip()
+    return raw.decode("utf-8-sig", errors="replace").strip()
+
+
+def _common_files_dir() -> str:
     m = mt5()
     info = m.terminal_info()
     if info is None:
         raise RuntimeError(f"terminal_info() failed: {m.last_error()}")
-    files_dir = os.path.join(info.commondata_path, "Files")
-    os.makedirs(files_dir, exist_ok=True)
-    with open(os.path.join(files_dir, filename), "w", encoding="ascii", errors="replace") as f:
-        f.write(text)
+    return os.path.join(info.commondata_path, "Files")
 
 
 def open_positions(symbol: str, magic: int) -> list:

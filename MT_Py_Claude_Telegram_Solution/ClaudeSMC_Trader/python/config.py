@@ -202,6 +202,15 @@ class AdvisorConfig:
     #     file at all.
     last_verdict_filename: str = "claudesmc_last_verdict.txt"
 
+    # --- PauseClaudeHab / ResumeClaudeHab (UnifiedTrader_EA.mq5 Telegram
+    #     buttons) - the EA writes "paused" or "running" to this file in
+    #     MT5's shared Common\Files folder; main.py reads it at the start of
+    #     every cycle and, while it says "paused", skips the whole evaluation
+    #     (no Claude call, no order). A missing file means running, so this is
+    #     harmless without UnifiedTrader_EA. MUST match the EA's
+    #     InpClaudePauseFilename. "" disables the check.
+    claude_pause_filename: str = "claudesmc_pause.txt"
+
     # --- Heartbeat / stale-cycle alert (reuses telegram_alert_bot_token/
     #     telegram_alert_chat_id above; see main.py's Heartbeat class) ---
     # Periodic "still alive" ping, independent of any trading activity -

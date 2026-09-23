@@ -98,9 +98,9 @@ wins for its own new entries while the higher one keeps opening past it.
 `shared_cap_magic_numbers` is set, but can't verify the MQL5-side value
 for you - check it by hand.
 
-## Remote control (optional): PauseHab / ResumeHab / PauseTelHab / PauseClaudeHab / Why
+## Remote control (optional): Pause / Resume buttons and Why
 
-Five plain-text commands, DM'd to this bot from your own Telegram account
+Seven plain-text commands, DM'd to this bot from your own Telegram account
 (`InpControlChatId`) - a completely separate command path from trading
 signals, matched by **exact** text (trimmed, case-insensitive), never
 substring, since these close real positions. Also subject to
@@ -119,10 +119,12 @@ Telegram client (including ones where reply keyboards render oddly).
 
 | Command | What it does |
 |---|---|
-| `PauseHab` | Closes every open position on this chart's symbol, under both magics, cancels Telegram pending orders there, and blocks new Telegram entries until `ResumeHab`. |
-| `ResumeHab` | Re-enables new Telegram entries. Reopens nothing. |
-| `PauseTelHab` | Closes this symbol's Telegram-sourced positions/orders only and blocks new Telegram entries until `ResumeHab`. Claude-sourced positions untouched. |
-| `PauseClaudeHab` | Closes this symbol's Claude-sourced (`InpClaudeMagicNumber`) positions only. |
+| `PauseHab` | Closes every open position on this chart's symbol, under both magics, cancels Telegram pending orders there, and blocks new Telegram **and** Claude entries until `ResumeHab`. |
+| `ResumeHab` | Re-enables new Telegram and Claude entries. Reopens nothing. |
+| `PauseTelHab` | Closes this symbol's Telegram-sourced positions/orders only and blocks new Telegram entries until `ResumeTelHab`/`ResumeHab`. Claude untouched. |
+| `ResumeTelHab` | Re-enables new Telegram entries only. |
+| `PauseClaudeHab` | Closes this symbol's Claude-sourced (`InpClaudeMagicNumber`) positions and blocks new Claude entries until `ResumeClaudeHab`/`ResumeHab`. Telegram untouched. |
+| `ResumeClaudeHab` | Re-enables new Claude entries only. |
 | `Why` | Echoes the latest Claude verdict's reasoning, read from the shared `Common\Files` text file `python/main.py` writes it to after every evaluation cycle (`InpLastVerdictFilename` - MUST match `config.py`'s `last_verdict_filename`, both default `claudesmc_last_verdict.txt`). Read-only - never touches a position or the pause state. Reports "No Claude verdict on file yet" if `main.py` hasn't run a cycle, or the filenames don't match. |
 
 **Scope: this chart's symbol only**, like every other position-management
@@ -140,13 +142,20 @@ shares both with this one and will corrupt them, including silently
 pausing or resuming a chart nobody ever sent a command to. (The daily
 trade counter is unaffected - that one's plain per-instance memory.)
 
-**This EA can only gate its own new entries (Telegram) - never Python's.**
-`PauseHab`/`PauseClaudeHab` close every open Claude-sourced position right
-now, but cannot stop `python/main.py` from opening a *new* one on its very
-next evaluation cycle - there is no channel for this EA to tell that
-separate process to stop. If you need Claude-side entries blocked too,
-stop `main.py` itself (or send it `--once` runs only) in addition to
-sending the command.
+**How the Claude pause works.** Claude's entries are placed by
+`python/main.py`, not by this EA, so the EA can't refuse them directly.
+Instead it writes `paused` or `running` to a small text file in MT5's
+shared `Common\Files` folder (`InpClaudePauseFilename`, default
+`claudesmc_pause.txt` - MUST match `config.py`'s `claude_pause_filename`),
+the reverse of how the **Why** button reads Claude's verdict. `main.py`
+checks it at the start of every cycle and, while it says `paused`, skips
+the whole evaluation - no Claude API call, no new order. Open positions
+keep being managed by this EA either way. Like **Why**, this needs
+`main.py` on the **same machine** as the MT5 terminal. The Claude pause
+is persisted exactly like the Telegram one (a terminal Global Variable,
+never in dry-run, dormant while `InpControlChatId=0`), and the file is
+rewritten from that state every time the EA starts, so a stale file
+can't leave Claude blocked with no Resume button reachable.
 
 **Setup:**
 1. Set `InpControlChatId` to your own DM chat id with this bot - **never**
