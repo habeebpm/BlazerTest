@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -149,7 +150,12 @@ def position_size(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> float:
     loss_per_lot = (sl_dist / spec.tick_size) * spec.tick_value
     lots = (equity * cfg.risk_percent / 100.0) / loss_per_lot
     step = spec.volume_step or 0.01
-    lots = (lots // step) * step
+    # A plain `lots // step` silently under-sizes by a whole step whenever
+    # floating-point imprecision leaves the true ratio a hair under an
+    # integer (e.g. 0.03/0.01 can evaluate to 2.9999999999999996, floored
+    # to 2 instead of 3) - the epsilon absorbs that without ever rounding a
+    # genuinely-below-the-boundary value up a step.
+    lots = math.floor(lots / step + 1e-9) * step
     if lots < spec.volume_min:
         # The broker's minimum lot is a hard floor - there is no smaller
         # order to place - so this clamps UP rather than skipping the

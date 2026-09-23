@@ -922,7 +922,12 @@ double PositionSizeLots()
 
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0.0) step = 0.01;
-   lots = MathFloor(lots / step) * step;
+   // A plain MathFloor(lots/step) silently under-sizes by a whole step
+   // whenever floating-point imprecision leaves the true ratio a hair
+   // under an integer - the epsilon absorbs that without ever rounding a
+   // genuinely-below-the-boundary value up a step (mirrors executor.
+   // position_size()'s own fix).
+   lots = MathFloor(lots / step + 0.000000001) * step;
 
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);

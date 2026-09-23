@@ -196,6 +196,17 @@ class Heartbeat:
         self.stale_alert_sent = True
 
 
+def digest_lookback_days(ended_date, now=None) -> int:
+    """How many days of MT5 deal history send_performance_digests() needs
+    to fetch to be sure it reaches back to ended_date, even after a
+    multi-day process outage (DayRoll.date only advances while the poll
+    loop is actually running, so a restart after several days down can
+    hand roll() an ended_date well in the past).
+    """
+    now = now or datetime.now(timezone.utc)
+    return max(0, (now.date() - ended_date).days)
+
+
 def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
     """Fires once per UTC day roll (see DayRoll.roll()) with a digest of the
     day that just ended, plus a weekly digest too on the Sunday->Monday
@@ -215,11 +226,16 @@ def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
     """
     # count=500/2000 are generous ceilings, not real limits - a manual
     # trading system won't produce anywhere near that many trades in a day
-    # or week; lookback_days pads a couple of days past the window being
-    # reported on purely to tolerate clock/timezone edge cases, the exact
-    # date filter below does the real work.
+    # or week; lookback_days needs to reach back far enough to cover
+    # ended_date even after a multi-day process outage (DayRoll.date only
+    # advances while this loop is actually running, so a restart after
+    # several days down can hand roll() an ended_date well in the past -
+    # exactly the scenario the heartbeat/stale-cycle alert exists to catch)
+    # - the exact date filter below does the real work either way, this
+    # just has to fetch far ENOUGH history to include what it's filtering.
+    days_since_ended = digest_lookback_days(ended_date)
     daily_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=500,
-                                                        lookback_days=2)
+                                                        lookback_days=days_since_ended + 2)
                     if t["time"].date() == ended_date]
     daily_msg = telegram_alert.format_performance_digest(cfg.symbol, "Daily", daily_trades)
 
@@ -227,7 +243,7 @@ def send_performance_digests(cfg: AdvisorConfig, ended_date) -> None:
     if ended_date.weekday() == 6:  # Sunday just ended - the UTC week (Mon-Sun) just completed
         week_start = ended_date - timedelta(days=6)
         weekly_trades = [t for t in gw.recent_closed_trades(cfg.symbol, cfg.magic, count=2000,
-                                                             lookback_days=9)
+                                                             lookback_days=days_since_ended + 9)
                         if week_start <= t["time"].date() <= ended_date]
         weekly_msg = telegram_alert.format_performance_digest(cfg.symbol, "Weekly", weekly_trades)
 

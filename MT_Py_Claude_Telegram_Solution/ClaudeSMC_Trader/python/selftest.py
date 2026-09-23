@@ -554,6 +554,16 @@ def test_executor() -> bool:
     ok &= check("10x the equity produces 10x the lot (risk stays a constant pct of equity)",
                 abs(lots_60k - lots_6k * 10) < 1e-9, (lots_60k, lots_6k))
 
+    # Regression: equity=9000 -> exact lots = 9000*0.002/600 = 0.03, but
+    # 0.03 is not exactly representable in binary floating point (it's
+    # stored as ~0.029999999999999995), so a plain `lots // step` floors
+    # it to 0.02 instead of 0.03 - a silent 33% under-risk. The epsilon in
+    # position_size() must absorb this.
+    lots_9k = executor.position_size(FakeGateway(equity=9000.0), cfg_risk, spec, sl_dist)
+    ok &= check("a lot that is an exact step multiple isn't floored down a whole step by float "
+                "imprecision (0.03 must not become 0.02)",
+                abs(lots_9k - 0.03) < 1e-9, lots_9k)
+
     cfg_risk_capped = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
                                     use_risk_percent=True, risk_percent=5.0, max_lot_size=1.0)
     lots_capped = executor.position_size(FakeGateway(equity=1000000.0), cfg_risk_capped, spec, sl_dist)
@@ -809,12 +819,15 @@ class FakeConsensusGateway:
     magic -> list of {"direction": "buy"|"sell"} dicts, same shape
     mt5_gateway.open_positions() returns.
     """
-    def __init__(self, positions_by_magic):
+    def __init__(self, positions_by_magic, raise_error=False):
         self.positions_by_magic = positions_by_magic
         self.calls = []
+        self.raise_error = raise_error
 
     def open_positions(self, symbol, magic):
         self.calls.append((symbol, magic))
+        if self.raise_error:
+            raise RuntimeError("simulated MT5 IPC hiccup")
         return self.positions_by_magic.get(magic, [])
 
 
@@ -848,6 +861,13 @@ def test_consensus_context() -> bool:
                 result_empty == {"other_system_buy_positions": 0, "other_system_sell_positions": 0},
                 result_empty)
 
+    cfg_failing = AdvisorConfig(consensus_magic_numbers=[20260922])
+    result_failing = market_intel.consensus_context(
+        FakeConsensusGateway({}, raise_error=True), cfg_failing)
+    ok &= check("a gateway failure (transient MT5 hiccup) degrades to None, not an uncaught "
+                "exception that would abort the whole evaluation cycle",
+                result_failing is None, result_failing)
+
     return ok
 
 
@@ -856,10 +876,13 @@ class FakePerformanceGateway:
     market_intel.recent_performance_summary() in isolation from the rest of
     build_feature_snapshot()'s gateway surface.
     """
-    def __init__(self, trades):
+    def __init__(self, trades, raise_error=False):
         self.trades = trades
+        self.raise_error = raise_error
 
     def recent_closed_trades(self, symbol, magic, count):
+        if self.raise_error:
+            raise RuntimeError("simulated MT5 IPC hiccup")
         return self.trades[:count]
 
 
@@ -892,6 +915,15 @@ def test_recent_performance_summary() -> bool:
     many_summary = market_intel.recent_performance_summary(FakePerformanceGateway(many_trades), cfg)
     ok &= check("last_5_results is capped at 5 even with more trades available",
                 len(many_summary["last_5_results"]) == 5, many_summary)
+
+    failing_summary = market_intel.recent_performance_summary(
+        FakePerformanceGateway([], raise_error=True), cfg)
+    ok &= check("a gateway failure (transient MT5 hiccup) degrades to a safe 'no data' shape "
+                "rather than an uncaught exception that would abort the whole evaluation cycle "
+                "- this one is called unconditionally every cycle, unlike dxy/consensus context",
+                failing_summary == {"trade_count": 0,
+                                     "note": "performance data temporarily unavailable"},
+                failing_summary)
 
     return ok
 
@@ -1486,8 +1518,28 @@ def test_calibration_report() -> bool:
     return ok
 
 
+def test_digest_lookback_days() -> bool:
+    print("\n=== 16. main.digest_lookback_days() ===")
+    ok = True
+
+    ended_yesterday = datetime(2026, 9, 22, tzinfo=timezone.utc).date()
+    now = datetime(2026, 9, 23, 8, 0, tzinfo=timezone.utc)
+    ok &= check("the normal case (no outage - the day that just ended is 'yesterday') returns 1, "
+                "the ordinary one-day gap between 'today' and the day that just ended",
+                main_mod.digest_lookback_days(ended_yesterday, now=now) == 1,
+                main_mod.digest_lookback_days(ended_yesterday, now=now))
+
+    ended_five_days_ago = datetime(2026, 9, 18, tzinfo=timezone.utc).date()
+    ok &= check("after a multi-day process outage, lookback reaches back far enough to still "
+                "cover the day that ended while the process was down",
+                main_mod.digest_lookback_days(ended_five_days_ago, now=now) == 5,
+                main_mod.digest_lookback_days(ended_five_days_ago, now=now))
+
+    return ok
+
+
 def test_heartbeat() -> bool:
-    print("\n=== 16. main.Heartbeat: heartbeat ping / stale-cycle alert ===")
+    print("\n=== 17. main.Heartbeat: heartbeat ping / stale-cycle alert ===")
     ok = True
 
     cfg_off = AdvisorConfig()
@@ -1553,6 +1605,7 @@ def main() -> int:
         test_telegram_alert(),
         test_day_roll_daily_limits(),
         test_calibration_report(),
+        test_digest_lookback_days(),
         test_heartbeat(),
     ]
     print()

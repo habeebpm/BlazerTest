@@ -398,18 +398,26 @@ def consensus_context(gateway, cfg: AdvisorConfig) -> dict | None:
     """Read-only summary of OTHER trading systems' open positions on this
     same symbol (see config.py's consensus_magic_numbers) - purely
     informational, never gates anything (executor.gate() knows nothing
-    about this). None when consensus_magic_numbers is empty (the default).
+    about this). None when consensus_magic_numbers is empty (the default),
+    or when the gateway call itself fails (transient MT5 hiccup) - this is
+    context only, so a failure here must never abort the whole evaluation
+    cycle the way an uncaught exception from build_feature_snapshot() would.
     """
     if not cfg.consensus_magic_numbers:
         return None
-    buys = sells = 0
-    for magic in cfg.consensus_magic_numbers:
-        for p in gateway.open_positions(cfg.symbol, magic):
-            if p["direction"] == "buy":
-                buys += 1
-            else:
-                sells += 1
-    return {"other_system_buy_positions": buys, "other_system_sell_positions": sells}
+    try:
+        buys = sells = 0
+        for magic in cfg.consensus_magic_numbers:
+            for p in gateway.open_positions(cfg.symbol, magic):
+                if p["direction"] == "buy":
+                    buys += 1
+                else:
+                    sells += 1
+        return {"other_system_buy_positions": buys, "other_system_sell_positions": sells}
+    except Exception as exc:
+        log.warning("consensus_context: could not read other systems' positions (%s) - "
+                    "continuing without consensus context.", exc)
+        return None
 
 
 def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> dict:
@@ -421,7 +429,17 @@ def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> 
     raising when the account has no closed trades under this magic yet
     (a brand new account, or a fresh magic number).
     """
-    trades = gateway.recent_closed_trades(cfg.symbol, cfg.magic, count)
+    try:
+        trades = gateway.recent_closed_trades(cfg.symbol, cfg.magic, count)
+    except Exception as exc:
+        # Called unconditionally every cycle (unlike dxy_context/
+        # consensus_context, which are opt-in) - a transient MT5 hiccup
+        # here must never abort the whole evaluation cycle. Degrades to
+        # the same shape as "no trades yet", which claude_advisor.
+        # SYSTEM_PROMPT already tells Claude to just ignore.
+        log.warning("recent_performance_summary: could not read trade history (%s) - "
+                    "continuing without it this cycle.", exc)
+        return {"trade_count": 0, "note": "performance data temporarily unavailable"}
     if not trades:
         return {"trade_count": 0, "note": "no closed trades yet under this magic number"}
     wins = [t for t in trades if t["pnl_dollars"] > 0]
