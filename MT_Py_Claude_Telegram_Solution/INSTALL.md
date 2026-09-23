@@ -38,6 +38,7 @@ Must end with `ALL PASS`.
    | `UnifiedTrader/MQL5/Experts/UnifiedTrader_EA.mq5` | `MQL5/Experts/` |
    | `MQL5/Include/TelegramSMC_Common.mqh` | `MQL5/Include/` |
    | `MQL5/Include/EconCalendar.mqh` | `MQL5/Include/` |
+   | `MQL5/Include/XtrBarExport.mqh` | `MQL5/Include/` |
    | `UnifiedTrader/MQL5/Presets/UnifiedTrader_EA_Default.set` | `MQL5/Presets/` |
 
 2. **Tools -> Options -> Expert Advisors** -> tick *Allow WebRequest for
@@ -122,7 +123,19 @@ python main.py --once -v
    Leave it running.
 6. EA `InpChannelId1` = the relay group id.
 
-## 8. Optional - Price export to Google Drive (XTR_Export)
+## 8. Optional - Price export to Google Drive
+
+**A - PC with Google Drive for Desktop (the EA does it, no Python):**
+
+1. EA **Inputs** -> `InpXtrExport` = `true` (default) -> **OK**.
+2. After a minute, MT5 -> **File -> Open Data Folder** -> go up two levels
+   -> `Common\Files\XTR_Data` -> check `XAUUSD_M5.csv`, `XAUUSD_M15.csv`,
+   `XAUUSD_H1.csv`, `XAUUSD_manifest.json` exist. Copy that folder's path.
+3. Google Drive for Desktop -> **Settings (gear) -> Preferences ->
+   My Computer -> Add folder** -> paste the path -> **Sync with Google Drive** -> **Done**.
+4. Files update every minute; Drive syncs them.
+
+**B - VPS without a desktop (Python + service account):**
 
 ```bat
 cd MT_Py_Claude_Telegram_Solution\XTR_Export\python
@@ -130,17 +143,6 @@ pip install -r requirements.txt
 python selftest.py
 python xtr_export.py --check
 ```
-
-**A - PC with a desktop:**
-
-1. Install **Google Drive for Desktop**.
-2. Add folder `C:\XTR_Data` to Drive sync.
-3. ```bat
-   python xtr_export.py --out-dir C:\XTR_Data
-   ```
-   Leave it running.
-
-**B - VPS without a desktop:**
 
 1. <https://console.cloud.google.com/> -> **APIs & Services -> Library** ->
    enable **Google Drive API**.
@@ -151,7 +153,7 @@ python xtr_export.py --check
 5. ```bat
    python xtr_export.py --upload-drive --drive-folder-id <id> --drive-credentials C:\keys\drive.json
    ```
-   Leave it running.
+   Leave it running. (EA `InpXtrExport` = `false` then.)
 
 ## 9. Optional - Trade Logger (trade journal CSV)
 
@@ -222,7 +224,7 @@ python backtest.py --from-mt5 --start 2026-08-01 --end 2026-09-23 --mechanical -
 | MT5 + `UnifiedTrader_EA` (+ Trade Logger chart, step 9) | Always |
 | `python main.py --live --xtr-gate require_alignment --shared-cap-magic 20260922` | Always |
 | `python telegram_relay_bridge.py` | Step 7 only |
-| `python xtr_export.py ...` | Step 8 only |
+| `python xtr_export.py ...` | Step 8 option B only |
 | IIS | Step 10 only (runs as a Windows service) |
 
 Never run `python/telegram_copier.py` alongside `UnifiedTrader_EA`

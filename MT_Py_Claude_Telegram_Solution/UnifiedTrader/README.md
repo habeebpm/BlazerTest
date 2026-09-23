@@ -202,6 +202,24 @@ events and their impact on gold. The calendar isn't available in the
 Strategy Tester, and can be empty for a few minutes after the terminal
 starts - then nothing is blocked. Needs `MQL5/Include/EconCalendar.mqh`.
 
+## Price export for Google Drive (XTR)
+
+With `InpXtrExport` (default on), on every M1 close the EA writes the last
+`InpXtrExportBars` (200) closed M5/M15/H1 bars (plus M1 with
+`InpXtrExportM1`) to `Common\Files\<InpXtrExportFolder>` (`XTR_Data`):
+`XAUUSD_M5.csv`, `XAUUSD_M15.csv`, `XAUUSD_H1.csv` and
+`XAUUSD_manifest.json` - the same files and format as
+`../XTR_Export/python/xtr_export.py` (`datetime,open,high,low,close,volume`,
+datetime in true UTC, closed bars only). Add that folder to **Google Drive
+for Desktop** (Preferences -> My Computer -> Add folder) and Drive keeps it
+synced - no Python, no Google credentials. A timeframe's CSV is rewritten
+only when it has a new closed bar; the manifest every minute as a
+heartbeat; writes are atomic. If the broker clock vs the PC's UTC clock is
+not a clean 15-minute offset (PC clock wrong), that cycle is skipped rather
+than mislabeling timestamps. Needs `MQL5/Include/XtrBarExport.mqh`. For a
+VPS without Drive for Desktop, use `xtr_export.py --upload-drive` instead
+and set `InpXtrExport=false`.
+
 ## Optional risk features (Telegram-sourced entries only)
 
 On by default (recommended values - see `ClaudeSMC_Trader/README.md`'s
@@ -244,9 +262,10 @@ either input to `0`/`false` to opt back out; neither is required:
 ## Setup
 
 1. Copy `MQL5/Experts/UnifiedTrader_EA.mq5` into your terminal's
-   `MQL5/Experts/` folder. It needs two includes too - copy
+   `MQL5/Experts/` folder. It needs three includes too - copy
    `../MQL5/Include/TelegramSMC_Common.mqh` (CSV logging) and
-   `../MQL5/Include/EconCalendar.mqh` (economic calendar) into your
+   `../MQL5/Include/EconCalendar.mqh` (economic calendar) and
+   `../MQL5/Include/XtrBarExport.mqh` (Drive price export) into your
    terminal's `MQL5/Include/` folder (needed at compile time regardless of
    which source(s) you enable). Compile.
 2. Load `MQL5/Presets/UnifiedTrader_EA_Default.set` from the Inputs tab.

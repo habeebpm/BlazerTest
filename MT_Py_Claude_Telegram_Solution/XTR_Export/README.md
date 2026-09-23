@@ -113,6 +113,11 @@ Two options, pick based on where MT5 runs:
 
 ### Option A - MT5 machine has a desktop (recommended if available)
 
+**Simplest:** `UnifiedTrader_EA` (`InpXtrExport`, on by default) writes
+these same files itself into `Common\Files\XTR_Data` on every M1 close -
+no Python process at all. Add that folder to Google Drive for Desktop and
+you're done. The steps below are for running this Python exporter instead.
+
 Install **Google Drive for Desktop** and point it at `--out-dir`. Zero
 code, zero credentials to manage in this repo - it mirrors continuously
 and survives restarts, which is the simplest way to satisfy "always

@@ -223,6 +223,7 @@
 #include <Trade\Trade.mqh>
 #include <TelegramSMC_Common.mqh>
 #include <EconCalendar.mqh>
+#include <XtrBarExport.mqh>
 
 //================================= CONSTANTS ====================================
 #define DIR_NONE        (-1)
@@ -327,6 +328,13 @@ input int                  InpNewsBlockBeforeMin = 15;                    // Blo
 input int                  InpNewsBlockAfterMin  = 15;                    // ...and this many minutes after it
 input string               InpCalendarExportFile = "econ_calendar.csv";   // Shared file ClaudeSMC_Trader reads - MUST match python config.econ_calendar_filename ("" = no export)
 input int                  InpCalendarRefreshMin = 5;                     // Re-export the calendar every N minutes
+
+input group "=== Price export for Google Drive (XTR) - see XtrBarExport.mqh ==="
+input bool   InpXtrExport       = true;        // Write closed M5/M15/H1 bars (UTC CSV + manifest) on every M1 close
+input string InpXtrExportFolder = "XTR_Data";  // Folder inside Common\Files - add it to Google Drive for Desktop
+input string InpXtrExportName   = "XAUUSD";    // File name prefix / manifest symbol (XAUUSD_M5.csv ...)
+input int    InpXtrExportBars   = 200;         // Closed bars per file (50-5000)
+input bool   InpXtrExportM1     = false;       // Also write <name>_M1.csv
 
 //================================= TYPES ====================================
 
@@ -463,6 +471,13 @@ int OnInit()
       // documents itself as touching.
       Print("UnifiedTrader_EA: InpTelegramMagicNumber and InpClaudeMagicNumber must differ - otherwise "
             "this EA cannot tell the two sources' positions apart.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpXtrExport && (InpXtrExportBars < 50 || InpXtrExportBars > 5000
+                       || StringLen(InpXtrExportFolder) == 0 || StringLen(InpXtrExportName) == 0))
+   {
+      Print("UnifiedTrader_EA: InpXtrExportBars must be 50-5000 and InpXtrExportFolder/InpXtrExportName "
+            "non-empty (or set InpXtrExport=false).");
       return(INIT_PARAMETERS_INCORRECT);
    }
    ArrayInitialize(g_xtrH, INVALID_HANDLE);
@@ -2575,6 +2590,8 @@ void OnTick()
 {
    ManageAllPositions();
    EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
+   XtrExpMaybeExport(InpXtrExport, _Symbol, InpXtrExportFolder, InpXtrExportName, InpXtrExportBars,
+                     InpXtrExportM1);
 }
 
 //+------------------------------------------------------------------+
@@ -2589,6 +2606,8 @@ void OnTimer()
    UpdateDailyTracking();
    ExpirePendingOrders();
    EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
+   XtrExpMaybeExport(InpXtrExport, _Symbol, InpXtrExportFolder, InpXtrExportName, InpXtrExportBars,
+                     InpXtrExportM1);
    TelegramPoll();
    FlushNotifyQueue();
 }
