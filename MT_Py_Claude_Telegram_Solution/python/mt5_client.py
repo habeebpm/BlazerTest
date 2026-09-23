@@ -447,7 +447,6 @@ def open_signal_position(cfg, spec: SymbolSpec, direction: str, volume: float,
     """
     m = mt5()
     tick = get_tick(cfg.symbol)
-    point = spec.point
     is_buy = direction == "buy"
     price = tick.ask if is_buy else tick.bid
 
