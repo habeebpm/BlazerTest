@@ -120,6 +120,20 @@ def join_decisions_and_trades(decisions: list[dict], trades: list[dict]) -> tupl
     return pairs, unmatched
 
 
+def build_pnl_by_ticket(trades: list[dict]) -> dict[str, float]:
+    """{ticket: total realized P&L} from mt5_gateway.recent_closed_trades()'s
+    own rows. Sums rather than overwrites: a position closed in more than
+    one partial exit produces multiple rows sharing the same ticket
+    (position_id) - summing keeps that trade's FULL realized P&L instead
+    of only whichever partial-close row happened to be seen last.
+    """
+    pnl_by_ticket: dict[str, float] = {}
+    for t in trades:
+        ticket = str(t["ticket"])
+        pnl_by_ticket[ticket] = pnl_by_ticket.get(ticket, 0.0) + t["pnl_dollars"]
+    return pnl_by_ticket
+
+
 def summarize_by_bucket(pairs: list[tuple[dict, dict]], pnl_by_ticket: dict[str, float]) -> dict[tuple, Bucket]:
     """pnl_by_ticket: {ticket_str: pnl_dollars} for LIVE trades only (from
     MT5's real closed-trade history) - dry-run trades have no ticket worth
@@ -212,9 +226,8 @@ def main(argv: list | None = None) -> int:
         import mt5_gateway as gw
         gw.connect(login=args.login, password=args.password, server=args.server,
                   terminal_path=args.terminal_path)
-        for t in gw.recent_closed_trades(args.symbol, args.magic, count=5000,
-                                         lookback_days=args.lookback_days):
-            pnl_by_ticket[str(t["ticket"])] = t["pnl_dollars"]
+        pnl_by_ticket = build_pnl_by_ticket(gw.recent_closed_trades(
+            args.symbol, args.magic, count=5000, lookback_days=args.lookback_days))
 
     buckets = summarize_by_bucket(pairs, pnl_by_ticket)
     freq = conviction_frequency(decisions)

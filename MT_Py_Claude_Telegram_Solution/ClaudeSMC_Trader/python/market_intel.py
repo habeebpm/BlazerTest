@@ -420,7 +420,8 @@ def consensus_context(gateway, cfg: AdvisorConfig) -> dict | None:
         return None
 
 
-def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> dict:
+def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10,
+                               lookback_days: int = 365) -> dict:
     """Win/loss context from this system's own last `count` closed trades -
     qualitative input for Claude's reasoning (see claude_advisor.SYSTEM_PROMPT),
     never a hard gate: executor.gate() knows nothing about recent performance,
@@ -428,9 +429,16 @@ def recent_performance_summary(gateway, cfg: AdvisorConfig, count: int = 10) -> 
     enforced as a rule here. Returns a safe "no data yet" shape rather than
     raising when the account has no closed trades under this magic yet
     (a brand new account, or a fresh magic number).
+
+    lookback_days is explicitly generous (a year, not mt5_gateway.
+    recent_closed_trades()'s own 14-day default) - this system's $6 SL/$6
+    TP sizing and confluence gating means fewer than `count` trades can
+    easily span more than 14 days, and silently reporting a truncated
+    "last N trades" (really "last N trades within 14 days") would
+    understate a real cold/hot streak that's simply spread over more time.
     """
     try:
-        trades = gateway.recent_closed_trades(cfg.symbol, cfg.magic, count)
+        trades = gateway.recent_closed_trades(cfg.symbol, cfg.magic, count, lookback_days=lookback_days)
     except Exception as exc:
         # Called unconditionally every cycle (unlike dxy_context/
         # consensus_context, which are opt-in) - a transient MT5 hiccup

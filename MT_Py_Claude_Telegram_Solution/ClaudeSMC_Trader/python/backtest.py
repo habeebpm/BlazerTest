@@ -261,33 +261,49 @@ class HistoricalGateway:
                  "price_open": p.entry_price, "sl": p.sl, "tp": p.tp}
                 for p in self.sim_positions]
 
-    def recent_closed_trades(self, symbol: str, magic: int, count: int) -> list[dict]:
+    def recent_closed_trades(self, symbol: str, magic: int, count: int,
+                              lookback_days: int = 14) -> list[dict]:
         """Mirrors mt5_gateway.recent_closed_trades()'s shape from this
         backtest's OWN simulated trade history so far (self.closed_trades) -
         magic/symbol accepted only for interface parity, same reasoning as
         count_same_direction() above: a backtest run only ever has one
-        system's own trades to look back on. No lookahead risk: by the time
-        market_intel.build_feature_snapshot() calls this for bar N,
-        self.closed_trades only contains trades that closed strictly before
-        bar N (manage_positions() runs on each bar as it closes, before the
-        next evaluation), so this is exactly the information a live run
-        would have had at that same point in time too.
+        system's own trades to look back on. lookback_days is accepted for
+        interface parity too but not applied - a backtest's "recent past"
+        is inherently bounded by what has closed so far in the simulation,
+        there's no separate real-calendar window to filter against. No
+        lookahead risk: by the time market_intel.build_feature_snapshot()
+        calls this for bar N, self.closed_trades only contains trades that
+        closed strictly before bar N (manage_positions() runs on each bar
+        as it closes, before the next evaluation), so this is exactly the
+        information a live run would have had at that same point in time too.
         """
         out = [{"direction": t.direction, "pnl_dollars": t.pnl_dollars} for t in self.closed_trades]
         out.reverse()  # closed_trades is oldest-first; recent_closed_trades() is newest-first
         return out[:count]
 
     def account_equity(self) -> float:
-        """starting_equity plus every realized P&L so far - same no-lookahead
-        property as recent_closed_trades() above, since self.closed_trades
-        only ever contains trades that closed strictly before "now" in the
-        simulation. Needed so executor.position_size() (use_risk_percent)
-        works against this gateway instead of raising AttributeError - not
-        reachable via backtest.py's own CLI today, but this keeps the
-        interface complete for anyone building a risk-percent/ATR-SL config
-        through here directly.
+        """starting_equity plus every realized P&L so far, PLUS floating P&L
+        on still-open sim_positions - real MT5's ACCOUNT_EQUITY (what the
+        real mt5_gateway.account_equity() reads) includes unrealized P&L
+        too, and BacktestDayState's daily loss breaker needs to see a
+        position that's deep underwater but hasn't hit its SL yet the same
+        way live trading's breaker would, or it stays unrealistically
+        optimistic about a bad day until positions actually close. Same
+        no-lookahead property as recent_closed_trades() above: closed_trades
+        only ever contains trades closed strictly before "now", and the
+        floating leg is priced off get_tick() - the same one-bar-ahead,
+        never-the-evaluated-bar's-own-close price used everywhere else.
         """
-        return self.starting_equity + sum(t.pnl_dollars for t in self.closed_trades)
+        realized = sum(t.pnl_dollars for t in self.closed_trades)
+        floating = 0.0
+        if self.sim_positions:
+            tick = self.get_tick(self.symbol)
+            for p in self.sim_positions:
+                current_price = tick.bid if p.direction == "buy" else tick.ask
+                sign = 1.0 if p.direction == "buy" else -1.0
+                price_move = sign * (current_price - p.entry_price)
+                floating += price_move / self.spec.tick_size * self.spec.tick_value * p.lots
+        return self.starting_equity + realized + floating
 
     def place_market_order(self, spec, direction: str, lots: float, sl_price: float, tp_price: float,
                             magic: int, comment: str, deviation_points: int, dry_run: bool):
@@ -720,6 +736,17 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--model", help="override Claude model id for this run")
     parser.add_argument("--yes", action="store_true", help="skip the cost confirmation prompt")
     parser.add_argument("--out", default="logs/backtest_trades.csv")
+    parser.add_argument("--max-daily-loss", type=float, dest="max_daily_loss",
+                        help="simulate the daily loss circuit breaker (see main.py's own flag of the "
+                             "same name / backtest.BacktestDayState) - default 0 = not simulated")
+    parser.add_argument("--daily-target", type=float, dest="daily_target",
+                        help="simulate the daily profit target alongside --max-daily-loss")
+    parser.add_argument("--risk-percent", type=float, dest="risk_percent",
+                        help="simulate equity-scaled lot sizing instead of the fixed lot (see "
+                             "main.py's own flag of the same name) - default: unset, fixed lot")
+    parser.add_argument("--sl-mode", choices=["fixed", "atr"], dest="sl_mode",
+                        help="simulate ATR-adaptive initial stop-loss instead of the fixed sl_dollars "
+                             "distance (see main.py's own flag of the same name)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
@@ -727,6 +754,16 @@ def main(argv: list | None = None) -> int:
     base_cfg = AdvisorConfig(dry_run=True)
     if args.model:
         base_cfg.claude_model = args.model
+    if args.max_daily_loss is not None:
+        base_cfg.max_daily_loss_pct = args.max_daily_loss
+    if args.daily_target is not None:
+        base_cfg.daily_target_pct = args.daily_target
+        base_cfg.use_daily_target = args.daily_target > 0
+    if args.risk_percent is not None:
+        base_cfg.risk_percent = args.risk_percent
+        base_cfg.use_risk_percent = args.risk_percent > 0
+    if args.sl_mode:
+        base_cfg.sl_mode = args.sl_mode
 
     if args.from_mt5:
         if not args.start or not args.end:

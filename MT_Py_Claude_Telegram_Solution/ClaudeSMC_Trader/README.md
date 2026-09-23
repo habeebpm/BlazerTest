@@ -446,6 +446,14 @@ CSV format: columns `time,open,high,low,close,volume`, one row per CLOSED
 historical bar, ascending. Export these from MT5 (or any data source) for
 the primary timeframe (M15), the trend timeframe (H4), D1, and W1.
 
+`--max-daily-loss`/`--daily-target`/`--risk-percent`/`--sl-mode` simulate
+the matching enhancements from the table above (daily loss breaker, daily
+target, equity-scaled lot sizing, ATR-adaptive SL) during the replay - off
+by default, same as live trading, and not exposed for `dxy_symbol`/
+`news_blackout_windows`/`consensus_magic_numbers` (those are pass-through
+context/gating that don't have a meaningful backtest equivalent - see
+`config.py`'s own comments on each).
+
 **The single most important property of any backtest is no lookahead bias.**
 `backtest.HistoricalGateway` only ever exposes a bar once its own CLOSE time
 has passed relative to the moment being simulated - not just its open time,

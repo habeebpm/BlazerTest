@@ -810,7 +810,7 @@ class FakeIntelGateway:
                              spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                              tick_value=1.0, tick_size=0.01)
 
-    def recent_closed_trades(self, symbol, magic, count):
+    def recent_closed_trades(self, symbol, magic, count, lookback_days=14):
         return []
 
 
@@ -958,8 +958,10 @@ class FakePerformanceGateway:
     def __init__(self, trades, raise_error=False):
         self.trades = trades
         self.raise_error = raise_error
+        self.last_lookback_days = None
 
-    def recent_closed_trades(self, symbol, magic, count):
+    def recent_closed_trades(self, symbol, magic, count, lookback_days=14):
+        self.last_lookback_days = lookback_days
         if self.raise_error:
             raise RuntimeError("simulated MT5 IPC hiccup")
         return self.trades[:count]
@@ -975,10 +977,15 @@ def test_recent_performance_summary() -> bool:
         {"direction": "sell", "pnl_dollars": -3.0, "ticket": 2},
         {"direction": "buy", "pnl_dollars": 4.0, "ticket": 3},
     ]
-    summary = market_intel.recent_performance_summary(FakePerformanceGateway(trades), cfg)
+    fake_gw = FakePerformanceGateway(trades)
+    summary = market_intel.recent_performance_summary(fake_gw, cfg)
     ok &= check("trade_count/wins/losses/win_rate are computed correctly",
                 summary["trade_count"] == 3 and summary["wins"] == 2 and summary["losses"] == 1
                 and abs(summary["win_rate_pct"] - 66.7) < 0.1, summary)
+    ok &= check("a generous lookback_days (365, not mt5_gateway.recent_closed_trades()'s own "
+                "14-day default) is passed through, so 'last 10 trades' genuinely means the last "
+                "10 regardless of how many days they're spread over on a low-frequency system",
+                fake_gw.last_lookback_days == 365, fake_gw.last_lookback_days)
     ok &= check("net_pnl_dollars sums every trade's P&L",
                 abs(summary["net_pnl_dollars"] - 6.0) < 1e-9, summary)
     ok &= check("last_5_results carries every trade when there are fewer than 5",
@@ -1164,6 +1171,31 @@ def test_backtest_no_lookahead_and_reset() -> bool:
                 "so far - needed so executor.position_size() (use_risk_percent) works against this "
                 "gateway instead of raising AttributeError",
                 gateway.account_equity() == 10002.0, gateway.account_equity())
+
+    # Floating P&L on a still-open sim position must count too - real MT5's
+    # ACCOUNT_EQUITY (what mt5_gateway.account_equity() reads live) already
+    # includes unrealized P&L, and BacktestDayState's daily loss breaker
+    # needs to see a position deep underwater the same way live trading's
+    # breaker would, not just once it actually closes.
+    mini_m15 = pd.DataFrame({
+        "time": pd.date_range("2026-01-01", periods=3, freq="15min", tz="UTC"),
+        "open": [2350.0, 2360.0, 2360.0], "high": [2350.0] * 3, "low": [2350.0] * 3,
+        "close": [2350.0] * 3,
+    })
+    floating_gw = backtest.HistoricalGateway("XAUUSD", {"M15": mini_m15}, _flat_spec(),
+                                             starting_equity=10000.0)
+    floating_gw.primary_timeframe = "M15"
+    floating_gw.cursor = 0
+    floating_gw.sim_positions = [backtest.SimPosition(
+        ticket=1, direction="buy", lots=0.01, entry_time=mini_m15["time"].iloc[0],
+        entry_price=2350.0, sl=2344.0, tp=None)]
+    # get_tick() at cursor=0 uses the NEXT bar's open (2360.0), spread =
+    # 0.01 x 25 = 0.25 -> bid=2359.875; floating = (2359.875-2350.0)/0.01
+    # x 1.0 x 0.01 = 9.875, so equity = 10000 + 0 (no closed trades) + 9.875.
+    ok &= check("account_equity() adds floating P&L on open sim_positions, priced off get_tick() "
+                "(the same one-bar-ahead, never-the-evaluated-bar's-own-close price used "
+                "everywhere else) - not just realized closed-trade P&L",
+                abs(floating_gw.account_equity() - 10009.875) < 1e-9, floating_gw.account_equity())
 
     raised_wrong_symbol = None
     try:
@@ -1729,6 +1761,17 @@ def test_calibration_report() -> bool:
 
     ok &= check("load_csv() on a nonexistent path returns an empty list, not an error",
                 calibration_report.load_csv("/tmp/definitely_does_not_exist_12345.csv") == [])
+
+    partial_close_trades = [
+        {"ticket": "201", "pnl_dollars": 3.0},   # first partial close
+        {"ticket": "202", "pnl_dollars": 5.0},   # an ordinary single-close trade
+        {"ticket": "201", "pnl_dollars": 2.0},   # second (final) partial close, same ticket
+    ]
+    pnl_map = calibration_report.build_pnl_by_ticket(partial_close_trades)
+    ok &= check("build_pnl_by_ticket() SUMS multiple rows sharing a ticket (a position closed in "
+                "more than one partial exit), rather than the last one silently overwriting the "
+                "rest of that trade's realized P&L",
+                pnl_map == {"201": 5.0, "202": 5.0}, pnl_map)
 
     return ok
 
