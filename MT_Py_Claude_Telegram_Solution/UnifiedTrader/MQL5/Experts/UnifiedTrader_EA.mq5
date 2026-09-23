@@ -199,8 +199,11 @@
 //| TelegramSMC_Copier.mq5's - @BotFather /newbot for InpBotToken, add  |
 //| that bot to the channel as admin, Tools > Options > Expert Advisors|
 //| > allow WebRequest for https://api.telegram.org, leave              |
-//| InpChannelId1/InpChannelId2 at 0 for the first run to discover chat |
-//| ids from the log, then set them and restart.                        |
+//| InpChannelId1..3 at 0 for the first run to discover chat ids from   |
+//| the log, then set up to THREE of them and restart. Only TRADE       |
+//| messages are read (TsmcClassifyMessage in TelegramSMC_Common.mqh):  |
+//| greetings, mood posts, long messages, videos, audio, voice notes,   |
+//| stickers and pinned-message notices are omitted before parsing.     |
 //|                                                                    |
 //| IMPORTANT DISCLAIMER: with InpEnableTelegramSignals on, this EA     |
 //| executes real orders from Telegram text messages with NO liquidity- |
@@ -288,7 +291,12 @@ input double          InpDecayWindowMinutes = 15.0;       // EXIT_BREAKEVEN_R_DE
 input group "=== Telegram Bot - only used if InpEnableTelegramSignals (see file header for setup) ==="
 input string  InpBotToken          = "";           // Bot token from @BotFather
 input long    InpChannelId1        = 0;            // Only copy signals from this chat id (0 = slot unused)
-input long    InpChannelId2        = 0;            // ...and this one (0 = slot unused; both 0 = ANY chat - unsafe, first-run only)
+input long    InpChannelId2        = 0;            // ...and this one (0 = slot unused)
+input long    InpChannelId3        = 0;            // ...and this one - max 3 channels (all 0 = ANY chat - dry-run discovery only)
+input int     InpMaxMessageChars   = 400;          // Trade messages only: omit anything longer (0 = no limit)
+input int     InpMaxCommandChars   = 60;           // A CLOSE/EXIT/CANCEL/BE command must be this short and trading words only
+input bool    InpAcceptPhotoCaptions = false;      // Also read a signal posted as a photo caption (videos/audio/voice/stickers are always omitted)
+input bool    InpLogSkippedMessages = false;       // Print every omitted non-trade message (always on while no channel id is set)
 input int     InpPollSeconds       = 5;            // How often to poll Telegram for new messages
 input int     InpHttpTimeoutMs     = 5000;         // WebRequest timeout (ms)
 input int     InpMaxSignalAgeSec   = 180;          // Reject a signal/control command older than this many seconds (0 = no limit)
@@ -331,14 +339,6 @@ struct SignalMsg
    int    tpCount;
 };
 
-struct TgUpdate
-{
-   long   update_id;
-   long   chat_id;
-   long   date;
-   bool   isEdited;
-   string text;
-};
 
 //================================= GLOBALS ====================================
 
@@ -409,11 +409,9 @@ void     ManagePositionExit(ulong ticket, long magic);
 void     ManageAllPositions();
 void     ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText);
 bool     TelegramGetUpdates(string &jsonOut);
-void     ExtractUpdates(const string &json, TgUpdate &updates[]);
 void     TelegramPoll();
 string   JsonEscape(const string &s);
 bool     TelegramSendMessage(long chatId, const string text);
-void     StripUnicodeEscapes(string &s);
 string   DirToStr(int dir);
 void     LogSignalRow(long chatId, const string &action, const string &direction, bool symbolOk,
                        double entryLow, double entryHigh, const string &tpsJoined,
@@ -492,24 +490,25 @@ int OnInit()
                "into InpBotToken.");
          return(INIT_PARAMETERS_INCORRECT);
       }
-      if(InpChannelId1 == 0 && InpChannelId2 == 0 && !InpDryRun)
+      if(InpChannelId1 == 0 && InpChannelId2 == 0 && InpChannelId3 == 0 && !InpDryRun)
       {
          // Live + no channel filter = anyone who finds this bot's username
          // could DM it a "BUY" and open a real trade. Refused outright.
-         Print("UnifiedTrader_EA: REFUSING TO START - InpDryRun=false but InpChannelId1 and "
-               "InpChannelId2 are both 0, so ANY chat could send this bot a trade signal. Run once "
+         Print("UnifiedTrader_EA: REFUSING TO START - InpDryRun=false but InpChannelId1..3 are "
+               "all 0, so ANY chat could send this bot a trade signal. Run once "
                "with InpDryRun=true, read the channel id from 'message from chat <id>' in the log, "
                "set InpChannelId1, then go live.");
          return(INIT_PARAMETERS_INCORRECT);
       }
-      if(InpChannelId1 == 0 && InpChannelId2 == 0)
-         Print("UnifiedTrader_EA: WARNING - InpChannelId1 and InpChannelId2 are both 0, so signals from "
+      if(InpChannelId1 == 0 && InpChannelId2 == 0 && InpChannelId3 == 0)
+         Print("UnifiedTrader_EA: WARNING - InpChannelId1..3 are all 0, so signals from "
                "ANY chat this bot can see will be copied (dry-run only - live trading is refused in "
                "this state). Watch the log for 'message from chat <id>', set InpChannelId1 (and "
-               "InpChannelId2 for a second channel), and restart.");
-      else if(InpChannelId1 != 0 && InpChannelId2 != 0 && InpChannelId1 == InpChannelId2)
-         Print("UnifiedTrader_EA: WARNING - InpChannelId1 and InpChannelId2 are the same chat id; the "
-               "second slot is redundant.");
+               "InpChannelId2/InpChannelId3 for more channels, 3 max), and restart.");
+      else if((InpChannelId1 != 0 && (InpChannelId1 == InpChannelId2 || InpChannelId1 == InpChannelId3))
+              || (InpChannelId2 != 0 && InpChannelId2 == InpChannelId3))
+         Print("UnifiedTrader_EA: WARNING - two of InpChannelId1..3 are the same chat id; the "
+               "duplicate slot is redundant.");
       Print("UnifiedTrader_EA: Telegram signal execution is ENABLED WITH NO SMC VALIDATION and NO use "
             "of the message's own stop-loss - see the file header. This is materially higher-risk than "
             "TelegramSMC_Copier.mq5's default configuration.");
@@ -525,9 +524,10 @@ int OnInit()
                "needed to receive control-command DMs even if InpEnableTelegramSignals is off.");
          return(INIT_PARAMETERS_INCORRECT);
       }
-      if(InpChannelId1 == InpControlChatId || InpChannelId2 == InpControlChatId)
+      if(InpChannelId1 == InpControlChatId || InpChannelId2 == InpControlChatId
+         || InpChannelId3 == InpControlChatId)
       {
-         Print("UnifiedTrader_EA: InpControlChatId must differ from InpChannelId1/InpChannelId2 - a "
+         Print("UnifiedTrader_EA: InpControlChatId must differ from InpChannelId1..3 - a "
                "message from the signal channel must never be treated as a control command.");
          return(INIT_PARAMETERS_INCORRECT);
       }
@@ -747,9 +747,10 @@ double PipSize() { return(SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10.0); }
 
 bool IsAllowedChat(long chatId)
 {
-   if(InpChannelId1 == 0 && InpChannelId2 == 0) return(true);
+   if(InpChannelId1 == 0 && InpChannelId2 == 0 && InpChannelId3 == 0) return(true);
    if(InpChannelId1 != 0 && chatId == InpChannelId1) return(true);
    if(InpChannelId2 != 0 && chatId == InpChannelId2) return(true);
+   if(InpChannelId3 != 0 && chatId == InpChannelId3) return(true);
    return(false);
 }
 
@@ -2058,7 +2059,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       // Checked FIRST, before IsAllowedChat() - the timer can now run for
       // InpControlChatId alone (see OnInit) even with Telegram signal
       // EXECUTION fully off, and IsAllowedChat() treats
-      // InpChannelId1==InpChannelId2==0 (the shipped default - the exact
+      // InpChannelId1..3 all 0 (the shipped default - the exact
       // state a control-only setup is left in) as "allow ANY chat", a
       // deliberate first-run discovery behavior for setting UP Telegram
       // signals. Without this check first, that combination would let a
@@ -2070,8 +2071,8 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    }
    if(!IsAllowedChat(chatId))
    {
-      PrintFormat("UnifiedTrader_EA: ignoring message from chat %I64d (allowed: %I64d, %I64d)",
-                  chatId, InpChannelId1, InpChannelId2);
+      PrintFormat("UnifiedTrader_EA: ignoring message from chat %I64d (allowed: %I64d, %I64d, %I64d)",
+                  chatId, InpChannelId1, InpChannelId2, InpChannelId3);
       return;
    }
 
@@ -2343,129 +2344,6 @@ bool TelegramSendMessage(long chatId, const string text)
    return(true);
 }
 
-//+------------------------------------------------------------------+
-//| Same \uXXXX-escape handling as TelegramSMC_Copier.mq5 - see its    |
-//| own comment for why this matters for whole-word boundary checks.  |
-//+------------------------------------------------------------------+
-void StripUnicodeEscapes(string &s)
-{
-   int pos = 0;
-   while(true)
-   {
-      int idx = StringFind(s, "\\u", pos);
-      if(idx < 0) break;
-      int slen = StringLen(s);
-      bool allHex = (idx + 6 <= slen);
-      if(allHex)
-      {
-         for(int k = 2; k <= 5; k++)
-         {
-            ushort c = StringGetCharacter(s, idx + k);
-            bool hex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
-            if(!hex) { allHex = false; break; }
-         }
-      }
-      if(allHex)
-      {
-         string before = StringSubstr(s, 0, idx);
-         string after  = StringSubstr(s, idx + 6);
-         s = before + " " + after;
-         pos = idx + 1;
-      }
-      else
-         pos = idx + 2;
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Pulls update_id / chat.id / date / text out of a getUpdates JSON  |
-//| body - identical field scraper to TelegramSMC_Copier.mq5's.        |
-//+------------------------------------------------------------------+
-void ExtractUpdates(const string &json, TgUpdate &updates[])
-{
-   ArrayResize(updates, 0);
-   int pos  = 0;
-   int jlen = StringLen(json);
-
-   while(true)
-   {
-      int idIdx = StringFind(json, "\"update_id\"", pos);
-      if(idIdx < 0) break;
-      int colon = StringFind(json, ":", idIdx);
-      if(colon < 0) break;
-      long updateId = StringToInteger(StringSubstr(json, colon + 1));
-
-      int nextIdIdx = StringFind(json, "\"update_id\"", idIdx + 1);
-      int segEnd    = (nextIdIdx < 0) ? jlen : nextIdIdx;
-      string segment = StringSubstr(json, idIdx, segEnd - idIdx);
-
-      TgUpdate u;
-      u.update_id = updateId;
-      u.isEdited  = (StringFind(segment, "\"edited_message\"") >= 0) ||
-                    (StringFind(segment, "\"edited_channel_post\"") >= 0);
-      u.chat_id   = 0;
-      u.date      = 0;
-      u.text      = "";
-
-      int chatIdx = StringFind(segment, "\"chat\"");
-      if(chatIdx >= 0)
-      {
-         int idInChat = StringFind(segment, "\"id\"", chatIdx);
-         if(idInChat >= 0)
-         {
-            int c2 = StringFind(segment, ":", idInChat);
-            if(c2 >= 0) u.chat_id = StringToInteger(StringSubstr(segment, c2 + 1));
-         }
-      }
-
-      int dateIdx = StringFind(segment, "\"date\"");
-      if(dateIdx >= 0)
-      {
-         int c2 = StringFind(segment, ":", dateIdx);
-         if(c2 >= 0) u.date = StringToInteger(StringSubstr(segment, c2 + 1));
-      }
-
-      int textIdx = StringFind(segment, "\"text\"");
-      if(textIdx >= 0)
-      {
-         int c2 = StringFind(segment, ":", textIdx);
-         if(c2 >= 0)
-         {
-            int slen = StringLen(segment);
-            int p = c2 + 1;
-            while(p < slen && StringGetCharacter(segment, p) == ' ') p++;
-            if(p < slen && StringGetCharacter(segment, p) == '"')
-            {
-               p++;
-               int startStr = p;
-               while(p < slen)
-               {
-                  ushort ch = StringGetCharacter(segment, p);
-                  if(ch == '\\') { p += 2; continue; }
-                  if(ch == '"') break;
-                  p++;
-               }
-               string raw = StringSubstr(segment, startStr, p - startStr);
-               StripUnicodeEscapes(raw);
-               string placeholder = CharToString((uchar)1);
-               StringReplace(raw, "\\\\", placeholder);
-               StringReplace(raw, "\\n", " ");
-               StringReplace(raw, "\\r", " ");
-               StringReplace(raw, "\\t", " ");
-               StringReplace(raw, "\\\"", "\"");
-               StringReplace(raw, placeholder, "\\");
-               u.text = raw;
-            }
-         }
-      }
-
-      int n = ArraySize(updates);
-      ArrayResize(updates, n + 1);
-      updates[n] = u;
-
-      pos = segEnd;
-   }
-}
 
 //+------------------------------------------------------------------+
 //| One polling cycle: fetch, parse, act, advance the offset.         |
@@ -2505,14 +2383,28 @@ void TelegramPoll()
       return;
    }
 
-   TgUpdate updates[];
-   ExtractUpdates(json, updates);
+   TsmcTgUpdate updates[];
+   TsmcExtractUpdates(json, updates, InpAcceptPhotoCaptions);
+   // While no channel id is set, omitted messages are still printed WITH
+   // their chat id - that log is how the channel's id is found.
+   bool logSkipped = InpLogSkippedMessages
+                     || (InpChannelId1 == 0 && InpChannelId2 == 0 && InpChannelId3 == 0);
 
    for(int i = 0; i < ArraySize(updates); i++)
    {
       if(updates[i].update_id > g_lastUpdateId) g_lastUpdateId = updates[i].update_id;
       if(updates[i].isEdited) continue;
-      if(StringLen(updates[i].text) == 0) continue;
+      bool fromControl = (InpControlChatId != 0 && updates[i].chat_id == InpControlChatId);
+      if(StringLen(updates[i].skip) > 0 || StringLen(updates[i].text) == 0)
+      {
+         // Videos, audio, voice notes, stickers, documents, polls, photos
+         // (unless InpAcceptPhotoCaptions), pins/joins and other service posts.
+         if(logSkipped && !fromControl && updates[i].chat_id != 0)
+            PrintFormat("UnifiedTrader_EA: omitted %s from chat %I64d",
+                        StringLen(updates[i].skip) > 0 ? updates[i].skip : "an empty message",
+                        updates[i].chat_id);
+         continue;
+      }
 
       // Control commands go through InpMaxSignalAgeSec too, same as trading
       // signals - a PauseHab queued during a long outage and only delivered
@@ -2525,13 +2417,26 @@ void TelegramPoll()
       // An undated message can't be proven fresh - treated as stale.
       bool isStale = (InpMaxSignalAgeSec > 0 && (updates[i].date <= 0 || age > InpMaxSignalAgeSec));
 
-      if(InpControlChatId != 0 && updates[i].chat_id == InpControlChatId)
+      if(fromControl)
       {
          if(isStale)
             PrintFormat("UnifiedTrader_EA: control command '%s' is %ds old (> %ds) - STALE, ignoring "
                         "(resend it if it's still what you want).", updates[i].text, age, InpMaxSignalAgeSec);
          else
             ProcessControlCommand(updates[i].text);
+         continue;
+      }
+
+      // Trade messages only: greetings, mood posts, commentary, promos and
+      // long messages never reach the parser - its CLOSE/CANCEL keywords
+      // would otherwise read "Good morning! Close your charts" as close-all.
+      string text = updates[i].text;
+      string why;
+      if(TsmcClassifyMessage(text, InpMaxMessageChars, InpMaxCommandChars, why) == TSMC_MSG_SKIP)
+      {
+         if(logSkipped)
+            PrintFormat("UnifiedTrader_EA: omitted non-trade message from chat %I64d (%s): %s",
+                        updates[i].chat_id, why, StringSubstr(text, 0, 60));
          continue;
       }
 

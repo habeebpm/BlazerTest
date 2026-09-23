@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import copier_engine as ce
+import message_filter
 import mt5_client as mc
 from copier_config import CopierConfig
 from signal_parser import parse_signal
@@ -207,6 +208,13 @@ class Copier:
     # ---------------- main entry point ----------------
     def on_message(self, text: str, chat_id, message_time: float) -> ce.Evaluation | None:
         self.roll_day()
+        if self.cfg.trade_messages_only:
+            kind, why = message_filter.classify_message(
+                text, self.cfg.max_message_chars, self.cfg.max_command_chars, self.cfg.symbol_words())
+            if kind == message_filter.SKIP:
+                log.debug("Omitted non-trade message from %s (%s): %s", chat_id, why,
+                          (text or "").strip().splitlines()[0][:60] if (text or "").strip() else "")
+                return None
         quick = parse_signal(text, symbol_aliases=self.cfg.symbol_aliases)
 
         if quick.action == "close":
@@ -314,6 +322,12 @@ def run_replay(cfg: CopierConfig, args) -> int:
         )
         first_line = msg.splitlines()[0][:80]
         print(f"\n--- message {i}: {first_line} ---")
+        kind, why = message_filter.classify_message(msg, cfg.max_message_chars, cfg.max_command_chars,
+                                                    cfg.symbol_words())
+        print(f"  filter:  {kind.upper()} ({why})")
+        if cfg.trade_messages_only and kind == message_filter.SKIP:
+            print("  verdict: OMITTED - not a trade message, never parsed")
+            continue
         print(f"  parsed:  action={ev.signal.action} direction={ev.signal.direction} "
               f"symbol={ev.signal.symbol} entry={ev.signal.entry} sl={ev.signal.sl} "
               f"tps={ev.signal.tps}")
@@ -369,6 +383,11 @@ def run_live(cfg: CopierConfig, args) -> int:
 
     @client.on(events.NewMessage(chats=chats))
     async def handler(event):
+        if cfg.trade_messages_only:
+            media = message_filter.message_media_kind(event.message, cfg.accept_photo_captions)
+            if media:
+                log.debug("Omitted %s from chat %s", media, event.chat_id)
+                return
         text = event.raw_text or ""
         if not text.strip():
             return
@@ -413,8 +432,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--point", type=float, default=0.01)
     parser.add_argument("--digits", type=int, default=2)
     parser.add_argument("--symbol", help="override the traded/verified symbol")
-    parser.add_argument("--channels", help="comma-separated allow-list of chat ids/@usernames "
+    parser.add_argument("--channels", help="comma-separated allow-list of up to 3 chat ids/@usernames "
                                             "(overrides TELEGRAM_CHANNELS)")
+    parser.add_argument("--all-messages", action="store_true", dest="all_messages",
+                        help="read every message instead of trade messages only (default: greetings, "
+                             "mood posts, long messages and media are omitted - see message_filter.py)")
+    parser.add_argument("--accept-photo-captions", action="store_true", dest="accept_photo_captions",
+                        help="also read signals posted as a photo caption (default: all media omitted)")
     parser.add_argument("--lots", type=float, help="override the fixed lot size")
     parser.add_argument("--risk-percent", type=float, dest="risk_percent",
                         help="size from equity instead of a fixed lot")
@@ -452,7 +476,15 @@ def main(argv: list[str] | None = None) -> int:
         overrides["max_signal_age_seconds"] = args.max_signal_age
     if args.allow_missing_sl:
         overrides["allow_missing_sl_fallback"] = True
-    cfg = CopierConfig.from_env(**overrides)
+    if args.all_messages:
+        overrides["trade_messages_only"] = False
+    if args.accept_photo_captions:
+        overrides["accept_photo_captions"] = True
+    try:
+        cfg = CopierConfig.from_env(**overrides)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
 
     if args.replay:
         return run_replay(cfg, args)

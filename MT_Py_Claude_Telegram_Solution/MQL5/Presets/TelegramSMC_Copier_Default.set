@@ -4,7 +4,7 @@
 ;
 ; You MUST still fill in InpBotToken (from @BotFather) and, after the first
 ; run tells you the chat ids in the Experts log, InpChannelId1 (and
-; InpChannelId2 for a second channel) - this preset ships them blank/0 on
+; InpChannelId2/InpChannelId3 for more channels, 3 max) - this preset ships them blank/0 on
 ; purpose rather than with placeholder values that look real. Only signals
 ; from those chat(s) are copied; leaving both at 0 accepts ANY chat the bot
 ; can see, which is only meant for the very first discovery run. Ships with
@@ -18,6 +18,11 @@
 InpBotToken=
 InpChannelId1=0
 InpChannelId2=0
+InpChannelId3=0
+InpMaxMessageChars=400
+InpMaxCommandChars=60
+InpAcceptPhotoCaptions=false
+InpLogSkippedMessages=false
 InpPollSeconds=5
 InpHttpTimeoutMs=5000
 InpMaxSignalAgeSec=180

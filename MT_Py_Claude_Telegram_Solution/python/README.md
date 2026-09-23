@@ -462,7 +462,7 @@ EA at all: it logs in as **your own Telegram account** (the same MTProto
 mechanism `telegram_copier.py` above uses - a regular member sees every post,
 no admin needed) and **forwards** each message from the real channel into a
 private group **you create and own**, where you can freely make a disposable
-bot admin. Point `InpChannelId1`/`InpChannelId2` at that relay group's chat
+bot admin. Point `InpChannelId1` at that relay group's chat
 id instead of the original channel's, and the MQL5 EA's own parsing,
 verification and SMC gate all run exactly as if it were reading the source
 directly - this script only relays, it never parses or decides anything.
@@ -494,10 +494,14 @@ Setup:
    `-100...`/Bot-API form `InpChannelId1` expects) into
    `InpChannelId1` and restart the EA.
 
-By default it relays **everything** unfiltered and lets the EA's own log
-show why a given message was accepted or rejected; pass `--filter-signals`
-to only forward messages that parse as an actionable signal if you'd rather
-cut down on relay-group noise.
+By default it relays **trade messages only** (`message_filter.py`, the
+same rules the EAs apply): signals and short trading commands are
+forwarded; greetings, mood posts, commentary, long messages, videos, audio,
+voice notes, stickers, documents and pins are not. `--filter-signals` is
+stricter (only messages that parse as an actionable signal),
+`--accept-photo-captions` also forwards photos whose caption is a trade
+message, and `--relay-everything` forwards all text unfiltered. At most
+**3 source channels** (`TELEGRAM_SOURCE_CHANNELS`) - a 4th is refused.
 
 **This process has to stay running** - same machine as MT5, or anywhere
 with network access - for signals to keep flowing; there's no persistence

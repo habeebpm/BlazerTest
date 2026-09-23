@@ -332,10 +332,13 @@ process and nothing outside MT5 in the normal case. One-time setup:
 3. In MT5: **Tools → Options → Expert Advisors** → tick "Allow WebRequest for
    listed URL" and add `https://api.telegram.org` — WebRequest is refused
    otherwise, and the EA logs exactly this instruction if it happens.
-4. Leave `InpChannelId1`/`InpChannelId2` at `0` for the first run and attach
+4. Leave `InpChannelId1`..`InpChannelId3` at `0` for the first run and attach
    the EA: every message the bot can see is logged with its chat id. Copy up
-   to two of those ids into `InpChannelId1` (and `InpChannelId2` for a second
-   channel) and restart, so only those chats can trigger trades. Leaving both
+   to **three** of those ids into `InpChannelId1` (and `InpChannelId2`/
+   `InpChannelId3` for more channels) and restart, so only those chats can
+   trigger trades. Only **trade messages** are read - greetings, mood posts,
+   long messages, videos, audio, voice notes, stickers and pins are omitted
+   (see "Trade-only messages" in `SETUP.md`). Leaving both
    at `0` accepts signals from any chat the bot can see — fine for that first
    dry-run discovery run; the EA refuses to start live (`InpDryRun=false`)
    in that state. The Python copier likewise refuses `--live` without a

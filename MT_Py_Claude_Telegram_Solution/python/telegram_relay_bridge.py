@@ -22,8 +22,15 @@ through a middle-man chat you *do* control.
 WHY FORWARD RATHER THAN RETYPE: Telegram's native forward keeps the
 message's exact text/caption intact in the copy that lands in the relay
 group, so this script never re-parses or reconstructs the signal itself -
-it only decides WHICH messages to relay (everything, by default; see
---filter-signals). The actual parsing, verification and SMC gate all stay
+it only decides WHICH messages to relay: by default TRADE MESSAGES ONLY -
+signals and short trading commands pass, while greetings, mood posts,
+commentary, long messages, videos, audio, voice notes, stickers, documents
+and service messages are dropped (message_filter.py, the same rules the
+MQL5 EAs apply). --filter-signals is stricter (only messages that parse as
+an actionable signal); --relay-everything turns filtering off.
+
+At most 3 source channels (message_filter.MAX_CHANNELS) can be routed
+through one bridge - matching the EAs' InpChannelId1..3. The actual parsing, verification and SMC gate all stay
 in TelegramSMC_Copier.mq5, exactly as if it were reading the source
 channel directly.
 
@@ -63,6 +70,7 @@ import logging
 import os
 import sys
 
+import message_filter
 from signal_parser import parse_signal
 
 log = logging.getLogger("telegram_relay_bridge")
@@ -119,6 +127,23 @@ async def resolve_and_log(client, label: str, chats: list) -> None:
                  label, title, bot_api_chat_id(entity))
 
 
+def relay_decision(message, text: str, relay_everything: bool, filter_signals: bool,
+                   accept_photo_captions: bool) -> str:
+    """"" to relay `message`, else the reason it is dropped. Pure - tested
+    in copier_selftest.py with fake message objects."""
+    if relay_everything:
+        return "" if text.strip() else "empty"
+    media = message_filter.message_media_kind(message, accept_photo_captions)
+    if media:
+        return media
+    kind, why = message_filter.classify_message(text)
+    if kind == message_filter.SKIP:
+        return why
+    if filter_signals and parse_signal(text).action == "unknown":
+        return "no actionable signal"
+    return ""
+
+
 async def amain(client, args, sources: list, dest: str | None, filter_signals: bool) -> int:
     from telethon import events
 
@@ -154,19 +179,18 @@ async def amain(client, args, sources: list, dest: str | None, filter_signals: b
     dest_title = getattr(dest_entity, "title", None) or dest
     log.info("Relaying %d source chat(s) -> %r (chat id %s)",
              len(sources), dest_title, bot_api_chat_id(dest_entity))
-    log.info("Filtering: %s", "only messages that look like an actionable signal"
-             if filter_signals else "everything (default) - the MQL5 EA does its own filtering")
+    log.info("Filtering: %s", "everything is relayed (--relay-everything)" if args.relay_everything
+             else "only messages that parse as an actionable signal (--filter-signals)" if filter_signals
+             else "trade messages only (default) - greetings, mood posts, long messages and media dropped")
 
     @client.on(events.NewMessage(chats=sources))
     async def handler(event):
         text = event.raw_text or ""
-        if not text.strip():
+        why = relay_decision(event.message, text, args.relay_everything, filter_signals,
+                             args.accept_photo_captions)
+        if why:
+            log.debug("Not relayed (%s): %s", why, text.strip().splitlines()[0][:60] if text.strip() else "")
             return
-        if filter_signals:
-            sig = parse_signal(text)
-            if sig.action == "unknown":
-                log.debug("Filtered out (no actionable signal): %s", text.splitlines()[0][:60])
-                return
         try:
             await client.forward_messages(dest_entity, event.message)
             log.info("Relayed from chat %s: %s", event.chat_id, text.splitlines()[0][:80])
@@ -189,13 +213,25 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--dest", help="relay group: @username or numeric id "
                                        "(overrides TELEGRAM_RELAY_GROUP)")
     parser.add_argument("--filter-signals", action="store_true", dest="filter_signals",
-                        help="only relay messages that parse as an actionable signal - default "
-                             "relays everything and lets the MQL5 EA's own log show why something "
-                             "was rejected")
+                        help="stricter: only relay messages that parse as an actionable signal "
+                             "(default: trade messages only - signals and short trading commands)")
+    parser.add_argument("--relay-everything", action="store_true", dest="relay_everything",
+                        help="relay every text message, including greetings/mood/long posts "
+                             "(default: trade messages only; media is always dropped unless this is set)")
+    parser.add_argument("--accept-photo-captions", action="store_true", dest="accept_photo_captions",
+                        help="also relay photos whose caption is a trade message")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     setup_logging(args.verbose)
+
+    sources = _split_chats(args.sources or os.environ.get("TELEGRAM_SOURCE_CHANNELS"))
+    dest = args.dest or os.environ.get("TELEGRAM_RELAY_GROUP")
+    try:
+        message_filter.check_channel_limit(sources, "source channels")
+    except ValueError as exc:
+        log.error("%s - the EAs read at most 3 channels (InpChannelId1..3).", exc)
+        return 1
 
     try:
         from telethon import TelegramClient
@@ -213,8 +249,6 @@ def main(argv: list | None = None) -> int:
                   "app credential, not a bot token.")
         return 1
 
-    sources = _split_chats(args.sources or os.environ.get("TELEGRAM_SOURCE_CHANNELS"))
-    dest = args.dest or os.environ.get("TELEGRAM_RELAY_GROUP")
 
     client = TelegramClient(session, api_id, api_hash)
     try:

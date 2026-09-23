@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+import message_filter
 from signal_parser import DEFAULT_SYMBOL_ALIASES
 
 
@@ -26,10 +27,21 @@ class CopierConfig:
     symbol_aliases: dict = field(default_factory=lambda: dict(DEFAULT_SYMBOL_ALIASES))
 
     # ---------------- source ----------------
-    # Chat ids or @usernames allowed to trigger trades. Empty = accept any
-    # source Telethon is subscribed to - fine for a private test session, not
-    # recommended once pointed at a real client/API pair.
+    # Chat ids or @usernames allowed to trigger trades - at most 3
+    # (message_filter.MAX_CHANNELS). Empty = accept any source Telethon is
+    # subscribed to - dry-run only; --live refuses to start that way.
     allowed_chats: list = field(default_factory=list)
+
+    # ---------------- trade-only message filter (see message_filter.py) ----
+    # Only trade messages are read: a signal (buy/sell + price + symbol or
+    # SL/TP, at most max_message_chars) or a short command made only of
+    # trading words (at most max_command_chars). Greetings, mood posts,
+    # commentary, long messages, videos, audio, voice notes, stickers,
+    # documents and service messages are omitted before parsing.
+    trade_messages_only: bool = True
+    max_message_chars: int = message_filter.DEFAULT_MAX_MESSAGE_CHARS
+    max_command_chars: int = message_filter.DEFAULT_MAX_COMMAND_CHARS
+    accept_photo_captions: bool = False   # True = a photo's caption may carry a signal
 
     # ---------------- sizing ----------------
     lots: float = 0.01
@@ -71,6 +83,16 @@ class CopierConfig:
     telegram_api_hash: str | None = None
     telegram_session: str = "tg_copier"
 
+    def __post_init__(self):
+        message_filter.check_channel_limit(self.allowed_chats, "signal channels")
+
+    def symbol_words(self) -> set:
+        """Words that name the traded symbol, for message_filter."""
+        words = {self.symbol.upper()}
+        for alias in self.symbol_aliases:
+            words.update(message_filter.words_of(alias))
+        return words
+
     def unit_size(self, point: float) -> float:
         if self.distance_unit == "point":
             return point
@@ -93,6 +115,8 @@ class CopierConfig:
             "telegram_api_id": ("TELEGRAM_API_ID", int),
             "telegram_api_hash": ("TELEGRAM_API_HASH", str),
             "telegram_session": ("TELEGRAM_SESSION", str),
+            "max_message_chars": ("TG_MAX_MESSAGE_CHARS", int),
+            "max_command_chars": ("TG_MAX_COMMAND_CHARS", int),
         }
         kwargs: dict = {}
         for field_name, (env_name, caster) in env_map.items():

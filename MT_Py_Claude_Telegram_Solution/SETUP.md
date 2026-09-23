@@ -97,7 +97,30 @@ matches what the EA assumes - see `README.md` § "Before going live".
 ## 3. System B - Telegram SMC Copier
 
 Pick **either** MQL5 **or** Python. Both need the relay bridge below if
-you don't own/moderate the source channel.
+you don't own/moderate the source channel. Up to **3 signal channels** can
+be followed (MQL5 `InpChannelId1`..`InpChannelId3`, Python
+`TELEGRAM_CHANNELS`, relay bridge `TELEGRAM_SOURCE_CHANNELS`) - a 4th is
+refused.
+
+**Trade-only messages.** Every copier (both EAs, `telegram_copier.py` and
+the relay bridge) reads only trade messages - the same rules everywhere
+(`python/message_filter.py` = `TsmcClassifyMessage()` in
+`MQL5/Include/TelegramSMC_Common.mqh`):
+
+| Kept | Omitted |
+|---|---|
+| **Signal**: buy/sell + a price + gold (or an SL/TP/entry label), at most 400 characters - e.g. `XAUUSD BUY 2650-2647 SL 2640 TP1 2655` | Greetings, mood and motivational posts, market commentary, promos, results recaps ("we closed +200 pips") |
+| **Command**: at most 60 characters and only trading words - e.g. `Close all gold trades now`, `SL to BE`, `Cancel the limit order` | Anything longer than the limits, emoji-only posts |
+| A photo's caption, only if `InpAcceptPhotoCaptions=true` / `--accept-photo-captions` | Videos, audio, voice notes, stickers, GIFs, documents, polls, photos (by default), pinned-message notices and other service posts |
+
+This matters for safety, not only noise: "Good morning! Close your charts
+and relax" contains the word CLOSE and used to read as close-all; it is now
+omitted. Limits: `InpMaxMessageChars`/`InpMaxCommandChars` (EAs),
+`TG_MAX_MESSAGE_CHARS`/`TG_MAX_COMMAND_CHARS` (Python). To see what was
+omitted and why: `InpLogSkippedMessages=true` (EAs - always on while no
+channel id is set, so the first run still shows every chat id) or `-v`
+(Python). `--all-messages` (copier) / `--relay-everything` (bridge) turn
+the filter off.
 
 ### 3a. Get a bot token
 
@@ -109,8 +132,10 @@ you don't own/moderate the source channel.
 
 ### 3b. If you don't own/admin the channel: relay bridge
 
-Reads the channel as your own account (any member can), forwards each
-message unmodified into a private group your bot *can* be admin of.
+Reads up to 3 channels as your own account (any member can) and forwards
+each **trade message** unmodified into a private group your bot *can* be
+admin of - greetings, mood posts, long messages and media are not
+forwarded (`--relay-everything` forwards all text).
 
 1. Create a new private Telegram group.
 2. Add your bot (3a) to it as admin.
@@ -134,12 +159,13 @@ message unmodified into a private group your bot *can* be admin of.
 1. Copy `MQL5/Experts/TelegramSMC_Copier.mq5` and
    `MQL5/Include/TelegramSMC_Common.mqh` into your terminal's `Experts/`
    and `Include/` folders. Compile.
-2. Set `InpBotToken`. Leave `InpChannelId1`/`InpChannelId2` at `0` for the
+2. Set `InpBotToken`. Leave `InpChannelId1`..`InpChannelId3` at `0` for the
    **first run** - every message the bot sees gets logged with its chat
    id, so you can identify the right one.
 3. Attach to a chart (`InpTradeXAUUSDOnly=true` by default requires the
    chart symbol to contain "XAU" to actually trade).
-4. Copy the right chat id into `InpChannelId1`/`InpChannelId2`, restart.
+4. Copy the right chat id(s) into `InpChannelId1`..`InpChannelId3` (3
+   channels max), restart.
 5. Leave `InpDryRun=true` until the log agrees with the channel.
 6. Defaults: `InpMagicNumber=20260918`, `InpFixedLot=0.05`,
    `InpMaxOpenPositions=4`, `InpTp1Points=4.0`/`InpTrailPoints=3.0`
@@ -156,7 +182,7 @@ set MT5_PASSWORD=your-password
 set MT5_SERVER=YourBroker-Demo
 set TELEGRAM_API_ID=1234567
 set TELEGRAM_API_HASH=your-api-hash
-set TELEGRAM_CHANNELS=@some_signal_channel,-1001234567890
+set TELEGRAM_CHANNELS=@some_signal_channel,-1001234567890   # up to 3
 ```
 ```bash
 python telegram_copier.py --check      # connect, print spec + verifier settings
@@ -166,7 +192,8 @@ python telegram_copier.py --live       # listen live, actually copy trades
 Default magic is **20260920** (differs from the MQL5 EA's `20260918` -
 update the Trade Logger's magic to match whichever you use). Flags:
 `--symbol`, `--channels`, `--lots`, `--risk-percent`, `--min-risk-reward`,
-`--min-sl-units`, `--max-sl-units`, `--allow-missing-sl`, `-v`.
+`--min-sl-units`, `--max-sl-units`, `--allow-missing-sl`, `--all-messages`,
+`--accept-photo-captions`, `-v`.
 
 **Test offline:**
 ```bash
@@ -349,7 +376,7 @@ model - read `UnifiedTrader/README.md` before choosing this over B+C.
    sources ship disabled - set `InpEnableTelegramSignals=true` and/or
    `InpEnableClaudeManagement=true`.
 3. Telegram side: same bot setup as § 3a (`InpBotToken`,
-   `InpChannelId1`/`InpChannelId2`).
+   `InpChannelId1`..`InpChannelId3`).
 4. Claude side: confirm `InpClaudeMagicNumber` matches
    `ClaudeSMC_Trader/python/config.py`'s `AdvisorConfig.magic` (both
    `20260921`), keep `python main.py` running - this EA only manages
@@ -434,8 +461,13 @@ formula, or config default.
 - **"WebRequest ... not allowed"** (System B, MQL5) - Tools -> Options ->
   Expert Advisors -> add `https://api.telegram.org`.
 - **EA never sees the channel's posts** - bot isn't an admin there (use
-  the relay bridge, § 3b), or `InpChannelId1`/`InpChannelId2` don't match
-  the chat id logged with both left at `0`.
+  the relay bridge, § 3b), or `InpChannelId1`..`InpChannelId3` don't match
+  the chat id logged with all three left at `0`.
+- **A signal was "omitted"** - it didn't look like a trade message (see
+  "Trade-only messages" below): too long (`InpMaxMessageChars`, default
+  400), posted as a photo/video (`InpAcceptPhotoCaptions` for photos), or
+  missing buy/sell + price + gold or SL/TP. Set `InpLogSkippedMessages=true`
+  to see every omitted message and why.
 - **Claude-SMC Trader "out of credits" / backing off every 30 min** -
   expected (§ 4g) - add credits or run System B on its own meanwhile.
 - **A Claude-SMC Trader position isn't trailing/locking profit** - confirm
@@ -452,8 +484,8 @@ formula, or config default.
   machine as MT5, and keep `InpClaudePauseFilename` equal to `config.py`'s
   `claude_pause_filename` (both default `claudesmc_pause.txt`).
 - **PauseHab/ResumeHab don't seem to do anything** - `InpControlChatId`
-  must be your own DM chat id with the bot, never `InpChannelId1`/
-  `InpChannelId2` (OnInit refuses to start if they match) - see
+  must be your own DM chat id with the bot, never one of
+  `InpChannelId1`..`InpChannelId3` (OnInit refuses to start if they match) - see
   `UnifiedTrader/README.md` § "Remote control" for how to find it.
 - **XTR_Export uploads fail with a quota/storage error** - the target
   Drive folder wasn't shared with the service account's email (a service

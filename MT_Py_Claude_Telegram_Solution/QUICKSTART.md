@@ -93,9 +93,16 @@ keys - it just proves the program works on your PC.
 5. Tick **Algo Trading** on the toolbar. In the **Experts** tab at the
    bottom you'll see each Telegram message the bot receives, with its chat
    id. Copy the signal channel's id into `InpChannelId1` and restart the EA.
+   Following more than one channel? Put the 2nd and 3rd ids in
+   `InpChannelId2`/`InpChannelId3` (3 channels max).
    (While `InpChannelId1` is `0`, the EA treats *any* chat as a signal
    source - so it refuses to start with `InpDryRun=false` until this is
    done.)
+
+   The EA only reads **trade messages**: signals (buy/sell + price + gold
+   or SL/TP) and short commands like "Close all gold trades now".
+   Greetings, mood posts, commentary, long messages, videos, audio, voice
+   notes, stickers and pinned-message notices are ignored.
 
 Run **only one** copy of this EA per MT5 terminal.
 

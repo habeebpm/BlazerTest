@@ -267,9 +267,110 @@ def test_signal_logging() -> bool:
     return ok
 
 
+
+# Shared with the MQL5 EAs' TsmcClassifyMessage() - keep both tables in sync.
+FILTER_CASES = [
+    # (message, expected kind)
+    ("Good morning traders ☀️ have a blessed day", "skip"),
+    ("Good morning! Close your charts and relax \U0001F60C", "skip"),
+    ("Close all your worries \U0001F60A", "skip"),
+    ("Don't cancel your plans for the weekend", "skip"),
+    ("We closed +200 pips yesterday, congrats team \U0001F389", "skip"),
+    ("Gold will fly, buy the dip mindset \U0001F4AA", "skip"),
+    ("3 reasons to buy gold this week", "skip"),
+    ("Buy the dip 2650", "skip"),
+    ("Market update: gold consolidating near 2650, waiting for NFP", "skip"),
+    ("\U0001F680\U0001F680\U0001F680", "skip"),
+    ("", "skip"),
+    ("XAUUSD BUY NOW 2650-2647 SL 2640 TP1 2655 TP2 2660", "signal"),
+    ("\U0001F525 GOLD SELL 2655/2658 \U0001F525\nSL: 2665\nTP: 2645", "signal"),
+    ("BUY 2650-2645 SL 2640 TP 2660", "signal"),
+    ("XAUUSD SELL 2655", "signal"),
+    ("Close all gold trades now", "command"),
+    ("CLOSE ALL", "command"),
+    ("Exit now guys", "command"),
+    ("Cancel the limit order", "command"),
+    ("SL to BE ✅", "command"),
+    ("Move SL to entry", "command"),
+    ("Close half and move SL to breakeven", "command"),
+]
+
+
+class _FakeMsg:
+    def __init__(self, **attrs):
+        self.action = None
+        self.message = attrs.pop("message", "")
+        for k, v in attrs.items():
+            setattr(self, k, v)
+
+
+def test_message_filter() -> bool:
+    print("\n=== 5. trade-only message filter (greetings/mood/long/media omitted) ===")
+    import message_filter as mf
+    import telegram_relay_bridge as bridge
+    ok = True
+    wrong = [(t, want, mf.classify_message(t)) for t, want in FILTER_CASES
+             if mf.classify_message(t)[0] != want]
+    ok &= check(f"all {len(FILTER_CASES)} sample messages classified as expected (signal / command / skip)",
+                not wrong, wrong)
+    long_signal = "XAUUSD BUY 2650 SL 2640 TP 2660 " + "analysis " * 60
+    kind, why = mf.classify_message(long_signal)
+    ok &= check("a long message is omitted even if it contains a signal", kind == "skip" and "long" in why, why)
+    ok &= check("the length limits are configurable",
+                mf.classify_message(long_signal, max_message_chars=0)[0] == "signal"
+                and mf.classify_message("Close all gold trades now", max_command_chars=10)[0] == "skip")
+    ok &= check("a copier configured for another symbol recognises it through its aliases",
+                mf.classify_message("EURUSD BUY 1.0850", symbol_words={"EURUSD"})[0] == "signal"
+                and mf.classify_message("EURUSD BUY 1.0850")[0] == "skip")
+
+    ok &= check("media: video / voice / audio / sticker / document / poll are omitted, a service "
+                "message (pin) too; a text post with a link preview is NOT media",
+                mf.message_media_kind(_FakeMsg(video=object())) == "video"
+                and mf.message_media_kind(_FakeMsg(voice=object())) == "voice"
+                and mf.message_media_kind(_FakeMsg(audio=object(), document=object())) == "audio"
+                and mf.message_media_kind(_FakeMsg(sticker=object())) == "sticker"
+                and mf.message_media_kind(_FakeMsg(document=object())) == "document"
+                and mf.message_media_kind(_FakeMsg(poll=object())) == "poll"
+                and mf.message_media_kind(_FakeMsg(action=object())) is not None
+                and mf.message_media_kind(_FakeMsg(web_preview=object(), message="BUY GOLD 2650")) is None)
+    photo = _FakeMsg(photo=object(), message="XAUUSD BUY 2650 SL 2640")
+    ok &= check("a photo is omitted unless accept_photo_captions is on (then its caption is read)",
+                mf.message_media_kind(photo) == "photo"
+                and mf.message_media_kind(photo, accept_photo_captions=True) is None
+                and mf.message_media_kind(_FakeMsg(photo=object()), accept_photo_captions=True) is not None)
+
+    ok &= check("relay bridge: trade messages relayed, greetings and videos dropped by default",
+                bridge.relay_decision(_FakeMsg(), "XAUUSD BUY 2650 SL 2640", False, False, False) == ""
+                and bridge.relay_decision(_FakeMsg(), "Good morning fam", False, False, False) != ""
+                and bridge.relay_decision(_FakeMsg(video=object()), "BUY GOLD 2650 SL 2640", False, False,
+                                          False) == "video")
+    ok &= check("relay bridge: --relay-everything relays any text; --filter-signals needs a parseable signal",
+                bridge.relay_decision(_FakeMsg(), "Good morning fam", True, False, False) == ""
+                and bridge.relay_decision(_FakeMsg(), "CLOSE ALL", False, False, False) == ""
+                and bridge.relay_decision(_FakeMsg(), "Move SL to entry", False, True, False) != "")
+
+    try:
+        mf.check_channel_limit(["a", "b", "c"])
+        three_ok = True
+    except ValueError:
+        three_ok = False
+    try:
+        CopierConfig(allowed_chats=["a", "b", "c", "d"])
+        four_refused = False
+    except ValueError:
+        four_refused = True
+    ok &= check("up to 3 channels are accepted; a 4th is refused at config time",
+                three_ok and four_refused)
+
+    copier = tc.Copier(CopierConfig(), dry_run=True)
+    ok &= check("Copier.on_message() omits a greeting before parsing (no evaluation, nothing logged)",
+                copier.on_message("Good morning! Close your charts and relax", "chat", 0.0) is None)
+    return ok
+
 def run() -> int:
     print("Telegram copier + verifier self-test")
-    results = [test_parser(), test_verifier(), test_engine(), test_signal_logging()]
+    results = [test_parser(), test_verifier(), test_engine(), test_signal_logging(),
+               test_message_filter()]
     passed = all(results)
     print(f"\n{'ALL PASS' if passed else 'SOME FAILED'} ({sum(results)}/{len(results)} suites)")
     return 0 if passed else 1

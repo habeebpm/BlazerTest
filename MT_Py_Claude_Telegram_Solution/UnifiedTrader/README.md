@@ -28,6 +28,7 @@ remain the recommended, more conservative defaults.
 | | Telegram (`InpEnableTelegramSignals`) | Claude (`InpEnableClaudeManagement`) |
 |---|---|---|
 | Decides *whether* to trade | This EA, from a parsed Telegram message | `../ClaudeSMC_Trader/python/main.py` (unchanged - MQL5 can't practically call the Claude API, see below) |
+| Which messages are read | **Trade messages only**, from up to 3 channels (`InpChannelId1`..`InpChannelId3`): a signal (buy/sell + price + gold or SL/TP, at most `InpMaxMessageChars`=400) or a short trading command (at most `InpMaxCommandChars`=60, trading words only). Greetings, mood posts, commentary, long messages, videos, audio, voice notes, stickers, documents and pinned-message notices are omitted before parsing - see `../SETUP.md` "Trade-only messages" | - |
 | Validation before entry | Chat allow-list, signal age, price-vs-zone deviation, the shared position cap, daily trade cap. **No SMC filter. No check on the message's own SL/TP1/TP2/TP3** - none of that is used | Claude's own 3-confluence + full-conviction gate (unchanged) |
 | Entry SL/TP | **Fixed `InpSlDollars`/no broker TP** - never the message's own numbers | Python's own fixed `sl_dollars`/no broker TP (unchanged) |
 | Exit management | This EA (lock-then-trail only - `InpExitStyle` breakeven step never applies) | This EA (identical logic, different magic number; `InpExitStyle` opt-in breakeven step applies here) |
@@ -161,7 +162,7 @@ can't leave Claude blocked with no Resume button reachable.
 
 **Setup:**
 1. Set `InpControlChatId` to your own DM chat id with this bot - **never**
-   `InpChannelId1`/`InpChannelId2` (OnInit refuses to start if they match).
+   `InpChannelId1`..`InpChannelId3` (OnInit refuses to start if they match).
    To find it: message the bot directly (not the signal channel) once,
    then open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser
    and read `"chat":{"id": ...}` from that message's entry.
