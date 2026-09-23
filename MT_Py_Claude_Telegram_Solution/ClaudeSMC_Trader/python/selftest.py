@@ -46,6 +46,7 @@ import claude_advisor
 import executor
 import main as main_mod
 import market_intel
+import ml_advisor
 import telegram_alert
 import mt5_gateway as gw
 from claude_advisor import ConfluenceLeg, ConfluenceVerdict
@@ -817,7 +818,13 @@ class FakeIntelGateway:
 def test_full_snapshot_pipeline() -> bool:
     print("\n=== 8. full feature-snapshot pipeline (fake bars, real indicator code) ===")
     ok = True
-    cfg = AdvisorConfig(bars_per_timeframe=320)
+    # An isolated log_dir, not the default "logs" - same reasoning every
+    # executor-touching test below uses its own tmp/log_dir: ml_win_probability
+    # reads whatever model file happens to exist at cfg.log_dir, so a bare
+    # default here would read a REAL model from an actual deployment's
+    # logs/ directory if this were ever run from one, rather than the clean
+    # "no model trained yet" state this test asserts on.
+    cfg = AdvisorConfig(bars_per_timeframe=320, log_dir="/tmp/claudesmc_selftest_logs")
     snapshot = market_intel.build_feature_snapshot(FakeIntelGateway(), cfg)
 
     ok &= check("snapshot has the expected top-level sections",
@@ -834,6 +841,8 @@ def test_full_snapshot_pipeline() -> bool:
                 snapshot["dxy"] is None, snapshot["dxy"])
     ok &= check("consensus is null when consensus_magic_numbers is unset (the default)",
                 snapshot["consensus"] is None, snapshot["consensus"])
+    ok &= check("ml_win_probability is null before any local model has been trained",
+                snapshot["ml_win_probability"] is None, snapshot["ml_win_probability"])
 
     import json
     try:
@@ -1861,6 +1870,135 @@ def test_heartbeat() -> bool:
     return ok
 
 
+# --------------------------------------------------------------------------- #
+# ml_advisor.py: feature extraction, snapshot logging, offline training
+# --------------------------------------------------------------------------- #
+def make_synthetic_ml_snapshot(*, rsi14=60.0, adx14=30.0, direction_bias="bullish") -> dict:
+    """A build_feature_snapshot()-shaped dict carrying just the fields
+    ml_advisor.extract_features() reads - enough to test it in isolation
+    without a real build_feature_snapshot() call.
+    """
+    return {
+        "primary_indicators": {
+            "close": 2000.0, "ema20": 2001.0, "ema50": 1998.0, "ema200": 1990.0,
+            "rsi14": rsi14, "macd_hist": 0.5, "macd_hist_prev": 0.4,
+            "macd_hist_shape": {"declining_from_peak": False},
+            "adx14": adx14, "plus_di": 30.0, "minus_di": 15.0,
+            "stoch_k": 55.0, "stoch_d": 50.0, "atr14": 1.2,
+            "bollinger_percent_b": 0.6, "bollinger_bandwidth": 0.02,
+        },
+        "trend_bias": {"close": 2000.0, "ema200": 1980.0},
+        "smc": {
+            "liquidity_sweep": {"swept": True},
+            "premium_discount": {"position_pct": 0.3},
+            "market_structure": {"trend": direction_bias, "last_event": {"type": "BOS"}},
+            "order_blocks": {"bullish_order_block": {"price_inside_zone": True},
+                             "bearish_order_block": None},
+            "fair_value_gaps": [{"direction": "bullish"}],
+        },
+        "last_closed_candle": {"body_pct_of_range": 0.7, "bullish": True},
+        "session": {"hour_utc": 13, "session_overlap": True},
+        "recent_performance": {"trade_count": 5, "win_rate_pct": 60.0},
+        "dxy": {"vs_ema20": "below", "change_pct_last_10_bars": -0.5},
+        "consensus": {"other_system_buy_positions": 2, "other_system_sell_positions": 0},
+    }
+
+
+def test_ml_advisor() -> bool:
+    print("\n=== 18. ml_advisor: feature extraction, snapshot logging, offline training ===")
+    ok = True
+    import tempfile
+
+    snap = make_synthetic_ml_snapshot()
+    features = ml_advisor.extract_features(snap)
+    ok &= check("extract_features() reads through every nested section correctly",
+                features["rsi14"] == 60.0 and features["adx14"] == 30.0
+                and features["liquidity_swept"] == 1.0 and features["structure_bullish"] == 1.0
+                and features["price_inside_bullish_ob"] == 1.0 and features["bos_event"] == 1.0
+                and features["dxy_above_ema20"] == 0.0 and features["consensus_buy_positions"] == 2.0,
+                features)
+    ok &= check("direction_is_buy defaults to 0.0 when no direction is passed",
+                features["direction_is_buy"] == 0.0, features["direction_is_buy"])
+
+    buy_features = ml_advisor.extract_features(snap, "buy")
+    sell_features = ml_advisor.extract_features(snap, "sell")
+    ok &= check("extract_features(snap, 'buy') sets direction_is_buy=1.0, "
+                "extract_features(snap, 'sell') sets it 0.0 - the SAME market state scored per "
+                "candidate direction, everything else about the vector unchanged",
+                buy_features["direction_is_buy"] == 1.0 and sell_features["direction_is_buy"] == 0.0
+                and {k: v for k, v in buy_features.items() if k != "direction_is_buy"}
+                == {k: v for k, v in sell_features.items() if k != "direction_is_buy"},
+                (buy_features, sell_features))
+
+    empty_features = ml_advisor.extract_features({})
+    ok &= check("extract_features({}) never raises and returns every FEATURE_NAMES key with a "
+                "neutral default, the same convention as every other optional context source",
+                set(empty_features.keys()) == set(ml_advisor.FEATURE_NAMES), empty_features)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = AdvisorConfig(log_dir=tmp, magic=999)
+
+        ml_advisor.log_snapshot(cfg, snap, "buy", "1001")
+        rows = ml_advisor._load_snapshots(cfg)
+        ok &= check("log_snapshot() appends a row keyed by ticket/direction plus every feature",
+                    len(rows) == 1 and rows[0]["ticket"] == "1001" and rows[0]["direction"] == "buy"
+                    and float(rows[0]["rsi14"]) == 60.0, rows)
+
+        ok &= check("win_probability_context() is None before any local model has been trained",
+                    ml_advisor.win_probability_context(cfg, snap) is None)
+
+        no_data_cfg = AdvisorConfig(log_dir=os.path.join(tmp, "empty"), magic=999)
+        no_data_result = ml_advisor.train_model(no_data_cfg, gateway=FakePerformanceGateway([]))
+        ok &= check("train_model() gracefully declines rather than raising when no snapshots have "
+                    "been logged yet",
+                    no_data_result == {"trained": False,
+                                        "reason": "no logged snapshots yet (logs/ml_snapshots.csv is "
+                                                  "empty or missing) - needs at least one executed "
+                                                  "trade first."},
+                    no_data_result)
+
+        # Log enough synthetic labeled trades to clear min_samples, alternating
+        # win/loss (a classifier needs both classes) with a FakePerformanceGateway
+        # wired to matching tickets/P&L for train_model()'s MT5-history join -
+        # the exact same ticket-based join calibration_report.py already uses.
+        fake_trades = []
+        for i in range(20):
+            ticket = str(2000 + i)
+            win = i % 2 == 0
+            snap_i = make_synthetic_ml_snapshot(rsi14=65.0 if win else 35.0,
+                                                adx14=32.0 if win else 18.0,
+                                                direction_bias="bullish" if win else "bearish")
+            ml_advisor.log_snapshot(cfg, snap_i, "buy" if win else "sell", ticket)
+            fake_trades.append({"ticket": ticket, "pnl_dollars": 5.0 if win else -5.0})
+
+        result = ml_advisor.train_model(cfg, gateway=FakePerformanceGateway(fake_trades), min_samples=10)
+        ok &= check("train_model() trains successfully once enough labeled (real-P&L) trades exist",
+                    result.get("trained") is True and result["n_samples"] == 20, result)
+        ok &= check("the trained model is persisted to disk",
+                    os.path.exists(ml_advisor._model_path(cfg)), ml_advisor._model_path(cfg))
+
+        context = ml_advisor.win_probability_context(
+            cfg, make_synthetic_ml_snapshot(rsi14=65.0, adx14=32.0, direction_bias="bullish"))
+        ok &= check("win_probability_context() scores a snapshot once per candidate direction "
+                    "once a model is trained",
+                    context is not None and 0.0 <= context["win_probability_pct_buy"] <= 100.0
+                    and 0.0 <= context["win_probability_pct_sell"] <= 100.0
+                    and context["trained_on_n_trades"] == 20, context)
+
+        under_min_cfg = AdvisorConfig(log_dir=os.path.join(tmp, "under"), magic=999)
+        ml_advisor.log_snapshot(under_min_cfg, snap, "buy", "9001")
+        under_result = ml_advisor.train_model(
+            under_min_cfg, gateway=FakePerformanceGateway([{"ticket": "9001", "pnl_dollars": 5.0}]),
+            min_samples=30)
+        ok &= check("train_model() declines rather than training on too few labeled trades",
+                    under_result == {"trained": False,
+                                      "reason": "only 1 labeled trade(s) with real MT5 P&L so far - "
+                                                "need at least 30 before training a useful model."},
+                    under_result)
+
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -1888,6 +2026,7 @@ def main() -> int:
         test_calibration_report(),
         test_digest_lookback_days(),
         test_heartbeat(),
+        test_ml_advisor(),
     ]
     print()
     if all(results):

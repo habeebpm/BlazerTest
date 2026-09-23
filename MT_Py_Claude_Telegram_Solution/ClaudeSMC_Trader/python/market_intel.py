@@ -43,6 +43,7 @@ import logging
 import numpy as np
 import pandas as pd
 
+import ml_advisor
 import mt5_gateway as gw
 from config import AdvisorConfig
 
@@ -578,7 +579,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
     # hatch, which would silently turn these into quoted strings.
     recent_candles["volume"] = recent_candles["volume"].astype(int)
 
-    return {
+    snapshot = {
         "symbol": cfg.symbol,
         "timestamp_utc": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "current_price": {"bid": tick.bid, "ask": tick.ask, "spread_points": spec.spread_points},
@@ -604,3 +605,8 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
         "last_closed_candle": candle_features(primary_closed),
         "recent_candles": recent_candles.to_dict(orient="records"),
     }
+    # Scored from the snapshot assembled above, so this must come last -
+    # see ml_advisor.win_probability_context()'s own docstring for why this
+    # is informational-only, exactly like dxy/consensus just above.
+    snapshot["ml_win_probability"] = ml_advisor.win_probability_context(cfg, snapshot)
+    return snapshot

@@ -46,6 +46,7 @@ TRADE_FIELDS = ["time", "source", "direction", "lots", "entry_price", "sl", "tp"
 class Decision:
     executed: bool
     reject_reason: str = ""
+    ticket: str = ""
 
 
 def _csv_path(cfg: AdvisorConfig, name: str) -> str:
@@ -287,4 +288,4 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     log_decision(cfg, verdict, executed=True, ticket=ticket)
     log_trade(cfg, verdict.direction, lots, fill_price, sl_price, tp_price,
               "dry-run" if cfg.dry_run else "live", retcode, ticket)
-    return Decision(executed=True)
+    return Decision(executed=True, ticket=str(ticket))

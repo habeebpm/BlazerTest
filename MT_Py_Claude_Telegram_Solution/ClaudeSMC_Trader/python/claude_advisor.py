@@ -148,6 +148,23 @@ hot streak is never itself a reason to lower your bar. If `trade_count` is 0 \
 or the field is otherwise sparse, ignore it - there is nothing to learn from \
 yet.
 
+`ml_win_probability` (null until a local model has been trained - see \
+ml_advisor.py and train_ml_model.py; ignore it entirely when null) is a \
+locally-trained statistical estimate of how trades that looked like this \
+one actually did historically, drawn only from THIS system's own past \
+trades - `win_probability_pct_buy` and `win_probability_pct_sell` (the \
+SAME current market state scored once per candidate direction, since which \
+side you'll call hasn't been decided yet) plus `trained_on_n_trades` (how \
+much history it's actually based on). Read whichever of the two matches \
+the direction you're actually leaning toward. Treat a low sample count \
+(well under 100) as a weak signal barely worth a mention; only let it \
+meaningfully move your call once `trained_on_n_trades` is reasonably \
+large. Like `recent_performance`, this is pattern-matching against \
+history, not a rule: a low win probability on an otherwise clean setup is \
+a reason to lean toward "partial" rather than "full", never an automatic \
+veto, and a high one is never by itself a reason to call "full" on a setup \
+that doesn't otherwise earn it.
+
 CONVICTION - this is the field that actually gates execution, so be honest \
 and conservative:
   - "full":    >=2 of 3 legs agree on direction, >=1 of those is CONFIRMED, \

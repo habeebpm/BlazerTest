@@ -371,6 +371,31 @@ professional/prop-desk sizing rules use. Set either to `0`/`false` in
 | "Why" button | `last_verdict_filename` | Writes every evaluation cycle's Claude verdict (any conviction level) to MT5's shared `Common\Files` folder, so `UnifiedTrader_EA.mq5`'s new **Why** Telegram button (alongside PauseHab/ResumeHab/PauseTelHab/PauseClaudeHab) can echo the latest reasoning on demand. `InpLastVerdictFilename` on the EA side MUST match this filename. |
 | Conviction calibration report | `python calibration_report.py` (standalone script) | Offline report joining `logs/decisions.csv` against `logs/trades.csv` and MT5's real closed-trade P&L, bucketed by conviction/confluence_count. Honestly scoped: with `require_full_conviction=True` (the default), only `conviction="full"` trades ever have outcome data - "partial"/"none" calls only show up in the frequency count. |
 | Heartbeat / stale-cycle alert | `heartbeat_interval_hours` (off by default), `stale_cycle_alert_minutes` (on by default at 60 once alert creds are set) | A periodic "still alive" Telegram ping, and a one-time warning if too long passes without a successful evaluation cycle (the poll loop may be stuck on a repeating error, e.g. a dropped MT5 connection) - independent of trading activity. |
+| Local ML win-probability advisor | `python train_ml_model.py` (standalone script; see `ml_advisor.py`) | Optional, fully local, CPU-only scikit-learn classifier trained on THIS system's own historical evaluation snapshots (`logs/ml_snapshots.csv`, one row per executed trade - see `ml_advisor.log_snapshot()`) joined against those trades' real MT5 P&L, exactly the same ticket-based join `calibration_report.py` uses. `market_intel.build_feature_snapshot()`'s `ml_win_probability` key feeds Claude `win_probability_pct_buy`/`win_probability_pct_sell` (the same market state scored once per candidate direction, since Claude hasn't picked one yet at this point) once a model has been trained - purely informational, `executor.gate()` never touches it, same as `dxy`/`consensus`/`recent_performance`. Gracefully no-ops (`ml_win_probability: null`) until `pip install scikit-learn joblib` (both optional - see `requirements.txt`) and `python train_ml_model.py` have actually been run at least once with enough trade history (`--min-samples`, default 30). |
+
+### Local ML win-probability advisor - more detail
+
+`ml_advisor.py`'s `extract_features()` flattens the same indicator/SMC/
+session snapshot Claude reads into a plain numeric vector (RSI, MACD
+histogram, ADX/DI, Bollinger %B, the SMC sweep/zone/structure/order-block/
+FVG booleans, session hour, `recent_performance`'s own win rate, `dxy`/
+`consensus` when configured, which side was actually traded, ...) and a
+`GradientBoostingClassifier` (win=1/loss=0) is fit on whichever of this
+account's own past trades have a matching real MT5 P&L. It only ever tells
+you what trades that *looked like this one* actually did on THIS account's
+own history - there is no external dataset, no pretrained model, nothing
+shipped with this repo: a fresh install starts with `ml_win_probability:
+null` and stays that way until you've both installed the optional
+dependencies and traded (dry-run counts) enough to log real snapshots. Only
+`main.py`'s live/dry-run loop logs snapshots (`ml_advisor.log_snapshot()`,
+called right after `executor.execute()` for every EXECUTED trade) -
+`backtest.py` does not, so a backtest run alone will never grow
+`logs/ml_snapshots.csv` or give `train_model()` anything to train on yet.
+Re-run `python train_ml_model.py` periodically as more trades accumulate -
+the live loop only ever reads the persisted model
+(`logs/ml_win_probability_model.joblib`), it never trains one itself, and
+picks up a freshly retrained file on the very next evaluation cycle with
+no restart needed.
 
 ## Running with only one side available
 

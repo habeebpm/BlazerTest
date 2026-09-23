@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import claude_advisor
 import executor
 import market_intel
+import ml_advisor
 import mt5_gateway as gw
 import telegram_alert
 from config import AdvisorConfig
@@ -311,6 +312,11 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll) -> None:
     decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, day.block_reason())
     if decision.executed:
         day.trades_today += 1
+        # Feeds train_model()/train_ml_model.py's offline training later -
+        # never called for a rejected decision, since there's no outcome to
+        # ever join it to. Already never raises (see its own docstring), so
+        # nothing extra to guard here.
+        ml_advisor.log_snapshot(cfg, features, verdict.direction, decision.ticket)
     if cfg.last_verdict_filename:
         # Local file I/O, not a network call - kept inline rather than
         # threaded, but still never allowed to crash the evaluation cycle:
