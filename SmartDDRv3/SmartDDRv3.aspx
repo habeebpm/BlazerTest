@@ -355,8 +355,6 @@
         .btn-ghost { background: transparent; }
         .btn-on-dark { background: rgba(255, 255, 255, .16); border-color: rgba(255, 255, 255, .3); color: #fff; }
         .btn-on-dark:hover { background: rgba(255, 255, 255, .28); border-color: rgba(255, 255, 255, .5); color: #fff; }
-        .btn-success { height: 28px; background: var(--success); border-color: var(--success); color: #fff; }
-        .btn-success:hover { background: #15803D; border-color: #15803D; color: #fff; }
 
         /* Toolbar */
         .toolbar {
@@ -461,8 +459,6 @@
         table.grid th:hover { background: #244B4B; }
         table.grid th.sort-asc::after { content: " \25B2"; font-size: 9px; color: var(--gold); }
         table.grid th.sort-desc::after { content: " \25BC"; font-size: 9px; color: var(--gold); }
-        table.grid-edit th { cursor: default; }
-        table.grid-edit th:hover { background: var(--brand-850); }
         table.grid td {
             padding: 6px 10px;
             border-bottom: 1px solid var(--border);
@@ -479,7 +475,6 @@
         table.grid tbody tr.row-partial td { background: #FFFBE6; }
         table.grid tbody tr.row-deleted td { background: #DBEAFE; color: #1E3A8A; text-decoration: line-through; }
         table.grid tbody tr.row-dup td { background: #FEF08A; color: #7F1D1D; }
-        table.grid tbody tr.dirty td { background: #FFF7E6; }
         table.grid td.cell-warn { background: #F8B4B4 !important; }
         table.grid td.cell-hl { background: #FEF08A !important; font-weight: 600; }
 
@@ -540,24 +535,6 @@
             cursor: pointer;
         }
         .row-btn:hover { background: var(--brand-500); color: #fff; }
-
-        /* Editable CTD grid */
-        .grid-edit td { white-space: normal; }
-        .grid-input {
-            width: 100%;
-            min-width: 80px;
-            height: 28px;
-            padding: 0 8px;
-            border-radius: 6px;
-            border: 1px solid var(--border-strong);
-            background: #fff;
-            font: inherit;
-            font-size: 12.5px;
-        }
-        .grid-input:focus { outline: none; border-color: var(--brand-500); box-shadow: 0 0 0 3px rgba(20, 184, 166, .15); }
-        .grid-input.wide { min-width: 260px; }
-        .grid-input.num { width: 96px; min-width: 0; text-align: right; }
-        tr.dirty .btn-success { box-shadow: 0 0 0 3px rgba(22, 163, 74, .3); }
 
         /* ================================================================
            Toast, drawer, loader
@@ -723,7 +700,6 @@
                     <summary title="Core registers of the selected project"><span class="g-ic">📁</span><span class="g-title">Projects</span><span class="g-count"></span><span class="g-chev" aria-hidden="true"></span></summary>
                     <div class="g-body">
                         <asp:LinkButton ID="CTD" runat="server" CssClass="nav-item" CommandArgument="CTD" data-loading="true"><span class="ic">💸</span><span>Approved CTD</span></asp:LinkButton>
-                        <asp:LinkButton ID="CTD_EDIT" runat="server" CssClass="nav-item" CommandArgument="CTD_EDIT" data-loading="true"><span class="ic">✏️</span><span>Edit CTD</span></asp:LinkButton>
                         <asp:LinkButton ID="DDR1" runat="server" CssClass="nav-item" CommandArgument="DDR_ACT" data-loading="true"><span class="ic">📄</span><span>DDR + Activity</span></asp:LinkButton>
                         <asp:LinkButton ID="ACTIVITY" runat="server" CssClass="nav-item" CommandArgument="ACT" data-loading="true"><span class="ic">🚀</span><span>Activities</span></asp:LinkButton>
                         <asp:LinkButton ID="DDR2" runat="server" CssClass="nav-item" CommandArgument="DDR_PDO" data-loading="true"><span class="ic">📑</span><span>DDR Format (PDO)</span></asp:LinkButton>
@@ -846,63 +822,6 @@
                         </asp:GridView>
                     </div>
                 </asp:Panel>
-
-                <!-- CTD editor (administrators) -->
-                <asp:Panel ID="pnlCtdEdit" runat="server" CssClass="card grid-card" Visible="False">
-                    <div class="card-head">
-                        <h3>Edit CTD</h3>
-                        <span class="hint">Change a value and press <b>Save</b> on that row. Uses the selected project and discipline.</span>
-                    </div>
-                    <div class="grid-scroll">
-                        <asp:GridView ID="grdCTD" runat="server"
-                            AutoGenerateColumns="False"
-                            DataKeyNames="CTD_ID"
-                            DataSourceID="CtdDs"
-                            CssClass="grid grid-edit"
-                            GridLines="None"
-                            UseAccessibleHeader="True"
-                            EmptyDataText="No CTD lines for the selected project / discipline.">
-                            <EmptyDataRowStyle CssClass="empty" />
-                            <Columns>
-                                <asp:BoundField DataField="CTD_ID" HeaderText="CTD ID" ReadOnly="True" ItemStyle-CssClass="c" />
-                                <asp:BoundField DataField="Discipline" HeaderText="Discipline" ReadOnly="True" />
-                                <asp:BoundField DataField="Del_Item_Ref" HeaderText="CTD Del Ref" ReadOnly="True" />
-                                <asp:TemplateField HeaderText="Deliverable Title">
-                                    <ItemTemplate>
-                                        <asp:TextBox ID="txtDel_Title" runat="server" CssClass="grid-input wide"
-                                            Text='<%# Bind("Deliverable_Title") %>' />
-                                    </ItemTemplate>
-                                </asp:TemplateField>
-                                <asp:TemplateField HeaderText="Deliverable">
-                                    <ItemTemplate>
-                                        <asp:TextBox ID="txtDeliverable" runat="server" CssClass="grid-input"
-                                            Text='<%# Bind("Deliverable") %>' />
-                                    </ItemTemplate>
-                                </asp:TemplateField>
-                                <asp:TemplateField HeaderText="Hours">
-                                    <ItemTemplate>
-                                        <asp:TextBox ID="txtMan_Hours" runat="server" CssClass="grid-input num"
-                                            TextMode="Number" step="any" min="0"
-                                            Text='<%# Bind("Total_Hours", "{0:0.##}") %>' />
-                                    </ItemTemplate>
-                                </asp:TemplateField>
-                                <asp:TemplateField HeaderText="Qty">
-                                    <ItemTemplate>
-                                        <asp:TextBox ID="txtQty" runat="server" CssClass="grid-input num"
-                                            TextMode="Number" step="any" min="0"
-                                            Text='<%# Bind("Qty", "{0:0.##}") %>' />
-                                    </ItemTemplate>
-                                </asp:TemplateField>
-                                <asp:TemplateField HeaderText="" ItemStyle-CssClass="c">
-                                    <ItemTemplate>
-                                        <asp:Button ID="btnSave" runat="server" Text="💾 Save" CssClass="btn btn-success"
-                                            CommandName="Update" CausesValidation="False" data-loading="true" />
-                                    </ItemTemplate>
-                                </asp:TemplateField>
-                            </Columns>
-                        </asp:GridView>
-                    </div>
-                </asp:Panel>
             </section>
         </main>
     </div>
@@ -953,30 +872,6 @@
             <p>Please wait…</p>
         </div>
     </div>
-
-    <!-- ===================== Data sources ===================== -->
-    <asp:SqlDataSource ID="CtdDs" runat="server"
-        ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
-        SelectCommand="SELECT [CTD_ID],[Discipline],[Del_Item_Ref],[Deliverable_Title],[Deliverable],[Total_Hours],[Qty]
-                       FROM [CTD_Master]
-                       WHERE [Project_No] = @PROJECT_NO AND (@DISCIPLINE = 'All' OR [Discipline] = @DISCIPLINE)
-                       ORDER BY [Discipline], [Del_Item_Ref]"
-        UpdateCommand="UPDATE [CTD_MASTER]
-                       SET [Deliverable_Title] = @Deliverable_Title, [Deliverable] = @Deliverable,
-                           [Total_Hours] = @Total_Hours, [Qty] = @Qty
-                       WHERE [CTD_ID] = @CTD_ID">
-        <SelectParameters>
-            <asp:ControlParameter Name="PROJECT_NO" ControlID="DDLPROJNO" PropertyName="SelectedValue" Type="String" />
-            <asp:ControlParameter Name="DISCIPLINE" ControlID="DDLDISCIPLINE" PropertyName="SelectedValue" Type="String" DefaultValue="All" />
-        </SelectParameters>
-        <UpdateParameters>
-            <asp:Parameter Name="Deliverable_Title" Type="String" />
-            <asp:Parameter Name="Deliverable" Type="String" />
-            <asp:Parameter Name="Total_Hours" Type="Decimal" />
-            <asp:Parameter Name="Qty" Type="Decimal" />
-            <asp:Parameter Name="CTD_ID" />
-        </UpdateParameters>
-    </asp:SqlDataSource>
 
     <script>
         (function () {
@@ -1225,7 +1120,7 @@
                 if (t.closest('.js-drawer-csv')) { var csv = document.getElementById('btnDrawerCsv'); if (csv) { csv.click(); } return; }
                 if ((el = t.closest('.js-copy-link'))) { e.preventDefault(); copyLink(el); return; }
                 if (t.closest('.wn-close')) { if (wn) { wn.classList.add('hidden'); setPref(wnKey, '1'); } return; }
-                if ((el = t.closest('table.grid:not(.grid-edit) thead th'))) { sortBy(el); return; }
+                if ((el = t.closest('table.grid thead th'))) { sortBy(el); return; }
                 if (t.closest('[data-loading]:not(select)')) { window.showLoader(); }
             });
 
@@ -1237,21 +1132,10 @@
             document.addEventListener('input', function (e) {
                 var t = e.target;
                 if (!t) { return; }
-                if (t === search) { clearTimeout(timer); timer = setTimeout(liveFilter, 120); return; }
-                if (t.classList && t.classList.contains('grid-input')) {
-                    var tr = t.closest('tr');
-                    if (tr) { tr.classList.add('dirty'); }
-                }
+                if (t === search) { clearTimeout(timer); timer = setTimeout(liveFilter, 120); }
             });
 
             document.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('grid-input')) {
-                    e.preventDefault();
-                    var tr = e.target.closest('tr');
-                    var save = tr && tr.querySelector('.btn-success');
-                    if (save) { save.click(); }
-                    return;
-                }
                 if (e.key === 'Escape') {
                     if (document.activeElement === navFind && navFind.value) { navFind.value = ''; navFind.dispatchEvent(new Event('input')); return; }
                     closeDrawer(); body.classList.remove('sidebar-open'); return;

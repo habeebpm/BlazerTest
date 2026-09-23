@@ -23,16 +23,14 @@ Public Class SmartDDRv3
         Public ReadOnly FileSuffix As String
         Public ReadOnly IsGroup As Boolean
         Public ReadOnly HasFooter As Boolean
-        Public ReadOnly AdminOnly As Boolean
         Public ReadOnly Section As String
 
-        Public Sub New(section As String, title As String, fileSuffix As String, isGroup As Boolean, hasFooter As Boolean, Optional adminOnly As Boolean = False)
+        Public Sub New(section As String, title As String, fileSuffix As String, isGroup As Boolean, hasFooter As Boolean)
             Me.Section = section
             Me.Title = title
             Me.FileSuffix = fileSuffix
             Me.IsGroup = isGroup
             Me.HasFooter = hasFooter
-            Me.AdminOnly = adminOnly
         End Sub
     End Class
 
@@ -44,7 +42,6 @@ Public Class SmartDDRv3
         {"G_PLIP", New ViewDef("Project Groups", "DDR PLIP Status", "PLIP_STATUS_ALL", True, False)},
         {"G_DDR_ACT", New ViewDef("Project Groups", "DDR + Activity (all projects)", "DDR_ACT_ALL", True, False)},
         {"CTD", New ViewDef("Projects", "Approved CTD", "CTD", False, True)},
-        {"CTD_EDIT", New ViewDef("Projects", "Edit CTD", "CTD_EDIT", False, False, adminOnly:=True)},
         {"DDR_ACT", New ViewDef("Projects", "DDR + Activity", "DDR_ACT", False, False)},
         {"ACT", New ViewDef("Projects", "Activities", "ACT", False, True)},
         {"CTD_DDR", New ViewDef("Check Reports", "CTD vs DDR", "CTD_DDR_SUMMARY", False, True)},
@@ -207,7 +204,6 @@ Public Class SmartDDRv3
         lblUser.Text = HttpUtility.HtmlEncode(If(_userName.Length > 0, _userName, "Guest"))
         lblUser.ToolTip = _userName
         lnkAdmin.Visible = _isAdmin
-        CTD_EDIT.Visible = _isAdmin
 
         If Not IsPostBack Then InitialLoad()
     End Sub
@@ -248,8 +244,7 @@ Public Class SmartDDRv3
         If _suppressRender Then Return
 
         ' The report grid keeps no ViewState: rebuild it from the cached data on full postbacks.
-        If Not ScriptManager1.IsInAsyncPostBack AndAlso Not _gridBound AndAlso
-           CurrentView.Length > 0 AndAlso CurrentView <> "CTD_EDIT" Then
+        If Not ScriptManager1.IsInAsyncPostBack AndAlso Not _gridBound AndAlso CurrentView.Length > 0 Then
             ApplyFilters()
         End If
 
@@ -265,18 +260,16 @@ Public Class SmartDDRv3
         Push.Visible = SelectedProject.Length > 0
     End Sub
 
-    ' Runs after every control's own PreRender, so grids that re-bind themselves
-    ' (e.g. grdCTD after a save) still get their <thead>/<tfoot>.
+    ' Runs after every control's own PreRender, so each grid's final rows get <thead>/<tfoot>.
     Private Sub Page_PreRenderComplete(sender As Object, e As EventArgs) Handles Me.PreRenderComplete
         If _suppressRender Then Return
         SetTableSections(MyCommonGrid)
-        SetTableSections(grdCTD)
         SetTableSections(grdDrawer)
     End Sub
 
     Private Function NavButtons() As LinkButton()
         Return {Project_Summary, M75_AFC_ALL, IFR_ALL, PLIP_STATUS, DDR_ACT_ALL,
-                CTD, CTD_EDIT, DDR1, ACTIVITY, CTD_DDR, CTD_DOC, DDR_DUMMY, DDR2, DDR_EPR, EPR, M75_AFC, IFR,
+                CTD, DDR1, ACTIVITY, CTD_DDR, CTD_DOC, DDR_DUMMY, DDR2, DDR_EPR, EPR, M75_AFC, IFR,
                 Aconex1, Aconex2, ACON_MISS, PushtoDDR}
     End Function
 
@@ -440,7 +433,7 @@ Public Class SmartDDRv3
 
     Private Sub Nav_Command(sender As Object, e As CommandEventArgs) Handles _
         Project_Summary.Command, M75_AFC_ALL.Command, IFR_ALL.Command, PLIP_STATUS.Command, DDR_ACT_ALL.Command,
-        CTD.Command, CTD_EDIT.Command, DDR1.Command, ACTIVITY.Command, CTD_DDR.Command, CTD_DOC.Command,
+        CTD.Command, DDR1.Command, ACTIVITY.Command, CTD_DDR.Command, CTD_DOC.Command,
         DDR_DUMMY.Command, DDR2.Command, DDR_EPR.Command, EPR.Command, M75_AFC.Command, IFR.Command,
         Aconex1.Command, Aconex2.Command, ACON_MISS.Command, PushtoDDR.Command
 
@@ -452,11 +445,6 @@ Public Class SmartDDRv3
         If key Is Nothing Then Return
         Dim def As ViewDef = Views(key)
 
-        If def.AdminOnly AndAlso Not _isAdmin Then
-            ShowMessage("Editing the CTD requires administrator rights.", "warn")
-            If key <> DefaultView Then LoadView(DefaultView)
-            Return
-        End If
         If Not def.IsGroup AndAlso SelectedProject.Length = 0 Then
             ShowMessage("Select a project first.", "warn")
             GridData = Nothing
@@ -473,16 +461,6 @@ Public Class SmartDDRv3
         lblSection.Text = HttpUtility.HtmlEncode(def.Section)
         lblContext.Text = HttpUtility.HtmlEncode(def.Title)
         ViewState("FileName") = BuildFileName(def)
-
-        Dim isEdit As Boolean = (key = "CTD_EDIT")
-        pnlGrid.Visible = Not isEdit
-        pnlCtdEdit.Visible = isEdit
-        If isEdit Then
-            GridData = Nothing
-            grdCTD.EditIndex = -1
-            ApplyFilters()
-            Return
-        End If
 
         _fetchFailed = False
         Try
@@ -718,12 +696,6 @@ Public Class SmartDDRv3
 
     Private Sub ApplyFilters()
         _gridBound = True
-
-        If CurrentView = "CTD_EDIT" Then
-            lblFilterChip.Visible = False
-            grdCTD.DataBind()
-            Return
-        End If
 
         Dim dt As DataTable = EnsureGridData()
         ComputePercentScales(dt)
@@ -1230,34 +1202,6 @@ Public Class SmartDDRv3
 
 #End Region
 
-#Region "CTD editor"
-
-    Private Sub grdCTD_RowUpdating(sender As Object, e As GridViewUpdateEventArgs) Handles grdCTD.RowUpdating
-        If Not _isAdmin Then
-            e.Cancel = True
-            ShowMessage("Editing the CTD requires administrator rights.", "warn")
-        End If
-    End Sub
-
-    Private Sub grdCTD_RowUpdated(sender As Object, e As GridViewUpdatedEventArgs) Handles grdCTD.RowUpdated
-        If e.Exception IsNot Nothing Then
-            Dim root As Exception = e.Exception
-            While root.InnerException IsNot Nothing
-                root = root.InnerException
-            End While
-            ShowMessage("Save failed: " & root.Message, "error")
-            e.ExceptionHandled = True
-        Else
-            ShowMessage(String.Format("CTD {0} saved.", e.Keys("CTD_ID")), "success")
-        End If
-    End Sub
-
-    Private Sub grdCTD_DataBound(sender As Object, e As EventArgs) Handles grdCTD.DataBound
-        lblRowCount.Text = String.Format("{0:N0} rows", grdCTD.Rows.Count)
-    End Sub
-
-#End Region
-
 #Region "Export"
 
     Private Sub btnExcel_Click(sender As Object, e As EventArgs) Handles btnExcel.Click
@@ -1281,10 +1225,6 @@ Public Class SmartDDRv3
 
     ' Exports honour the discipline / project / search filters that are on screen.
     Private Function GetExportTable() As DataTable
-        If CurrentView = "CTD_EDIT" Then
-            Dim dv As DataView = TryCast(CtdDs.Select(DataSourceSelectArguments.Empty), DataView)
-            Return If(dv Is Nothing, Nothing, dv.ToTable())
-        End If
         Dim dt As DataTable = EnsureGridData()
         If dt Is Nothing Then Return Nothing
         Return BuildFilteredView(dt).ToTable()

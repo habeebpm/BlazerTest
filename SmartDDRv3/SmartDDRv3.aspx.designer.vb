@@ -24,7 +24,6 @@ Partial Public Class SmartDDRv3
     Protected WithEvents DDR_ACT_ALL As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents DDLPROJNO As Global.System.Web.UI.WebControls.DropDownList
     Protected WithEvents CTD As Global.System.Web.UI.WebControls.LinkButton
-    Protected WithEvents CTD_EDIT As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents DDR1 As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents ACTIVITY As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents CTD_DDR As Global.System.Web.UI.WebControls.LinkButton
@@ -63,8 +62,6 @@ Partial Public Class SmartDDRv3
     ' Content
     Protected WithEvents pnlGrid As Global.System.Web.UI.WebControls.Panel
     Protected WithEvents MyCommonGrid As Global.System.Web.UI.WebControls.GridView
-    Protected WithEvents pnlCtdEdit As Global.System.Web.UI.WebControls.Panel
-    Protected WithEvents grdCTD As Global.System.Web.UI.WebControls.GridView
 
     ' Row actions + drawer
     Protected WithEvents hfRowArg As Global.System.Web.UI.WebControls.HiddenField
@@ -76,8 +73,5 @@ Partial Public Class SmartDDRv3
     Protected WithEvents lblDrawerTitle As Global.System.Web.UI.WebControls.Label
     Protected WithEvents lblDrawerCount As Global.System.Web.UI.WebControls.Label
     Protected WithEvents grdDrawer As Global.System.Web.UI.WebControls.GridView
-
-    ' Data sources
-    Protected WithEvents CtdDs As Global.System.Web.UI.WebControls.SqlDataSource
 
 End Class
