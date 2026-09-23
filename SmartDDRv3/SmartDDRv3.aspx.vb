@@ -1254,16 +1254,16 @@ Public Class SmartDDRv3
         Dim sb As New StringBuilder()
         sb.AppendLine(String.Join(",", dt.Columns.Cast(Of DataColumn)().Select(Function(c) CsvField(c.ColumnName))))
         For Each r As DataRow In dt.Rows
-            sb.AppendLine(String.Join(",", r.ItemArray.Select(Function(v) CsvField(ExportText(v)))))
+            sb.AppendLine(String.Join(",", r.ItemArray.Select(Function(v) CsvField(ExportText(v), IsNumericValue(v)))))
         Next
         Dim utf8 As New UTF8Encoding(True)
         Return utf8.GetPreamble().Concat(utf8.GetBytes(sb.ToString())).ToArray()
     End Function
 
-    Private Shared Function CsvField(value As String) As String
+    Private Shared Function CsvField(value As String, Optional isNumber As Boolean = False) As String
         If String.IsNullOrEmpty(value) Then Return ""
-        ' Stop spreadsheet formula injection from data values.
-        If "=+@".IndexOf(value(0)) >= 0 Then value = "'" & value
+        ' Stop spreadsheet formula injection from text values (real numbers may start with "-").
+        If Not isNumber AndAlso ("=+-@" & vbTab & vbCr).IndexOf(value(0)) >= 0 Then value = "'" & value
         If value.IndexOfAny({","c, """"c, ControlChars.Cr, ControlChars.Lf}) >= 0 Then
             Return """" & value.Replace("""", """""") & """"
         End If
@@ -1424,9 +1424,10 @@ Public Class SmartDDRv3
         If IsNumericValue(value) Then
             Dim dbl As Double = Convert.ToDouble(value, CultureInfo.InvariantCulture)
             If Not Double.IsNaN(dbl) AndAlso Not Double.IsInfinity(dbl) Then
-                Dim s As String = dbl.ToString("R", CultureInfo.InvariantCulture)
-                shownLength = Math.Min(s.Length, 15)
-                Return New S.Cell() With {.CellValue = New S.CellValue(s), .DataType = S.CellValues.Number}
+                ' Not named "s": VB is case-insensitive and a local "s" would hide the S (Spreadsheet) alias.
+                Dim numText As String = dbl.ToString("R", CultureInfo.InvariantCulture)
+                shownLength = Math.Min(numText.Length, 15)
+                Return New S.Cell() With {.CellValue = New S.CellValue(numText), .DataType = S.CellValues.Number}
             End If
         End If
 

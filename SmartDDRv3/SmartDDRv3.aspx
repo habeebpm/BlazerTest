@@ -433,9 +433,6 @@
         .content { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px 16px; }
         .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
         .grid-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-        .card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-        .card-head h3 { font-size: 15px; color: var(--brand-900); }
-        .hint { font-size: 12px; color: var(--muted); }
         .grid-scroll { flex: 1; min-height: 0; overflow: auto; }
 
         /* ================================================================
