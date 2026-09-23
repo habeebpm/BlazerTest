@@ -60,6 +60,7 @@ import claude_advisor
 import executor
 import market_intel
 import mt5_gateway as gw
+import xtr_logic
 from config import AdvisorConfig
 
 log = logging.getLogger("backtest")
@@ -70,6 +71,8 @@ TIMEFRAME_DURATIONS = {
     "H1": pd.Timedelta(hours=1), "H4": pd.Timedelta(hours=4),
     "D1": pd.Timedelta(days=1), "W1": pd.Timedelta(weeks=1),
 }
+
+AUX_WARMUP_BARS = 5   # D1/W1 history needed before the first evaluated bar
 
 TRADE_FIELDS = ["entry_time", "exit_time", "direction", "lots", "entry_price",
                 "exit_price", "sl", "tp", "exit_reason", "pnl_dollars"]
@@ -114,6 +117,7 @@ class ClosedTrade:
     tp: float | None
     exit_reason: str
     pnl_dollars: float
+    ticket: int = 0
 
 
 class HistoricalGateway:
@@ -158,11 +162,15 @@ class HistoricalGateway:
         self.primary_timeframe = primary_timeframe
         min_start_time = None
         for tf, df in self.bars.items():
-            if len(df) <= warmup_bars:
+            need = min(warmup_bars, AUX_WARMUP_BARS) if tf in ("D1", "W1") else warmup_bars
+            if len(df) <= need:
                 return False
-            candidate = df["time"].iloc[warmup_bars]
+            candidate = df["time"].iloc[need]
             if min_start_time is None or candidate > min_start_time:
                 min_start_time = candidate
+        # D1/W1 only ever feed market_intel.daily_weekly_levels() (the last
+        # 2 closed bars), so demanding `warmup_bars` of them (300 weeks = ~6
+        # years) would refuse any short CSV or --from-mt5 range for no reason.
         primary_times = self.bars[primary_timeframe]["time"]
         idx = int(primary_times.searchsorted(min_start_time, side="left"))
         if idx >= len(primary_times):
@@ -285,7 +293,8 @@ class HistoricalGateway:
         as it closes, before the next evaluation), so this is exactly the
         information a live run would have had at that same point in time too.
         """
-        out = [{"direction": t.direction, "pnl_dollars": t.pnl_dollars} for t in self.closed_trades]
+        out = [{"direction": t.direction, "pnl_dollars": t.pnl_dollars, "ticket": t.ticket,
+                "time": t.exit_time} for t in self.closed_trades]
         out.reverse()  # closed_trades is oldest-first; recent_closed_trades() is newest-first
         return out[:count]
 
@@ -356,12 +365,29 @@ class HistoricalGateway:
             raise ValueError(
                 f"backtest.py has no simulation for exit_style={cfg.exit_style!r} yet - only "
                 f"'sl_to_tp1' and 'fixed_tp' are supported here.")
+        bar_open = float(bar["open"])
+        spread = self.spec.point * self.spread_points
         still_open = []
         for pos in self.sim_positions:
-            exit_price, exit_reason = manage_one(cfg, pos, high, low, min_stop_dist)
+            # Bars are bid prices. A sell is closed at the ASK, so its stop,
+            # lock and trail fire on the ask-side bar (bid + spread) - exactly
+            # like MT5 - rather than 25 points late on the bid.
+            if pos.direction == "sell":
+                h, l, o = high + spread, low + spread, bar_open + spread
+            else:
+                h, l, o = high, low, bar_open
+            stop_before = pos.sl
+            exit_price, exit_reason = manage_one(cfg, pos, h, l, min_stop_dist)
             if exit_price is None:
                 still_open.append(pos)
                 continue
+            # A bar that OPENS through the stop (daily break, weekend, news
+            # gap) fills at that worse open, not at the stop price.
+            if exit_reason in ("sl", "trail"):
+                if pos.direction == "buy" and o < stop_before:
+                    exit_price = o
+                elif pos.direction == "sell" and o > stop_before:
+                    exit_price = o
             self._close_position(pos, exit_price, exit_reason, self.current_time)
         self.sim_positions = still_open
 
@@ -476,7 +502,7 @@ class HistoricalGateway:
         self.closed_trades.append(ClosedTrade(
             entry_time=pos.entry_time, exit_time=exit_time, direction=pos.direction, lots=pos.lots,
             entry_price=pos.entry_price, exit_price=exit_price, sl=pos.sl, tp=pos.tp,
-            exit_reason=reason, pnl_dollars=round(pnl, 2),
+            exit_reason=reason, pnl_dollars=round(pnl, 2), ticket=pos.ticket,
         ))
 
 
@@ -593,44 +619,20 @@ class BacktestDayState:
         return ""
 
 
-def run_backtest(gateway: HistoricalGateway, cfg: AdvisorConfig, client, mechanical: bool) -> None:
-    day_trades = {}  # date -> count, so max_trades_per_day applies per simulated day too
-    day_state = BacktestDayState()
-    evaluated = 0
-    while True:
-        gateway.manage_positions(cfg)
-        try:
-            features = market_intel.build_feature_snapshot(gateway, cfg)
-        except RuntimeError:
-            # Not enough closed history yet for some timeframe at this point
-            # (shouldn't happen after reset()'s warmup, but degrade safely).
-            if not gateway.advance():
-                break
-            continue
+def run_backtest(gateway: HistoricalGateway, cfg: AdvisorConfig, client, mechanical: bool) -> dict:
+    """Single-variant run - the same loop as run_backtest_compare() with one
+    entry, so both paths share one implementation (XTR gate included)."""
+    return run_backtest_compare({"run": gateway}, {"run": cfg}, client, mechanical)
 
-        verdict = mechanical_verdict(features) if mechanical else claude_advisor.get_verdict(
-            client, cfg, features)
-        evaluated += 1
 
-        day = gateway.current_time.date()
-        trades_today = day_trades.get(day, 0)
-        block_reason = day_state.block_reason(gateway, cfg)
-        decision = executor.execute(gateway, cfg, verdict, gateway.spec, trades_today, block_reason,
-                                    day_start_equity=day_state.start_equity)
-        if decision.executed:
-            day_trades[day] = trades_today + 1
-
-        if evaluated % 200 == 0:
-            log.info("Evaluated %d bars, %d trades closed so far (%s)",
-                     evaluated, len(gateway.closed_trades), gateway.current_time)
-
-        if not gateway.advance():
-            break
-
-    # The final loop iteration already ran manage_positions() against the
-    # last bar before breaking - do NOT call it again here, the cursor is
-    # now one past the end (that's what "no more bars" means).
-    gateway.close_all_at_market()
+def _xtr_reading(gateway: HistoricalGateway, cfg: AdvisorConfig):
+    """xtr_logic.assess() on the replay (closed bars only) - None when the
+    M5/H1 history isn't loaded or is still too short, mirroring main.
+    xtr_assessment(): a missing reading skips the gate, never blocks."""
+    try:
+        return xtr_logic.assess(gateway, cfg.symbol, cfg.xtr_bars)
+    except (KeyError, RuntimeError, ValueError, IndexError):
+        return None
 
 
 def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -> None:
@@ -656,6 +658,11 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
     shared_cfg = cfgs[styles[0]]
     day_trades = {s: {} for s in styles}
     day_states = {s: BacktestDayState() for s in styles}
+    # Per-variant XTR stand-down memory (sec. 8), in memory only - each
+    # variant's own closed trades teach it, exactly like the live state file.
+    xtr_states = {s: xtr_logic.XtrStanddown(None) for s in styles}
+    xtr_blocks = {s: 0 for s in styles}
+    xtr_on = any(cfgs[s].xtr_gate != "off" for s in styles)
     evaluated = 0
     while True:
         for s in styles:
@@ -667,6 +674,8 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
                 break
             continue
 
+        xtr_a = _xtr_reading(primary_gw, shared_cfg) if xtr_on else None
+        features["xtr"] = xtr_logic.snapshot_context(xtr_a)
         verdict = mechanical_verdict(features) if mechanical else claude_advisor.get_verdict(
             client, shared_cfg, features)
         evaluated += 1
@@ -676,10 +685,32 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
             day = g.current_time.date()
             trades_today = day_trades[s].get(day, 0)
             block_reason = day_states[s].block_reason(g, cfg)
-            decision = executor.execute(g, cfg, verdict, g.spec, trades_today, block_reason,
-                                        day_start_equity=day_states[s].start_equity)
+            # Same order as main.run_once(): learn from closed trades, lift a
+            # due stand-down, grade Claude's direction, then execute() -
+            # which only ever REJECTS on xtr.block_reason (lot/SL/TP untouched).
+            xtr_decision = None
+            if xtr_a is not None and cfg.xtr_gate != "off" and verdict.direction in ("buy", "sell"):
+                st = xtr_states[s]
+                st.update_from_closed(g.recent_closed_trades(cfg.symbol, cfg.magic, count=50))
+                st.release_if_due(xtr_a)
+                xtr_decision = xtr_logic.evaluate(verdict.direction, xtr_a, cfg, st)
+            executor.set_log_clock(g.now)
+            try:
+                decision = executor.execute(g, cfg, verdict, g.spec, trades_today, block_reason,
+                                            day_start_equity=day_states[s].start_equity,
+                                            xtr=xtr_decision)
+            finally:
+                executor.set_log_clock(None)
+            # Counted only when XTR was the deciding reject (every other gate
+            # already passed) - not every non-tradeable bar it also disliked.
+            if xtr_decision is not None and xtr_decision.block_reason \
+                    and decision.reject_reason == xtr_decision.block_reason:
+                xtr_blocks[s] += 1
             if decision.executed:
                 day_trades[s][day] = trades_today + 1
+                if xtr_decision is not None and decision.plan:
+                    xtr_states[s].record_entry(decision.ticket, xtr_decision,
+                                               decision.plan.entry_price, xtr_a)
 
         if evaluated % 200 == 0:
             log.info("Evaluated %d bars (%s) - closed trades: %s", evaluated, primary_gw.current_time,
@@ -690,14 +721,17 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
 
     for s in styles:
         gateways[s].close_all_at_market()
+    return {"evaluated": evaluated, "xtr_blocks": xtr_blocks}
 
 
-def summarize(trades: list) -> dict:
+def summarize(trades: list, starting_equity: float = 0.0) -> dict:
     if not trades:
         return {"total_trades": 0}
     wins = [t for t in trades if t.pnl_dollars > 0]
     losses = [t for t in trades if t.pnl_dollars <= 0]
     net = sum(t.pnl_dollars for t in trades)
+    gross_win = sum(t.pnl_dollars for t in wins)
+    gross_loss = -sum(t.pnl_dollars for t in losses)
     equity, peak, max_dd = 0.0, 0.0, 0.0
     for t in trades:
         equity += t.pnl_dollars
@@ -711,6 +745,10 @@ def summarize(trades: list) -> dict:
         "avg_win_dollars": round(sum(t.pnl_dollars for t in wins) / len(wins), 2) if wins else 0.0,
         "avg_loss_dollars": round(sum(t.pnl_dollars for t in losses) / len(losses), 2) if losses else 0.0,
         "max_drawdown_dollars": round(max_dd, 2),
+        "profit_factor": (round(gross_win / gross_loss, 2) if gross_loss > 0 else None),
+        "expectancy_dollars": round(net / len(trades), 2),
+        **({"return_pct": round(100 * net / starting_equity, 2),
+            "max_drawdown_pct": round(100 * max_dd / starting_equity, 2)} if starting_equity > 0 else {}),
     }
 
 
@@ -734,11 +772,23 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--trend-csv", dest="trend_csv", help="trend-timeframe (H4) CSV")
     parser.add_argument("--daily-csv", dest="daily_csv", help="D1 CSV")
     parser.add_argument("--weekly-csv", dest="weekly_csv", help="W1 CSV")
+    parser.add_argument("--m5-csv", dest="m5_csv", help="M5 CSV (XTR alignment gate)")
+    parser.add_argument("--h1-csv", dest="h1_csv", help="H1 CSV (XTR alignment gate)")
+    parser.add_argument("--xtr-gate", choices=["off", "block_opposed", "require_alignment"],
+                        dest="xtr_gate",
+                        help="XTR entry filter to replay (needs M5+H1 history: --m5-csv/--h1-csv or "
+                             "--from-mt5). Default: config.py's xtr_gate when that history is "
+                             "loaded, otherwise off. Entry filter only - lot, SL, TP unchanged.")
+    parser.add_argument("--compare-xtr", action="store_true", dest="compare_xtr",
+                        help="run the XTR gate OFF and ON side by side on identical data/verdicts "
+                             "(combines with --compare for all four variants)")
     parser.add_argument("--from-mt5", action="store_true", dest="from_mt5",
                         help="pull history from a running MT5 terminal instead of CSVs")
     parser.add_argument("--start", help="range start (with --from-mt5), e.g. 2026-01-01")
     parser.add_argument("--end", help="range end (with --from-mt5)")
     parser.add_argument("--symbol", default="XAUUSD")
+    parser.add_argument("--spread-points", type=int, default=25, dest="spread_points",
+                        help="simulated spread in points for CSV runs (XAUUSD 0.01 point: 25 = $0.25)")
     parser.add_argument("--mechanical", action="store_true",
                         help="use a free non-LLM stand-in instead of the real Claude API - tests the "
                              "engine only, NOT a backtest of Claude's actual judgment")
@@ -795,6 +845,9 @@ def main(argv: list | None = None) -> int:
             "D1": gw.get_bars_range(args.symbol, "D1", args.start, args.end),
             "W1": gw.get_bars_range(args.symbol, "W1", args.start, args.end),
         }
+        if args.xtr_gate != "off" or args.compare_xtr:
+            for tf in ("M5", "H1"):
+                bars[tf] = gw.get_bars_range(args.symbol, tf, args.start, args.end)
         spec = gw.symbol_spec(args.symbol)
     else:
         required = [args.bars_csv, args.trend_csv, args.daily_csv, args.weekly_csv]
@@ -807,19 +860,38 @@ def main(argv: list | None = None) -> int:
             "D1": load_bars_csv(args.daily_csv),
             "W1": load_bars_csv(args.weekly_csv),
         }
+        if args.m5_csv and args.h1_csv:
+            bars["M5"] = load_bars_csv(args.m5_csv)
+            bars["H1"] = load_bars_csv(args.h1_csv)
         spec = gw.SymbolSpec(name=args.symbol, point=0.01, digits=2, stops_level_points=0,
                              spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                              tick_value=1.0, tick_size=0.01)
 
-    styles = ["sl_to_tp1", "fixed_tp"] if args.compare else [args.exit_style]
+    have_xtr_bars = "M5" in bars and "H1" in bars
+    xtr_mode = args.xtr_gate or (base_cfg.xtr_gate if have_xtr_bars else "off")
+    if (xtr_mode != "off" or args.compare_xtr) and not have_xtr_bars:
+        log.error("The XTR gate needs M5 and H1 history - pass --m5-csv and --h1-csv (or --from-mt5).")
+        return 1
+    if args.compare_xtr and xtr_mode == "off":
+        xtr_mode = base_cfg.xtr_gate if base_cfg.xtr_gate != "off" else "block_opposed"
+    exit_styles = ["sl_to_tp1", "fixed_tp"] if args.compare else [args.exit_style]
+    xtr_modes = ["off", xtr_mode] if args.compare_xtr else [xtr_mode]
+    log.info("XTR alignment gate: %s (entry filter only - lot, SL and TP unchanged)",
+             " vs ".join(xtr_modes))
+    styles = []
     gateways, cfgs = {}, {}
-    for style in styles:
-        gateways[style] = HistoricalGateway(args.symbol, bars, spec)
-        if not gateways[style].reset(base_cfg.primary_timeframe, base_cfg.bars_per_timeframe):
-            log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
-                      base_cfg.bars_per_timeframe)
-            return 1
-        cfgs[style] = dataclasses.replace(base_cfg, exit_style=style, log_dir=f"logs/backtest/{style}")
+    for style in exit_styles:
+        for mode in xtr_modes:
+            name = style if not args.compare_xtr else f"{style}_xtr-{mode}"
+            styles.append(name)
+            gateways[name] = HistoricalGateway(args.symbol, bars, spec,
+                                               spread_points=args.spread_points)
+            if not gateways[name].reset(base_cfg.primary_timeframe, base_cfg.bars_per_timeframe):
+                log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
+                          base_cfg.bars_per_timeframe)
+                return 1
+            cfgs[name] = dataclasses.replace(base_cfg, exit_style=style, xtr_gate=mode,
+                                             log_dir=f"logs/backtest/{name}")
 
     n_calls = estimate_call_count(gateways[styles[0]])
     if args.mechanical:
@@ -836,10 +908,11 @@ def main(argv: list | None = None) -> int:
                 return 0
         client = claude_advisor.build_client()
 
-    if args.compare:
-        run_backtest_compare(gateways, cfgs, client, args.mechanical)
+    if len(styles) > 1:
+        stats = run_backtest_compare(gateways, cfgs, client, args.mechanical)
         for style in styles:
-            summary = summarize(gateways[style].closed_trades)
+            summary = summarize(gateways[style].closed_trades, gateways[style].starting_equity)
+            summary["xtr_blocked_entries"] = stats["xtr_blocks"][style]
             # os.path.splitext rather than str.replace(".csv", ...) - the
             # latter is a no-op (and silently collides both styles onto the
             # same file) whenever --out doesn't contain the literal
@@ -851,8 +924,9 @@ def main(argv: list | None = None) -> int:
             log.info("[%s] Trade log written to %s", style, out_path)
     else:
         style = styles[0]
-        run_backtest(gateways[style], cfgs[style], client, args.mechanical)
-        summary = summarize(gateways[style].closed_trades)
+        stats = run_backtest(gateways[style], cfgs[style], client, args.mechanical)
+        summary = summarize(gateways[style].closed_trades, gateways[style].starting_equity)
+        summary["xtr_blocked_entries"] = stats["xtr_blocks"]["run"]
         write_trades_csv(gateways[style].closed_trades, args.out)
         log.info("Backtest complete (%s) - %s", style, summary)
         log.info("Trade log written to %s", args.out)

@@ -130,7 +130,7 @@ def log_decision(cfg: AdvisorConfig, verdict: ConfluenceVerdict, executed: bool,
         return f"{l.direction}/pass={l.passes}/confirmed={l.confirmed}"
 
     row = {
-        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "time": _log_time(),
         "source": SOURCE_TAG,
         "direction": verdict.direction,
         "confluence_count": verdict.confluence_count,
@@ -148,12 +148,28 @@ def log_decision(cfg: AdvisorConfig, verdict: ConfluenceVerdict, executed: bool,
 def log_trade(cfg: AdvisorConfig, direction: str, lots: float, entry_price: float,
               sl: float, tp: float, mode: str, retcode, ticket) -> None:
     row = {
-        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "time": _log_time(),
         "source": SOURCE_TAG,
         "direction": direction, "lots": lots, "entry_price": entry_price,
         "sl": sl, "tp": tp, "mode": mode, "retcode": retcode, "ticket": ticket,
     }
     _append_row(_csv_path(cfg, "trades.csv"), TRADE_FIELDS, row)
+
+
+# Clock for the decisions/orders CSVs: wall clock live; backtest.py points
+# it at the replay clock so a replayed decision is stamped with ITS bar time.
+_log_clock = None
+
+
+def set_log_clock(clock) -> None:
+    """clock: zero-arg callable returning a tz-aware datetime, or None."""
+    global _log_clock
+    _log_clock = clock
+
+
+def _log_time() -> str:
+    when = _log_clock() if _log_clock is not None else datetime.now(timezone.utc)
+    return when.isoformat(timespec="seconds")
 
 
 def in_news_blackout(cfg: AdvisorConfig, now: datetime | None = None) -> str:

@@ -624,6 +624,12 @@ python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
 python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
     --daily-csv d1.csv --weekly-csv w1.csv --mechanical --compare
 
+# Free: XTR alignment gate OFF vs ON on identical data and verdicts
+# (needs M5 + H1 history; add --compare for all four variants)
+python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
+    --daily-csv d1.csv --weekly-csv w1.csv --m5-csv m5.csv --h1-csv h1.csv \
+    --mechanical --compare-xtr --xtr-gate block_opposed
+
 # Real backtest - calls the real Claude API, costs money, asks first
 python backtest.py --bars-csv m15.csv --trend-csv h4.csv \
     --daily-csv d1.csv --weekly-csv w1.csv
@@ -634,12 +640,18 @@ python backtest.py --from-mt5 --start 2026-01-01 --end 2026-04-01
 
 CSV format: columns `time,open,high,low,close,volume`, one row per CLOSED
 historical bar, ascending. Export these from MT5 (or any data source) for
-the primary timeframe (M15), the trend timeframe (H4), D1, and W1.
+the primary timeframe (M15), the trend timeframe (H4), D1, and W1 - plus M5
+and H1 to replay the XTR alignment gate (`--xtr-gate`; with them loaded the
+gate defaults to `config.py`'s `xtr_gate`, without them it is off). D1/W1
+only need a few bars before the start (they feed the previous day/week
+levels), not 300. `--spread-points` sets the simulated spread (default 25 =
+$0.25).
 
 `--max-daily-loss`/`--daily-target`/`--risk-percent`/`--sl-mode` simulate
 the matching enhancements from the table above (daily loss breaker, daily
-target, equity-scaled lot sizing, ATR-adaptive SL) during the replay - off
-by default, same as live trading. `news_blackout_windows` has no CLI flag
+target, equity-scaled lot sizing, ATR-adaptive SL) during the replay - by
+default the backtest uses `config.py`'s live defaults (2% risk, 10% daily
+cap), so these flags are only needed to try something else. `news_blackout_windows` has no CLI flag
 here but IS enforced during a backtest either way (set it in `config.py` -
 `executor.gate()` checks it against the simulated replay clock, not the
 real date the backtest happens to be run on). `dxy_symbol`/
@@ -710,6 +722,13 @@ risk-sized lots and the 10% daily cap/budget - so dollar P&L scales with
 equity and won't match the table; pass `--risk-percent 0 --max-daily-loss
 0` to reproduce the old conditions.*
 
+### Real-data results (XAUUSD, Aug-Sep 2026)
+
+See [`BACKTEST_REPORT.md`](BACKTEST_REPORT.md): 7 weeks of real M5-W1
+history, both exit styles x three XTR gate modes, cost stress, Monte Carlo
+drawdown and a per-trade XTR attribution - with the mechanical stand-in, so
+it measures the rules, not Claude's judgment.
+
 ### Honest limitations of the backtest itself
 
 - **No `breakeven_r_decay` simulation.** `backtest.py` only simulates
@@ -723,4 +742,7 @@ equity and won't match the table; pass `--risk-percent 0 --max-daily-loss
 - **Synthetic spread**, not the real historical spread at each moment -
   `--from-mt5` still uses a configured constant, not point-in-time spread
   history (MT5 doesn't expose that for arbitrary past dates either).
-- **No slippage modeling** - fills happen at exactly the next bar's open.
+- **Fills:** entries at the next bar's open (plus spread). A sell's stop,
+  lock and trail fire on the ask (bid bar + spread) like MT5, and a bar that
+  opens through a stop fills at that worse open (gaps). No extra latency
+  slippage beyond that.

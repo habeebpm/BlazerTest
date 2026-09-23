@@ -33,6 +33,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import logging
 import os
@@ -1621,6 +1622,27 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
                 len(g1.closed_trades) == 1 and g1.closed_trades[0].exit_reason == "trail"
                 and abs(g1.closed_trades[0].exit_price - 2354.0) < 1e-9, g1.closed_trades)
 
+    # Realism: a bar that OPENS through the stop fills at that open (gap),
+    # and a sell's stop fires on the ask (bid bar + 25-point spread).
+    gg = make_gateway(spec)
+    gg.sim_positions = [backtest.SimPosition(ticket=9, direction="buy", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2344.0, tp=0.0)]
+    set_bar(gg, 2341.0, 2342.0, 2340.0, 2341.5)
+    gg.manage_positions(cfg)
+    ok &= check("a gap through a buy's stop fills at the bar open, not the stop",
+                len(gg.closed_trades) == 1 and abs(gg.closed_trades[0].exit_price - 2341.0) < 1e-9,
+                gg.closed_trades)
+    gs = make_gateway(spec)
+    gs.sim_positions = [backtest.SimPosition(ticket=10, direction="sell", lots=0.01,
+                         entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                         entry_price=2350.0, sl=2356.0, tp=0.0)]
+    set_bar(gs, 2350.0, 2355.8, 2349.8, 2355.0)   # bid high 2355.80 -> ask high 2356.05
+    gs.manage_positions(cfg)
+    ok &= check("a sell's stop fires on the ask side of the bar (bid high + spread)",
+                len(gs.closed_trades) == 1 and gs.closed_trades[0].exit_reason == "sl"
+                and abs(gs.closed_trades[0].exit_price - 2356.0) < 1e-9, gs.closed_trades)
+
     # A stop-out before ever reaching tp1_dist closes at the original SL.
     g2 = make_gateway(spec)
     g2.sim_positions = [backtest.SimPosition(ticket=2, direction="sell", lots=0.01,
@@ -1767,6 +1789,28 @@ def test_backtest_end_to_end_mechanical() -> bool:
         rows = list(csv.DictReader(f))
     ok &= check("the trade log CSV has one row per closed trade",
                 len(rows) == len(gateway.closed_trades), len(rows))
+
+    # XTR gate replay: short D1/W1 history is enough (they only feed the last
+    # 2 closed daily/weekly levels), and the gate is an entry filter only -
+    # every trade in the gated variant keeps the exact same SL distance.
+    m5 = make_series("2025-12-28", 1800, "5min", 0.002, 0.08, 2349.0)
+    h1 = make_series("2025-12-01", 900, "1h", 0.01, 0.3, 2345.0)
+    bars = {"M15": m15, "H4": h4, "D1": d1.tail(8), "W1": w1.tail(8), "M5": m5, "H1": h1}
+    gws, cfgs = {}, {}
+    for mode in ("off", "block_opposed"):
+        gws[mode] = backtest.HistoricalGateway("XAUUSD", bars, _flat_spec())
+        ok &= check(f"reset() warms up with only 8 D1/W1 bars ({mode})",
+                    gws[mode].reset(cfg.primary_timeframe, cfg.bars_per_timeframe))
+        cfgs[mode] = dataclasses.replace(cfg, xtr_gate=mode, log_dir=f"/tmp/claudesmc_bt_xtr_{mode}")
+    stats = backtest.run_backtest_compare(gws, cfgs, client=None, mechanical=True)
+    ok &= check("XTR compare run reports evaluated bars and per-variant block counts",
+                stats["evaluated"] > 0 and stats["xtr_blocks"]["off"] == 0, stats)
+    dists = {mode: {round(abs(t.entry_price - t.sl), 4) for t in gws[mode].closed_trades} for mode in gws}
+    ok &= check("XTR never changes the SL distance of a trade it lets through",
+                dists["block_opposed"] <= dists["off"] or not gws["block_opposed"].closed_trades, dists)
+    rct = gws["off"].recent_closed_trades("XAUUSD", 0, 5)
+    ok &= check("recent_closed_trades() carries ticket + time (XTR stand-down joins on them)",
+                all(r["ticket"] and r["time"] is not None for r in rct), rct[:2])
 
     return ok
 
