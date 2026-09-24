@@ -4043,6 +4043,75 @@ def test_keys_file() -> bool:
     return ok
 
 
+def test_three_legs_to_claude_to_trade() -> bool:
+    print("\n=== 41. 3/3 legs -> Claude asked -> 'full' executed (live), anything less not ===")
+    ok = True
+    spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+                         volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+
+    def feats(ema20, ema50, macd, sig, rsi, hist, hist_prev, adx, pdi, mdi):
+        return {"trend_bias": {"close": 2400.0, "ema200": 2300.0},
+                "primary_indicators": {"ema20": ema20, "ema50": ema50, "atr14": 4.0, "macd_line": macd,
+                                       "macd_signal": sig, "rsi14": rsi, "macd_hist": hist,
+                                       "macd_hist_prev": hist_prev, "adx14": adx, "plus_di": pdi,
+                                       "minus_di": mdi}}
+    three_buy = feats(2395, 2390, 1.0, 0.5, 60, 0.5, 0.3, 30, 30, 15)          # trend, momentum, strength: buy
+    one_leg = feats(2395, 2390, -1.0, 0.5, 45, -0.5, -0.3, 15, 20, 18)         # trend only
+    unconfirmed = feats(2390.5, 2390, 1.0, 0.5, 52, 0.2, 0.3, 23, 22, 20)      # 3 buy legs, none confirmed
+    legs = tactics.vote_legs(three_buy)
+    ok &= check("the sample bar really has all 3 legs pointing buy, confirmed",
+                all(d == "buy" and c for d, c in legs.values()), legs)
+
+    originals = (main_mod.gw, main_mod.market_intel.build_feature_snapshot, main_mod.claude_advisor.get_verdict,
+                 main_mod.news_check.check_before_trade, main_mod.telegram_alert.send_alert,
+                 main_mod.claude_paused)
+
+    def cycle(features, answer):
+        asked = []
+        fake = FakeRunOnceGateway(bid=2350.0, ask=2350.2)
+        main_mod.gw = fake
+        main_mod.market_intel.build_feature_snapshot = lambda g, c: dict(features)
+
+        def claude(client, c, f):
+            asked.append(f)
+            return answer
+        main_mod.claude_advisor.get_verdict = claude
+        cfg = AdvisorConfig(dry_run=False, use_risk_percent=False, log_dir="/tmp/claudesmc_selftest_logs",
+                            claude_pause_filename="", send_performance_digest=False)   # = start.bat --live
+        day = main_mod.DayRoll()
+        main_mod.run_once(object(), cfg, spec, day)
+        return asked, fake.orders_sent, day.trades_today
+
+    try:
+        main_mod.news_check.check_before_trade = lambda *a, **kw: news_check.NewsCheckResult(ran=True)
+        main_mod.telegram_alert.send_alert = lambda *a, **kw: True
+        main_mod.claude_paused = lambda c, gateway=None: False
+
+        asked, orders, n = cycle(three_buy, make_verdict("buy", 3, "full"))
+        ok &= check("3/3 buy legs: Claude is asked once, with the bar's indicators; its 'full' BUY is sent "
+                    "to MT5 as a live order and counted",
+                    len(asked) == 1 and asked[0]["primary_indicators"]["adx14"] == 30
+                    and len(orders) == 1 and orders[0][0] == "buy" and n == 1, (len(asked), orders))
+        asked, orders, n = cycle(three_buy, make_verdict("sell", 3, "full"))
+        ok &= check("Claude's direction is the one traded (a 'full' SELL -> a sell order)",
+                    len(orders) == 1 and orders[0][0] == "sell", orders)
+        asked, orders, _ = cycle(three_buy, make_verdict("buy", 3, "partial"))
+        ok &= check("3/3 legs but Claude says 'partial': asked, NO order", len(asked) == 1 and orders == [])
+        asked, orders, _ = cycle(three_buy, make_verdict("none", 0, "none"))
+        ok &= check("3/3 legs but Claude says no trade: asked, NO order", len(asked) == 1 and orders == [])
+        asked, orders, _ = cycle(one_leg, make_verdict("buy", 3, "full"))
+        ok &= check("only 1 leg agrees: Claude is NOT asked (no trade possible), no order",
+                    asked == [] and orders == [])
+        asked, orders, _ = cycle(unconfirmed, make_verdict("buy", 3, "full"))
+        ok &= check("3 legs agree but none confirmed ('full' needs one): Claude NOT asked, no order",
+                    asked == [] and orders == [])
+    finally:
+        (main_mod.gw, main_mod.market_intel.build_feature_snapshot, main_mod.claude_advisor.get_verdict,
+         main_mod.news_check.check_before_trade, main_mod.telegram_alert.send_alert,
+         main_mod.claude_paused) = originals
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -4086,6 +4155,7 @@ def main() -> int:
         test_margin_guard(),
         test_claude_prescreen(),
         test_keys_file(),
+        test_three_legs_to_claude_to_trade(),
     ]
     print()
     if all(results):
