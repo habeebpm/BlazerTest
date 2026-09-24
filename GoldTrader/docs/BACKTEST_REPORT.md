@@ -38,6 +38,7 @@ no history of the channel's signals). 1R = the $6 stop.
 | Entry hours | Trades / week | Win % | Avg R | Return | Max DD | Sep-Mar (fresh) | Mar-Jul | Aug-Sep | Chance of luck | Claude calls / week |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **06:00-23:00 Oman, Mon-Fri** (live) | 8.3 | 40.5 | **-0.07** | **-58%** | **62%** | -0.07 | -0.04 | -0.16 | 86% | 155 (about $13) |
+| 16:00-23:00 Oman, Mon-Fri (the positive part alone) | 2.9 | 41.7 | +0.07 | +8% | 27% | +0.11 | +0.11 | -0.20 | 30% | - |
 | 08:00-16:45 + 18:15-20:00 New York (before) | 4.3 | 43.7 | +0.14 | +57% | 27% | +0.17 | +0.16 | +0.04 | 9% | 92 (about $8) |
 
 At double spread: Oman -0.13R, -75%, drawdown 75%; New York +0.11R, +34%.
