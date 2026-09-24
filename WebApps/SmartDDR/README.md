@@ -1,7 +1,7 @@
 # SmartDDR — DDR Developer page (modernized)
 
-This folder contains a modernized rewrite of the `DDR_Developer.aspx` /
-`DDR_Developer.aspx.vb` WebForms page (part of the larger "SmarTagsASP"
+This folder contains a modernized rewrite of the `DDR_DeveloperV3.aspx` /
+`DDR_DeveloperV3.aspx.vb` WebForms page (part of the larger "SmarTagsASP"
 solution). It's unrelated to the trading EA in the rest of this repo — it
 was added here at the user's request as a standalone module.
 

@@ -1,4 +1,4 @@
-<%@ Page Language="vb" AutoEventWireup="false" CodeBehind="DDR_Developer.aspx.vb" Inherits="SmarTagsASP.DDR_Developer" %>
+<%@ Page Language="vb" AutoEventWireup="false" CodeBehind="DDR_DeveloperV3.aspx.vb" Inherits="SmarTagsASP.DDR_DeveloperV3" %>
 <!DOCTYPE html>
 
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -1672,7 +1672,7 @@ dialog.confirm-dialog::backdrop{
                                     <ItemTemplate>
                                         <asp:HyperLink ID="lnkCTD" runat="server"
                                             Text='<%# Eval("CTD_ID") %>'
-                                            NavigateUrl='<%# "DDR_Developer.aspx?CTD_ID=" & Eval("CTD_ID") %>'>
+                                            NavigateUrl='<%# "DDR_DeveloperV3.aspx?CTD_ID=" & Eval("CTD_ID") %>'>
                                         </asp:HyperLink>
                                     </ItemTemplate>
                                 </asp:TemplateField>

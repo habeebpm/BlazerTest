@@ -5,7 +5,7 @@ Imports System.Text
 Imports System.Web
 Imports System.Web.UI.WebControls
 
-Public Class DDR_Developer
+Public Class DDR_DeveloperV3
     Inherits System.Web.UI.Page
 
 #Region "Page lifecycle"
