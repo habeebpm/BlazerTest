@@ -85,7 +85,7 @@ a{ color:inherit; }
     background:linear-gradient(180deg,#1C3737,var(--primary-light));
     width:var(--sidebar-width);
     color:white;
-    padding:20px 16px;
+    padding:16px 14px;
     position:fixed;
     top:0;
     bottom:0;
@@ -97,7 +97,7 @@ a{ color:inherit; }
 
 .main{
     margin-left:var(--sidebar-width);
-    padding:24px;
+    padding:16px 20px 20px;
     min-height:100vh;
     width:calc(100% - var(--sidebar-width));
 }
@@ -141,6 +141,11 @@ a{ color:inherit; }
     .mobile-topbar{
         display:flex;
     }
+    .drawer{
+        left:4vw !important;
+        width:92vw !important;
+        max-height:80vh;
+    }
 }
 
 /* ==========================
@@ -149,8 +154,8 @@ a{ color:inherit; }
 
 .logo{
     text-align:center;
-    padding-bottom:16px;
-    margin-bottom:16px;
+    padding-bottom:12px;
+    margin-bottom:12px;
     border-bottom:1px solid rgba(255,255,255,.15);
 }
 
@@ -172,7 +177,7 @@ a{ color:inherit; }
 }
 
 .nav-section{
-    margin-bottom:20px;
+    margin-bottom:14px;
 }
 
 .nav-section-label{
@@ -296,8 +301,8 @@ a{ color:inherit; }
 .context-bar{
     background:var(--card);
     border-radius:var(--radius);
-    padding:14px 18px;
-    margin-bottom:16px;
+    padding:10px 16px;
+    margin-bottom:10px;
     border:1px solid var(--border);
     box-shadow:var(--shadow);
     display:flex;
@@ -322,6 +327,47 @@ a{ color:inherit; }
     margin-left:auto;
     display:flex;
     gap:8px;
+}
+
+/* ==========================
+   KPI SCORECARD
+========================== */
+
+.kpi-row{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:10px;
+    margin-bottom:12px;
+}
+
+.kpi-tile{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:12px 14px;
+    box-shadow:var(--shadow);
+}
+
+.kpi-label{
+    font-size:11px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    color:var(--text-light);
+    margin-bottom:4px;
+}
+
+.kpi-value{
+    font-size:22px;
+    font-weight:600;
+    color:var(--text);
+}
+
+.kpi-value.positive{ color:var(--success); }
+.kpi-value.negative{ color:var(--danger); }
+
+.match-flag{
+    font-size:15px;
 }
 
 /* ==========================
@@ -430,7 +476,7 @@ a{ color:inherit; }
     padding:10px;
     box-shadow:var(--shadow);
     overflow:auto;
-    margin-bottom:16px;
+    margin-bottom:12px;
 }
 
 .gridview{
@@ -521,8 +567,8 @@ a{ color:inherit; }
     background:var(--card);
     border:1px solid var(--border);
     border-radius:var(--radius);
-    padding:14px;
-    margin-bottom:14px;
+    padding:12px 14px;
+    margin-bottom:10px;
     box-shadow:var(--shadow);
 }
 
@@ -663,34 +709,46 @@ dialog.confirm-dialog::backdrop{
 }
 
 /* ==========================
-   PLIP / CTD DRAWER
+   PLIP / CTD / MULTIPLIER DRAWER (anchored popover)
 ========================== */
 
+/* Positioned via JS (positionDrawerNear) right under whichever button opened
+   it, rather than sliding in from the viewport edge - keeps the triggering
+   row/button in view alongside the drawer's own content. Falls back to a
+   fixed spot near the top of the main content when opened with no anchor
+   (e.g. the sidebar's global PLIP search). */
 .drawer{
     position:fixed;
-    top:0;
-    right:-100%;
-    width:min(560px,100%);
-    height:100vh;
+    top:80px;
+    left:50%;
+    width:min(1000px,92vw);
+    max-height:min(72vh,640px);
     background:var(--card);
-    box-shadow:-10px 0 30px rgba(0,0,0,.2);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    box-shadow:0 20px 50px rgba(0,0,0,.25);
     z-index:9999;
-    transition:right .3s ease;
     display:flex;
     flex-direction:column;
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
+    transition:opacity .15s ease;
+    overflow:hidden;
 }
 
 .drawer.open{
-    right:0;
+    opacity:1;
+    visibility:visible;
+    pointer-events:auto;
 }
 
 .drawer-overlay{
     position:fixed;
     inset:0;
-    background:rgba(15,23,42,.4);
+    background:transparent;
     display:none;
     z-index:9998;
-    backdrop-filter:blur(2px);
 }
 
 .drawer-overlay.show{
@@ -698,13 +756,13 @@ dialog.confirm-dialog::backdrop{
 }
 
 .drawer-header{
-    height:56px;
+    height:46px;
     background:linear-gradient(135deg,var(--primary),var(--primary-light));
     color:white;
     display:flex;
     align-items:center;
     justify-content:space-between;
-    padding:0 16px;
+    padding:0 14px;
     flex:0 0 auto;
 }
 
@@ -782,7 +840,39 @@ dialog.confirm-dialog::backdrop{
             document.querySelector(".sidebar").classList.toggle("open");
         }
 
-        function openDrawer(id, overlayId) {
+        // Positions a drawer directly under the element that opened it (falls
+        // back to a fixed spot near the top of the main content when there's
+        // no specific anchor, e.g. the sidebar's global PLIP search), then
+        // clamps it inside the viewport so it never runs off the right edge
+        // or bottom of the screen.
+        function positionDrawerNear(drawerId, anchorEl) {
+            var drawer = document.getElementById(drawerId);
+            if (!drawer) return;
+
+            if (!anchorEl) {
+                // No specific anchor this time (e.g. re-opening after picking
+                // a search result) - leave it where it already is rather than
+                // jumping it, unless it has never been positioned at all.
+                if (!drawer.style.top) {
+                    drawer.style.top = "80px";
+                    drawer.style.left = "50%";
+                    drawer.style.transform = "translateX(-50%)";
+                }
+                return;
+            }
+
+            var rect = anchorEl.getBoundingClientRect();
+            var width = drawer.offsetWidth || 600;
+            var left = Math.max(16, Math.min(rect.left, window.innerWidth - width - 16));
+            var top = Math.max(16, Math.min(rect.bottom + 8, window.innerHeight - 120));
+
+            drawer.style.transform = "none";
+            drawer.style.left = left + "px";
+            drawer.style.top = top + "px";
+        }
+
+        function openDrawer(id, overlayId, anchorEl) {
+            positionDrawerNear(id, anchorEl);
             document.getElementById(id).classList.add("open");
             document.getElementById(overlayId).classList.add("show");
         }
@@ -792,10 +882,12 @@ dialog.confirm-dialog::backdrop{
             document.getElementById(overlayId).classList.remove("show");
         }
 
-        function openPLIPDrawer() { openDrawer("plipDrawer", "drawerOverlay"); }
+        function openPLIPDrawer(anchorEl) { openDrawer("plipDrawer", "drawerOverlay", anchorEl); }
         function closePLIPDrawer() { closeDrawer("plipDrawer", "drawerOverlay"); }
-        function openCTDDrawer() { openDrawer("CTDDrawer", "drawerOverlay1"); }
+        function openCTDDrawer(anchorEl) { openDrawer("CTDDrawer", "drawerOverlay1", anchorEl); }
         function closeCTDDrawer() { closeDrawer("CTDDrawer", "drawerOverlay1"); }
+        function openMultiplierDrawer(anchorEl) { openDrawer("multiplierDrawer", "drawerOverlay2", anchorEl); }
+        function closeMultiplierDrawer() { closeDrawer("multiplierDrawer", "drawerOverlay2"); }
 
         function toggleRemarks(link) {
             var div = link.parentNode.querySelector("div");
@@ -958,6 +1050,11 @@ dialog.confirm-dialog::backdrop{
                             <Columns>
                                 <asp:BoundField DataField="CTD Hrs" HeaderText="CTD Hrs" SortExpression="CTD Hrs" />
                                 <asp:BoundField DataField="DDR Hrs" HeaderText="DDR Hrs" SortExpression="DDR Hrs" />
+                                <asp:TemplateField HeaderText="">
+                                    <ItemTemplate>
+                                        <asp:Label ID="lblMatchFlag" runat="server" CssClass="match-flag" />
+                                    </ItemTemplate>
+                                </asp:TemplateField>
                             </Columns>
                             <EmptyDataTemplate>
                                 <span class="field-hint">No CTD/DDR hours yet.</span>
@@ -985,7 +1082,7 @@ dialog.confirm-dialog::backdrop{
                     </asp:LinkButton>
                     <asp:LinkButton ID="Plip_Search" runat="server" CssClass="nav-item"
                         CausesValidation="False"
-                        OnClientClick="openPLIPDrawer(); return false;">
+                        OnClientClick="openPLIPDrawer(this); return false;">
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" /></svg></span>
                         <span>PLIP Search</span>
                     </asp:LinkButton>
@@ -1042,6 +1139,30 @@ dialog.confirm-dialog::backdrop{
                 <div class="context-nav">
                     <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev">&#8592;</asp:LinkButton>
                     <asp:LinkButton ID="btnCtdNext" runat="server" CssClass="circle-btn" ToolTip="Next CTD" OnClick="CTD_Next">&#8594;</asp:LinkButton>
+                </div>
+            </div>
+
+            <!-- KPI scorecard -->
+            <div class="kpi-row">
+                <div class="kpi-tile">
+                    <div class="kpi-label">CTD hours</div>
+                    <div class="kpi-value"><asp:Literal ID="litKpiCtdHours" runat="server" Text="0" /></div>
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">DDR hours</div>
+                    <div class="kpi-value"><asp:Literal ID="litKpiDdrHours" runat="server" Text="0" /></div>
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">Variance</div>
+                    <asp:Label ID="lblKpiVariance" runat="server" CssClass="kpi-value" Text="0" />
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">DDR line items</div>
+                    <div class="kpi-value"><asp:Literal ID="litKpiRowCount" runat="server" Text="0" /></div>
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">Match status</div>
+                    <asp:Label ID="lblKpiMatchStatus" runat="server" CssClass="kpi-value" Text="&#8212;" />
                 </div>
             </div>
 
@@ -1143,6 +1264,14 @@ dialog.confirm-dialog::backdrop{
                         CssClass="btn-primary"
                         OnClick="btnSaveAll_Click"
                         OnClientClick="return validateAllDdrRows();" />
+
+                    <asp:Button ID="btnAllocateHours"
+                        runat="server"
+                        Text="Allocate Hours"
+                        CssClass="btn-secondary"
+                        OnClick="btnAllocateHours_Click"
+                        CausesValidation="False"
+                        ToolTip="Evenly splits this CTD's total hours across all DDR rows; the first row absorbs any rounding remainder so the totals match exactly" />
                 </div>
             </div>
 
@@ -1312,6 +1441,13 @@ dialog.confirm-dialog::backdrop{
 
                         <asp:TemplateField HeaderText="Action">
                             <ItemTemplate>
+                                <asp:LinkButton ID="btnMultiplyRow"
+                                    runat="server"
+                                    Text="&times;N"
+                                    CssClass="btn-secondary"
+                                    ToolTip="Multiply this row"
+                                    OnClick="btnMultiplyRow_Click"
+                                    CausesValidation="False" />
                                 <asp:LinkButton ID="btnDelete"
                                     runat="server"
                                     Text="&#128465;"
@@ -1473,6 +1609,40 @@ dialog.confirm-dialog::backdrop{
     </div>
 
     <div id="drawerOverlay1" class="drawer-overlay" onclick="closeCTDDrawer()"></div>
+
+    <!-- DDR Multiplier Drawer -->
+    <div id="multiplierDrawer" class="drawer" role="dialog" aria-label="DDR multiplier">
+        <div class="drawer-header">
+            <h3>DDR Multiplier</h3>
+            <button type="button" class="drawer-close" onclick="closeMultiplierDrawer()" aria-label="Close">&#10006;</button>
+        </div>
+        <div class="drawer-body">
+            <asp:HiddenField ID="hfMultiplyRow" runat="server" />
+
+            <div class="search-group">
+                <label>Row being multiplied</label>
+                <asp:Literal ID="litMultiplyTarget" runat="server" />
+            </div>
+
+            <div class="search-group">
+                <label>Mode</label>
+                <asp:RadioButtonList ID="rblMultiplyMode" runat="server">
+                    <asp:ListItem Text="A - Copy this row N times; each copy gets the next DUM sequence number" Value="DUM" Selected="True" />
+                    <asp:ListItem Text="B - Copy this row N times, incrementing the trailing digits each time" Value="SEQ" />
+                </asp:RadioButtonList>
+            </div>
+
+            <div class="search-group">
+                <label for="<%= txtMultiplyCount.ClientID %>">Number of copies (N)</label>
+                <asp:TextBox ID="txtMultiplyCount" runat="server" CssClass="drawer-input" TextMode="Number" Text="1" />
+            </div>
+
+            <asp:Button ID="btnApplyMultiplier" runat="server" Text="Create Copies" CssClass="btn-primary"
+                OnClick="btnApplyMultiplier_Click" CausesValidation="False" OnClientClick="showLoader();" />
+        </div>
+    </div>
+
+    <div id="drawerOverlay2" class="drawer-overlay" onclick="closeMultiplierDrawer()"></div>
 </form>
 
 </body>

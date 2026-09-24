@@ -19,6 +19,65 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   `ValueTuple` function return types — add the `System.ValueTuple` NuGet
   package if targeting an older Framework).
 
+## New features (beyond the original page)
+
+- **Allocate Hours** (`btnAllocateHours` / `btnAllocateHours_Click`) — splits
+  the CTD's total hours evenly across every current DDR row, rounded to 2
+  decimal places, with the *first* row absorbing whatever rounding
+  remainder is left over so the DDR total matches the CTD total exactly.
+  Edits the rendered `txtHours` boxes in place; still requires Save All to
+  persist. Lives in the "DDR Line Items" toolbar next to Save All.
+- **Match flag on the CTD/DDR Hours grid** — the sidebar's `ctd_ddr_match`
+  grid now has a flag column: 🚩 when a CTD's `CTD Hrs` and `DDR Hrs` don't
+  match, ✅ when they do. (There's no widely-supported "green flag" glyph in
+  Unicode, so a check mark stands in for "matching" — flagged here in case
+  a specific icon/asset is preferred instead.)
+- **DUM01–DUM99, then DU100+ instead of a flat "DUMMY"** — whenever the
+  page guesses a new document number for an unsaved row, the 4th
+  `-`-delimited segment used to always be the literal string `"DUMMY"`. It
+  now increments: `GetCurrentMaxDummyNumber()` scans every Document_No
+  currently in `grdDDREntry` (saved and unsaved rows alike) for that
+  segment matching `DUM\d\d` or `DU\d\d\d`, and `GetNextDummySuffix()`
+  hands out one past the highest number found — `DUM01`, `DUM02`, ...
+  `DUM99`, `DU100`, `DU101`, ... This is self-correcting across postbacks
+  and CTDs since it always re-scans the live grid rather than keeping
+  separate counter state.
+- **DDR Multiplier** — a "×N" action next to each row's Delete button opens
+  a drawer (`multiplierDrawer`) with two modes, driven by `rblMultiplyMode`
+  and a copy count `txtMultiplyCount` (1–50):
+  - **Mode A** (`btnApplyMultiplier_Click`, `useDumSequence = True`) —
+    creates N copies of the row, each getting the next DUM/DU sequence
+    number via the same numbering scheme above (computed once up front,
+    then incremented per copy — `GetCurrentMaxDummyNumber()` can't be
+    re-queried mid-loop since the new rows aren't bound to the grid yet).
+  - **Mode B** — creates N copies with the trailing digit run of
+    Document_No incremented once per copy (`IncrementTrailingDigits`,
+    e.g. `...-0001` → `...-0002` → `...-0003`, preserving the original
+    digit width).
+  Both modes copy every other field (PLIP, RAMZ, Title, Hours, Software,
+  Remarks, Criticality, PLIP_HO, AFC/APP) verbatim from the source row,
+  which itself is left unchanged.
+- **KPI scorecard** — a row of stat tiles above the CTD card (CTD Hours,
+  DDR Hours, Variance, DDR Line Items, Match Status), refreshed by
+  `UpdateKpiScorecard()` on every grid change (it's called from
+  `RebindTempGrid`, the single choke point every add/delete/save/multiply
+  path already goes through). Variance and Match Status are colored
+  green/red via the page's existing `--success`/`--danger` tokens, kept
+  consistent with the rest of the page's palette rather than introducing
+  a second one.
+- **Denser layout** — trimmed padding/margins across the sidebar, context
+  bar, cards and grid container so more content fits without scrolling.
+- **Anchored PLIP/CTD/Multiplier drawers** — the search drawers no longer
+  slide in from the right edge of the viewport covering its full height;
+  they're now a small popover (`positionDrawerNear()` in the page script)
+  that opens directly under whichever button triggered it — the sidebar's
+  global PLIP search, or a specific row's search/multiply icon, via its
+  captured `ClientID` passed into the registered startup script that
+  reopens the drawer after each postback. The backdrop overlay is now
+  transparent (click-outside-to-close only) instead of a dark blur, so the
+  triggering row and surrounding page stay visible while the drawer is
+  open.
+
 ## What changed vs. the original
 
 ### Bugs fixed

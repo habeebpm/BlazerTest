@@ -31,6 +31,12 @@ Partial Public Class DDR_Developer
     Protected WithEvents btnCtdPrev As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents btnCtdNext As Global.System.Web.UI.WebControls.LinkButton
 
+    Protected WithEvents litKpiCtdHours As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents litKpiDdrHours As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents lblKpiVariance As Global.System.Web.UI.WebControls.Label
+    Protected WithEvents litKpiRowCount As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents lblKpiMatchStatus As Global.System.Web.UI.WebControls.Label
+
     Protected WithEvents pnlValidationSummary As Global.System.Web.UI.WebControls.Panel
     Protected WithEvents litValidationErrors As Global.System.Web.UI.WebControls.Literal
 
@@ -44,6 +50,7 @@ Partial Public Class DDR_Developer
 
     Protected WithEvents btnAddDDR As Global.System.Web.UI.WebControls.Button
     Protected WithEvents btnSaveAll As Global.System.Web.UI.WebControls.Button
+    Protected WithEvents btnAllocateHours As Global.System.Web.UI.WebControls.Button
 
     Protected WithEvents grdDDREntry As Global.System.Web.UI.WebControls.GridView
 
@@ -58,5 +65,11 @@ Partial Public Class DDR_Developer
 
     Protected WithEvents UpdatePanel1 As Global.System.Web.UI.UpdatePanel
     Protected WithEvents ctdGrid As Global.System.Web.UI.WebControls.GridView
+
+    Protected WithEvents hfMultiplyRow As Global.System.Web.UI.WebControls.HiddenField
+    Protected WithEvents litMultiplyTarget As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents rblMultiplyMode As Global.System.Web.UI.WebControls.RadioButtonList
+    Protected WithEvents txtMultiplyCount As Global.System.Web.UI.WebControls.TextBox
+    Protected WithEvents btnApplyMultiplier As Global.System.Web.UI.WebControls.Button
 
 End Class

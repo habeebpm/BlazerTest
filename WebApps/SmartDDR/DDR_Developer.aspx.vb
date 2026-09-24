@@ -74,7 +74,9 @@ Public Class DDR_Developer
     End Sub
 
     Protected Sub btnCTDSearch_Click(sender As Object, e As EventArgs)
-        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenCTDDrawer", "openCTDDrawer();", True)
+        Dim btn As LinkButton = CType(sender, LinkButton)
+        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenCTDDrawer",
+            "openCTDDrawer(document.getElementById('" & btn.ClientID & "'));", True)
     End Sub
 
 #End Region
@@ -107,8 +109,14 @@ Public Class DDR_Developer
         Decimal.TryParse(drv("CTD Hrs").ToString(), ctdHrs)
         Decimal.TryParse(drv("DDR Hrs").ToString(), ddrHrs)
 
+        Dim lblFlag As Label = TryCast(e.Row.FindControl("lblMatchFlag"), Label)
         If ctdHrs <> ddrHrs Then
             e.Row.CssClass = "badge-warn"
+            If lblFlag IsNot Nothing Then lblFlag.Text = "🚩"
+        Else
+            ' There's no widely-supported "green flag" glyph, so a check mark
+            ' stands in for "matching" alongside the red flag for "not matching".
+            If lblFlag IsNot Nothing Then lblFlag.Text = "✅"
         End If
     End Sub
 
@@ -127,7 +135,8 @@ Public Class DDR_Developer
         End If
 
         gvPLIPSearch.DataBind()
-        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenPLIP", "openPLIPDrawer();", True)
+        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenPLIP",
+            "openPLIPDrawer(document.getElementById('" & btn.ClientID & "'));", True)
     End Sub
 
     Protected Sub txtSearchPLIP_TextChanged(sender As Object, e As EventArgs)
@@ -249,6 +258,46 @@ Public Class DDR_Developer
     Private Sub RebindTempGrid(dt As DataTable)
         grdDDREntry.DataSource = dt
         grdDDREntry.DataBind()
+        UpdateKpiScorecard()
+    End Sub
+
+    ''' <summary>
+    ''' Refreshes the KPI scorecard (CTD Hours, DDR Hours, Variance, DDR Line
+    ''' Items, Match Status) from grdDDREntry's currently rendered rows. Called
+    ''' from RebindTempGrid so it's always in sync after any grid change.
+    ''' </summary>
+    Private Sub UpdateKpiScorecard()
+        Dim ddrHours As Decimal = 0
+        Dim rowCount As Integer = 0
+
+        For Each row As GridViewRow In grdDDREntry.Rows
+            If row.RowType <> DataControlRowType.DataRow Then Continue For
+            rowCount += 1
+
+            Dim txtHours As TextBox = TryCast(row.FindControl("txtHours"), TextBox)
+            Dim h As Decimal
+            If txtHours IsNot Nothing AndAlso Decimal.TryParse(txtHours.Text.Trim(), h) Then
+                ddrHours += h
+            End If
+        Next
+
+        Dim ctdHours As Decimal = GetCurrentCtdTotalHours()
+        Dim variance As Decimal = ctdHours - ddrHours
+
+        litKpiCtdHours.Text = ctdHours.ToString("0.##")
+        litKpiDdrHours.Text = ddrHours.ToString("0.##")
+        litKpiRowCount.Text = rowCount.ToString()
+
+        lblKpiVariance.Text = If(variance > 0, "+", "") & variance.ToString("0.##")
+        lblKpiVariance.CssClass = "kpi-value " & If(variance = 0, "positive", "negative")
+
+        If variance = 0 AndAlso rowCount > 0 Then
+            lblKpiMatchStatus.Text = "✅ Balanced"
+            lblKpiMatchStatus.CssClass = "kpi-value positive"
+        Else
+            lblKpiMatchStatus.Text = "🚩 Out of balance"
+            lblKpiMatchStatus.CssClass = "kpi-value negative"
+        End If
     End Sub
 
     ''' <summary>
@@ -311,6 +360,43 @@ Public Class DDR_Developer
         ShowToast("success", "Added a document row and an activity row.")
     End Sub
 
+    ''' <summary>
+    ''' Splits the CTD's total hours evenly across every current DDR row,
+    ''' rounded to 2dp, with the first row absorbing whatever rounding
+    ''' remainder is left over so the DDR total matches the CTD total exactly.
+    ''' Edits the rendered rows in place - Save All still persists them.
+    ''' </summary>
+    Protected Sub btnAllocateHours_Click(sender As Object, e As EventArgs)
+        Dim hourBoxes As New List(Of TextBox)
+        For Each row As GridViewRow In grdDDREntry.Rows
+            If row.RowType <> DataControlRowType.DataRow Then Continue For
+            Dim txtHours As TextBox = TryCast(row.FindControl("txtHours"), TextBox)
+            If txtHours IsNot Nothing Then hourBoxes.Add(txtHours)
+        Next
+
+        If hourBoxes.Count = 0 Then
+            ShowToast("error", "Add DDR lines before allocating hours.")
+            Return
+        End If
+
+        Dim ctdHours As Decimal = GetCurrentCtdTotalHours()
+        If ctdHours <= 0 Then
+            ShowToast("error", "This CTD has no hours to allocate.")
+            Return
+        End If
+
+        Dim perRow As Decimal = Math.Round(ctdHours / hourBoxes.Count, 2)
+        For Each box As TextBox In hourBoxes
+            box.Text = perRow.ToString("0.##")
+        Next
+
+        Dim remainder As Decimal = ctdHours - (perRow * hourBoxes.Count)
+        hourBoxes(0).Text = (perRow + remainder).ToString("0.##")
+
+        UpdateKpiScorecard()
+        ShowToast("success", "Allocated " & ctdHours.ToString("0.##") & " hours across " & hourBoxes.Count & " row(s).")
+    End Sub
+
     Protected Sub grdDDREntry_RowCommand(sender As Object, e As GridViewCommandEventArgs)
         If e.CommandName <> "DeleteDDR" Then Return
 
@@ -340,6 +426,92 @@ Public Class DDR_Developer
             ShowToast("info", "Unsaved DDR line removed.")
         End If
     End Sub
+
+    ''' <summary>Opens the multiplier drawer targeting the row whose "&times;N" button was clicked.</summary>
+    Protected Sub btnMultiplyRow_Click(sender As Object, e As EventArgs)
+        Dim btn As LinkButton = CType(sender, LinkButton)
+        Dim row As GridViewRow = CType(btn.NamingContainer, GridViewRow)
+        Dim txtDocumentNo As TextBox = TryCast(row.FindControl("txtDocumentNo"), TextBox)
+
+        hfMultiplyRow.Value = row.RowIndex.ToString()
+        litMultiplyTarget.Text = "Row " & (row.RowIndex + 1) & ": " &
+            HttpUtility.HtmlEncode(If(txtDocumentNo?.Text, "").Trim())
+
+        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenMultiplier",
+            "openMultiplierDrawer(document.getElementById('" & btn.ClientID & "'));", True)
+    End Sub
+
+    ''' <summary>
+    ''' Creates N copies of the targeted row. Mode A gives each copy the next
+    ''' DUM01..DUM99/DU100+ sequence number in the row's 4th "-"-segment; mode
+    ''' B increments the document number's trailing digit run once per copy.
+    ''' All N copies come from this one target row - it is left unchanged.
+    ''' </summary>
+    Protected Sub btnApplyMultiplier_Click(sender As Object, e As EventArgs)
+        Dim rowIndex As Integer
+        If Not Integer.TryParse(hfMultiplyRow.Value, rowIndex) Then
+            ShowToast("error", "Choose a row to multiply first.")
+            Return
+        End If
+
+        Dim n As Integer
+        If Not Integer.TryParse(txtMultiplyCount.Text.Trim(), n) OrElse n < 1 OrElse n > 50 Then
+            ShowToast("error", "Number of copies must be between 1 and 50.")
+            Return
+        End If
+
+        Dim dt As DataTable = GetCurrentGridData()
+        If rowIndex < 0 OrElse rowIndex >= dt.Rows.Count Then
+            ShowToast("error", "That row no longer exists.")
+            Return
+        End If
+
+        Dim sourceRow As DataRow = dt.Rows(rowIndex)
+        Dim baseDocNo As String = sourceRow("Document_No").ToString()
+        Dim useDumSequence As Boolean = (rblMultiplyMode.SelectedValue = "DUM")
+
+        ' Read the starting DUM number once, up front - GetCurrentMaxDummyNumber()
+        ' scans grdDDREntry's *rendered* rows, which won't reflect the new rows
+        ' being built into dt until RebindTempGrid runs, so it can't be called
+        ' again inside the loop (it would just return the same value N times).
+        Dim nextDummyN As Integer = GetCurrentMaxDummyNumber() + 1
+
+        For i As Integer = 1 To n
+            Dim newRow As DataRow = dt.NewRow()
+            For Each col As DataColumn In dt.Columns
+                newRow(col.ColumnName) = sourceRow(col.ColumnName)
+            Next
+            newRow("DDR_ID") = 0
+
+            Dim parts() As String = baseDocNo.Split("-"c)
+            If useDumSequence Then
+                If parts.Length >= 4 Then
+                    parts(3) = FormatDummySuffix(nextDummyN)
+                    nextDummyN += 1
+                    newRow("Document_No") = String.Join("-", parts)
+                End If
+            Else
+                newRow("Document_No") = IncrementTrailingDigits(baseDocNo, i)
+            End If
+
+            dt.Rows.Add(newRow)
+        Next
+
+        RebindTempGrid(dt)
+        hfMultiplyRow.Value = ""
+        ShowToast("success", n.ToString() & " copy/copies created from row " & (rowIndex + 1) & ".")
+    End Sub
+
+    ''' <summary>Increments the numeric run at the very end of a document number, preserving its digit width (e.g. "...-0001" -&gt; "...-0002").</summary>
+    Private Function IncrementTrailingDigits(docNo As String, increment As Integer) As String
+        Dim m As System.Text.RegularExpressions.Match = System.Text.RegularExpressions.Regex.Match(docNo, "(\d+)$")
+        If Not m.Success Then Return docNo
+
+        Dim digits As String = m.Groups(1).Value
+        Dim newValue As Long = Long.Parse(digits) + increment
+        Dim newDigits As String = newValue.ToString().PadLeft(digits.Length, "0"c)
+        Return docNo.Substring(0, m.Index) & newDigits
+    End Function
 
     ''' <summary>
     ''' Reconstructs the in-memory DDR table from what's currently rendered in
@@ -442,7 +614,7 @@ Public Class DDR_Developer
         If docMode.ToUpper().Contains("CHANGE") Then
             ddlType.SelectedValue = "EXISTING" : slPrt = "MASTR"
         Else
-            ddlType.SelectedValue = "NEW" : slPrt = "DUMMY"
+            ddlType.SelectedValue = "NEW" : slPrt = GetNextDummySuffix()
         End If
 
         Dim delRef As String = If(Session("Del_Ref"), "").ToString()
@@ -860,6 +1032,61 @@ Public Class DDR_Developer
                 Return If(result Is Nothing OrElse result Is DBNull.Value, "", result.ToString())
             End Using
         End Using
+    End Function
+
+    ''' <summary>
+    ''' Formats a dummy-document sequence number as DUM01..DUM99, then rolls
+    ''' over to DU100 onward once the two-digit run is exhausted.
+    ''' </summary>
+    Private Function FormatDummySuffix(n As Integer) As String
+        If n <= 99 Then Return "DUM" & n.ToString("00")
+        Return "DU" & n.ToString("000")
+    End Function
+
+    ''' <summary>
+    ''' Scans every DDR row currently rendered in grdDDREntry (saved and
+    ''' unsaved alike) for a Document_No whose 4th "-"-delimited segment
+    ''' already follows the DUM01..DUM99 / DU100+ pattern, and returns the
+    ''' highest number found (0 if none).
+    ''' </summary>
+    Private Function GetCurrentMaxDummyNumber() As Integer
+        Dim maxN As Integer = 0
+        For Each row As GridViewRow In grdDDREntry.Rows
+            If row.RowType <> DataControlRowType.DataRow Then Continue For
+            Dim txtDocumentNo As TextBox = TryCast(row.FindControl("txtDocumentNo"), TextBox)
+            If txtDocumentNo Is Nothing Then Continue For
+
+            Dim parts() As String = txtDocumentNo.Text.Split("-"c)
+            If parts.Length < 4 Then Continue For
+            Dim segment As String = parts(3)
+
+            Dim mTwoDigit As System.Text.RegularExpressions.Match =
+                System.Text.RegularExpressions.Regex.Match(segment, "^DUM(\d{2})$")
+            Dim mThreeDigit As System.Text.RegularExpressions.Match =
+                System.Text.RegularExpressions.Regex.Match(segment, "^DU(\d{3})$")
+
+            If mTwoDigit.Success Then
+                maxN = Math.Max(maxN, Integer.Parse(mTwoDigit.Groups(1).Value))
+            ElseIf mThreeDigit.Success Then
+                maxN = Math.Max(maxN, Integer.Parse(mThreeDigit.Groups(1).Value))
+            End If
+        Next
+        Return maxN
+    End Function
+
+    ''' <summary>The next DUM/DU suffix to assign, one past whatever's already in use.</summary>
+    Private Function GetNextDummySuffix() As String
+        Return FormatDummySuffix(GetCurrentMaxDummyNumber() + 1)
+    End Function
+
+    ''' <summary>The current CTD's total allocated hours, straight from CTD_MASTER.</summary>
+    Private Function GetCurrentCtdTotalHours() As Decimal
+        Dim ctdId As Integer = Val(lblContext.Text)
+        Dim result As Decimal = 0
+        Decimal.TryParse(
+            ExecScalarQuery("SELECT Total_Hours FROM CTD_MASTER WHERE CTD_ID = @CTD_ID", New SqlParameter("@CTD_ID", ctdId)),
+            result)
+        Return result
     End Function
 
     Private Function GetPlipStatus(plipId As String) As (Afc As String, Critical As String, FhoStatus As String)
