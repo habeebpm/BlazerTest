@@ -3456,10 +3456,10 @@ def test_relay_supervisor() -> bool:
         ok &= check("the last run survives a main.py restart (state file)", not again.due())
 
     real_preset = services.load_preset()
-    ok &= check("the shipped settings.ini parses: ML retrain (daily), conviction report and scorecard "
-                "on by default, relay + Drive export off (they need your own ids)",
+    ok &= check("the shipped settings.ini parses: relay (the signal path), ML retrain (daily), conviction "
+                "report and scorecard on by default; Python Drive export off (VPS only)",
                 not real_preset.errors
-                and real_preset.enabled_names() == ["ml_retrain", "calibration_report", "scorecard"]
+                and real_preset.enabled_names() == ["relay_bridge", "ml_retrain", "calibration_report", "scorecard"]
                 and real_preset.ml_retrain.every_days == 1.0, (real_preset.errors, real_preset.enabled_names()))
     env = {"ANTHROPIC_API_KEY": "sk-ant-abcdefgh1234", "TELEGRAM_ALERT_CHAT_ID": "12345",
            "TELEGRAM_API_ID": "999"}
@@ -3505,10 +3505,11 @@ def test_first_run_wizard() -> bool:
             "abc",                     # chat id typo -> questioned
             "n",                       # ...don't use it
             "123456789",               # chat id again
-            "y",                       # relay bridge: yes
+            "",                        # relay: Enter = yes (the standard path)
             "12345",                   # api_id
             "@goldsignals,-100123",    # source channels
             "-1001234567890",          # relay group
+            "n",                       # log in now: later
             "y",                       # send test message
         ])
         secrets = iter(["",                                               # API key: keep
@@ -3532,7 +3533,7 @@ def test_first_run_wizard() -> bool:
         ok &= check("the current API key is shown masked and kept on Enter",
                     rc == 0 and "ANTHROPIC_API_KEY" not in saved and any("ends ...9999" in p for p in prompts)
                     and not any("sk-ant-existing" in p for p in prompts), prompts[:1])
-        ok &= check("every other setting saved in the same run (relay ones because relay = yes)",
+        ok &= check("every other setting saved in the same run, relay included by default",
                     saved == {"TELEGRAM_ALERT_BOT_TOKEN": "1234567:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
                               "TELEGRAM_ALERT_CHAT_ID": "123456789", "TELEGRAM_API_ID": "12345",
                               "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
@@ -3548,13 +3549,29 @@ def test_first_run_wizard() -> bool:
         ok &= check("test Telegram message sent with the new token/chat id, marker written",
                     sent == [("1234567:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "123456789")]
                     and os.path.exists(marker))
+        ok &= check("it says what to put in the EA's InpChannelId1",
+                    any("InpChannelId1 = -1001234567890" in x for x in lines), lines[-6:])
+
+        # Relay group not known yet: the login lists it, then it is asked again.
+        logins, saved3 = [], {}
+        seq3 = iter(["", "", "-", "", "-", "", "-1009876543210", "n"])
+        env3 = {"ANTHROPIC_API_KEY": "sk-ant-existing-key-9999", "TELEGRAM_ALERT_CHAT_ID": "123456789",
+                "TELEGRAM_API_ID": "12345", "TELEGRAM_SOURCE_CHANNELS": "@goldsignals"}
+        first_run.run_wizard(ini, env=env3, ask=lambda p: next(seq3), ask_secret=lambda p: "",
+                             out=lines.append, saver=lambda n, v: saved3.__setitem__(n, v),
+                             login=lambda: logins.append(1), marker=marker)
+        ok &= check("login offered right away (Enter = yes); an unknown relay group is asked again after it",
+                    logins == [1] and saved3.get("TELEGRAM_RELAY_GROUP") == "-1009876543210", (logins, saved3))
 
         env2, saved2 = {}, {}
-        seq = iter(["-", "n"])      # chat id: skip; relay bridge: no
+        seq = iter(["-", "n"])      # chat id: skip; relay: no (bot is admin of the channel itself)
         first_run.run_wizard(ini, env=env2, ask=lambda p: next(seq), ask_secret=lambda p: "-",
                              out=lines.append, saver=lambda n, v: saved2.__setitem__(n, v), marker=marker)
         ok &= check("skipping everything saves nothing and reports the API key as still missing",
                     saved2 == {} and any("Still missing: ANTHROPIC_API_KEY" in x for x in lines))
+        with open(ini) as f:
+            ok &= check("answering 'n' to the relay switches it off in settings.ini",
+                        "enabled = false" in f.read().split("[xtr_export]")[0])
     args = main_mod.build_parser().parse_args(["--setup"])
     ok &= check("main.py --setup parses", args.setup)
     return ok

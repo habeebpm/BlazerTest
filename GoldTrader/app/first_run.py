@@ -10,8 +10,12 @@ does, so it survives a restart), then main.py carries on in the same run.
     - Enter keeps the current value (secrets shown masked), "-" skips;
     - a value that does not look right (key prefix, numeric id, ...) is
       questioned once - never silently accepted, never refused outright;
-    - relay bridge settings only if you say you use the bridge, which also
-      switches it on in settings.ini;
+    - the relay bridge is the standard way signals reach the EA (your own
+      Telegram account copies the signal channel into your own group, where
+      your bot is admin - works for any channel you can read): its settings
+      are asked by default, and its one-time Telegram login can run right
+      here; answering "n" switches it off in settings.ini (then the bot
+      must be admin of the signal channel itself);
     - optional test message over Telegram at the end.
 """
 from __future__ import annotations
@@ -38,7 +42,8 @@ SETTINGS = [
     ("TELEGRAM_API_HASH", True, "Relay: api_hash (same page)", "relay", r"^[0-9a-fA-F]{32}$"),
     ("TELEGRAM_SOURCE_CHANNELS", False, "Relay: signal channel(s), @name or id, comma-separated (max 3)",
      "relay", r"^[^,\s]+(,[^,\s]+){0,2}$"),
-    ("TELEGRAM_RELAY_GROUP", False, "Relay: your relay group id (e.g. -1001234567890)", "relay",
+    ("TELEGRAM_RELAY_GROUP", False, "Relay: your relay group id, e.g. -1001234567890 ('-' if you "
+     "don't know it yet - the login below lists it)", "relay",
      r"^(-?\d{5,}|@\w{4,})$"),
 ]
 REQUIRED = ("ANTHROPIC_API_KEY",)
@@ -112,8 +117,9 @@ def _ask_one(name, secret, prompt, pattern, env, ask, ask_secret, out):
 
 
 def run_wizard(preset_path: str, env=None, ask=input, ask_secret=getpass.getpass, out=print,
-               saver=save_permanent, send_test=None, marker: str = MARKER) -> int:
-    """Returns 0; `send_test(token, chat_id) -> bool` sends the test message."""
+               saver=save_permanent, send_test=None, marker: str = MARKER, login=None) -> int:
+    """Returns 0; `send_test(token, chat_id) -> bool` sends the test message,
+    `login()` runs the relay's one-time Telegram login (default: the real one)."""
     env = os.environ if env is None else env
     out("\n=== Settings (asked once - saved permanently, survive a PC restart) ===")
     out("Enter = keep the current value, '-' = skip.\n")
@@ -130,20 +136,37 @@ def run_wizard(preset_path: str, env=None, ask=input, ask_secret=getpass.getpass
                 saved.append(name)
 
     take("core")
-    relay_on = False
-    try:
-        import services
-        relay_on = services.load_preset(preset_path).relay_bridge.enabled
-    except Exception:
-        pass
-    reply = ask(f"\n  Do you use the relay bridge (a signal channel you are NOT admin of)? "
-                f"[{'Y/n' if relay_on else 'y/N'}]: ").strip().lower()
-    use_relay = relay_on if not reply else reply in ("y", "yes")
-    if use_relay:
+    out("\n  Signals reach the EA through your relay group: your own Telegram account copies")
+    out("  the signal channel(s) into a private group you own, where your bot is admin.")
+    reply = ask("  Use the relay (recommended - works for any channel you can read)? [Y/n]: ").strip().lower()
+    if reply in ("n", "no"):
+        if set_preset_enabled(preset_path, "relay_bridge", False):
+            out("  Relay switched off in settings.ini - make your bot an admin of the signal channel "
+                "and put that channel's id in the EA's InpChannelId1.")
+    else:
         take("relay")
-        if not relay_on and set_preset_enabled(preset_path, "relay_bridge", True):
-            out("  Relay bridge switched on in settings.ini.")
-        out("  One-time Telegram login for it: double-click relay_login.bat.")
+        set_preset_enabled(preset_path, "relay_bridge", True)
+        if ask("\n  Log the relay in to Telegram now (phone number + code, once)? [Y/n]: ").strip().lower() \
+                in ("", "y", "yes"):
+            if login is None:
+                import relay_supervisor
+                login = relay_supervisor.login
+            login()
+            if not (env.get("TELEGRAM_RELAY_GROUP") or "").strip():
+                out("  Your relay group's id is in the list above.")
+                for name, secret, prompt, _grp, pattern in SETTINGS:
+                    if name == "TELEGRAM_RELAY_GROUP":
+                        value = _ask_one(name, secret, prompt, pattern, env, ask, ask_secret, out)
+                        if value is not None:
+                            saver(name, value)
+                            env[name] = value
+                            saved.append(name)
+        else:
+            out("  Later: double-click relay_login.bat once.")
+        group = (env.get("TELEGRAM_RELAY_GROUP") or "").strip()
+        out("  In MT5, set the EA input InpChannelId1 = "
+            + (group if group.lstrip("-").isdigit() else "your relay group's numeric id (the login lists it)")
+            + ".")
 
     token, chat = (env.get("TELEGRAM_ALERT_BOT_TOKEN") or "").strip(), (env.get("TELEGRAM_ALERT_CHAT_ID") or "").strip()
     if token and chat and send_test is not None:

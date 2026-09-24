@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Telegram relay bridge - for a signal channel you are NOT admin of.
+Telegram relay bridge - the standard way signals reach UnifiedTrader_EA.
 
-UnifiedTrader_EA reads Telegram through a bot, and Telegram only shows a
-channel's posts to a bot that is admin there. This script logs in as YOUR
-Telegram account (a normal member sees everything) and forwards the trade
-messages into a private group you own, where your bot IS admin. Point the
-EA's InpChannelId1 at that relay group.
+The EA reads Telegram through a bot, and Telegram only shows a channel's
+posts to a bot that is admin there - which you usually are not. This script
+logs in as YOUR Telegram account (a normal member sees everything) and
+forwards the trade messages into a private group you own, where your bot IS
+admin. The EA's InpChannelId1 is that relay group.
 
 Only trade messages are forwarded (message_filter.py - the same rules as the
 EA): greetings, mood posts, long commentary, videos, audio, stickers and
@@ -14,8 +14,8 @@ documents are dropped. --filter-signals: only messages that parse as a
 signal; --relay-everything: no filtering. At most 3 source channels.
 
 Normally you never run this file yourself: GoldTrader's start.bat runs it in
-the background when settings.ini [relay_bridge] is on (the first-run
-questions switch it on). One-time login: relay_login.bat.
+the background (settings.ini [relay_bridge], on by default). One-time login:
+the first-run questions offer it, or relay_login.bat.
 
     python telegram_relay_bridge.py --check   # log in, show chat ids, exit
     python telegram_relay_bridge.py           # relay (Ctrl+C to stop)

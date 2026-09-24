@@ -10,7 +10,7 @@ do when something goes wrong.
 |---|---|---|
 | **UnifiedTrader_EA** | MT5 chart | Copies Telegram trade signals (magic 20260922); manages exits of every position (Telegram and Claude's, magic 20260921); Telegram buttons; economic-calendar export; price files for Drive |
 | **Trading program** (`app/main.py`, via `start.bat`) | Python | Each closed M15 bar inside the trading hours: builds a market snapshot, asks Claude for a verdict, applies the gates, sends Claude's entries |
-| Relay bridge (`relay/`) | Python, optional | Forwards trade messages from a channel you are not admin of into your own group |
+| **Relay bridge** (`relay/`, via `start.bat`) | Python | The signal path: your own Telegram account copies the trade messages of your signal channel(s) into your private relay group, where the EA's bot reads them (`InpChannelId1` = the relay group). Works for any channel you can read |
 | Drive export (`drive_export/`) | Python, optional (VPS) | Price files to Google Drive without Drive for Desktop |
 | ML retrain, conviction report, **scorecard** | Python, automatic | Daily / weekly, see `settings.ini`; the scorecard goes to your Telegram |
 | TelegramSMC_TradeLogger | MT5 chart, optional | Trade journal CSV (both sources) |
@@ -247,7 +247,7 @@ without the tactics. Results on a year of real prices:
 | `check.bat` shows `MISSING` | `settings.bat` |
 | No Telegram alert | `settings.bat` -> send the test message; you must have messaged the bot once |
 | EA: "InpBotToken is empty" | EA Inputs -> bot token |
-| EA ignores the channel | `InpChannelId1` = the id from the Experts tab; bot is admin there (or use the relay) |
+| No signals copied | `InpChannelId1` = the relay group id; bot is admin of the relay group; the `start.bat` window shows `Companion programs: relay_bridge` and no relay error; `relay_login.bat` lists the ids again |
 | Drive folder empty | EA Common tab -> Allow DLL imports; exact path from Explorer; Experts tab `XtrBarExport:` lines |
 | Relay "not logged in" | `relay_login.bat` |
 | News check "0 of 5 feeds" | Firewall/antivirus blocking the feeds; trading continues without it |
