@@ -29,6 +29,34 @@ The year is split into three periods:
 | Mar - Jul 2026 | Used to confirm the trading hours (previous report) |
 | Aug - Sep 2026 | Where the trading-hours idea came from (first 7-week test) |
 
+## Oman trading hours (live setting)
+
+Same year, same data, same mechanical verdicts, only the entry hours
+different (Claude's side - the Telegram side cannot be backtested: there is
+no history of the channel's signals). 1R = the $6 stop.
+
+| Entry hours | Trades / week | Win % | Avg R | Return | Max DD | Sep-Mar (fresh) | Mar-Jul | Aug-Sep | Chance of luck | Claude calls / week |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **06:00-23:00 Oman, Mon-Fri** (live) | 8.3 | 40.5 | **-0.07** | **-58%** | **62%** | -0.07 | -0.04 | -0.16 | 86% | 155 (about $13) |
+| 08:00-16:45 + 18:15-20:00 New York (before) | 4.3 | 43.7 | +0.14 | +57% | 27% | +0.17 | +0.16 | +0.04 | 9% | 92 (about $8) |
+
+At double spread: Oman -0.13R, -75%, drawdown 75%; New York +0.11R, +34%.
+
+Where the Oman window's trades come from (entry hour, Oman time):
+
+| Oman hours | Trades | Avg R |
+|---|---|---|
+| 06:00-12:00 (Tokyo / early London) | 192 | -0.14 |
+| 12:00-16:00 (London) | 99 | -0.18 |
+| 16:00-23:00 (New York morning) | 149 | +0.09 |
+
+**Reading:** the extra hours are the Asian session and the London morning -
+the same hours that lost in the original test. Negative in all three
+periods, at normal and double spread. This is the mechanical stand-in, not
+Claude's judgment (Claude is told to treat "Asian range chop" as a red
+flag and may skip some of these), but the stand-in's New York hours were
+the only setting positive in all three periods.
+
 ## Verdict
 
 1. **Trading hours passed the fresh test.** On Sep-Mar, which played no part
