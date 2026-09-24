@@ -127,6 +127,21 @@
         .btn-primary { background: var(--brand-500); border-color: var(--brand-500); color: #fff; }
         .btn-primary:hover { background: var(--brand-700); border-color: var(--brand-700); color: #fff; }
         .btn-ghost { background: transparent; }
+        .btn-group { display: inline-flex; gap: 6px; padding-left: 10px; border-left: 1px solid var(--border); }
+        .btn-save { background: var(--brand-500); border-color: var(--brand-500); color: #fff; font-weight: 600; }
+        .btn-save:hover { background: var(--brand-700); border-color: var(--brand-700); color: #fff; }
+        .btn-save.has-changes { background: #D97706; border-color: #D97706; box-shadow: 0 0 0 3px rgba(245, 158, 11, .25); }
+        .btn-save.has-changes:hover { background: #B45309; border-color: #B45309; }
+        .badge {
+            min-width: 20px;
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, .25);
+            font-size: 11px;
+            text-align: center;
+        }
+        .chip-action { background: #FEF3C7; color: #92400E; cursor: pointer; border: 0; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; }
+        .chip-action:hover { background: #FDE68A; }
         .btn-on-dark { background: rgba(255, 255, 255, .16); border-color: rgba(255, 255, 255, .3); color: #fff; }
         .btn-on-dark:hover { background: rgba(255, 255, 255, .28); border-color: rgba(255, 255, 255, .5); color: #fff; }
 
@@ -310,7 +325,7 @@
         table.grid td.e { padding: 0 8px; cursor: text; text-overflow: ellipsis; }
         table.grid td.e:hover { box-shadow: inset 0 0 0 1px var(--border-strong); }
         table.grid tbody td.e.saved { box-shadow: inset 3px 0 0 var(--success); }
-        table.grid tbody td.e.saving { background: #FEF9C3; }
+        table.grid tbody td.e.dirty { background: #FEF3C7; box-shadow: inset 3px 0 0 var(--warn); }
         table.grid tbody td.e.err { background: #FEE2E2; box-shadow: inset 0 0 0 2px var(--danger); }
         table.grid tbody td.e.editing { padding: 0; background: #fff; text-decoration: none; }
         .cell-editor {
@@ -426,25 +441,29 @@
         /* ================================================================
            Toast, loader, access denied
            ================================================================ */
+        /* Bottom-right, so a message never covers the toolbar (Save all, Upload ...). */
         .toast {
             position: fixed;
-            top: 14px;
+            bottom: 16px;
             right: 16px;
             z-index: 1200;
-            max-width: 460px;
+            max-width: 480px;
+            max-height: 45vh;
+            overflow: auto;
             padding: 12px 16px 12px 14px;
             border-left: 4px solid var(--brand-500);
             border-radius: 10px;
             background: #fff;
             box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
             font-size: 13px;
+            white-space: pre-line;
             cursor: pointer;
             transition: opacity .3s, transform .3s;
         }
         .toast-success { border-left-color: var(--success); }
         .toast-warn { border-left-color: var(--warn); }
         .toast-error { border-left-color: var(--danger); background: #FEF2F2; color: #7F1D1D; }
-        .toast-hide { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+        .toast-hide { opacity: 0; transform: translateY(8px); pointer-events: none; }
 
         .loader-overlay {
             display: none;
@@ -485,6 +504,7 @@
         @media (max-width: 900px) {
             .crumb-app, .crumb-sep, .logo { display: none; }
             .search { flex: 1 1 100%; min-width: 0; }
+            .btn-group { padding-left: 0; border-left: 0; }
             .project-pill { max-width: 100%; }
             .content, .stats { padding-left: 8px; padding-right: 8px; }
             .stat { flex-basis: 130px; }
@@ -495,6 +515,7 @@
         }
         @media print {
             .toolbar, .topbar .btn, .fbtn, .legend, .chips { display: none !important; }
+            table.grid tbody td.e.dirty { background: none; box-shadow: none; }
             .app { height: auto; overflow: visible; }
             .grid-scroll { overflow: visible; }
             table.grid th { position: static; }
@@ -555,11 +576,22 @@
 
                 <span id="rowCount" class="count"></span>
                 <asp:Button ID="btnReload" runat="server" Text="⟳ Reload" CssClass="btn"
-                    ToolTip="Read the latest data from the database" data-loading="true" UseSubmitBehavior="False" />
-                <asp:Button ID="btnExcel" runat="server" Text="⬇ Excel" CssClass="btn"
-                    ToolTip="Download the rows on screen as Excel (.xlsx)" OnClientClick="prepareExport();" UseSubmitBehavior="False" />
-                <asp:Button ID="btnCSV" runat="server" Text="⬇ CSV" CssClass="btn"
-                    ToolTip="Download the rows on screen as CSV" OnClientClick="prepareExport();" UseSubmitBehavior="False" />
+                    ToolTip="Read the latest data from the database"
+                    OnClientClick="if (!confirmDiscard()) return false; showLoader();" UseSubmitBehavior="False" />
+                <span class="btn-group">
+                    <asp:Button ID="btnExcel" runat="server" Text="⬇ Excel" CssClass="btn"
+                        ToolTip="Download the rows on screen as Excel (.xlsx) - edit it and upload it back"
+                        OnClientClick="if (!prepareExport()) return false;" UseSubmitBehavior="False" />
+                    <asp:Button ID="btnCSV" runat="server" Text="⬇ CSV" CssClass="btn"
+                        ToolTip="Download the rows on screen as CSV - edit it and upload it back"
+                        OnClientClick="if (!prepareExport()) return false;" UseSubmitBehavior="False" />
+                    <button type="button" id="btnUpload" class="btn" title="Upload an edited CSV / Excel file: changed cells are staged for review, then Save all">⬆ Upload</button>
+                </span>
+                <input type="file" id="fileUpload" accept=".csv,.xlsx,.xlsm,.txt" hidden="hidden" />
+                <span class="btn-group">
+                    <button type="button" id="btnDiscard" class="btn btn-ghost" disabled="disabled" title="Undo every unsaved change">↺ Discard</button>
+                    <button type="button" id="btnSaveAll" class="btn btn-save" disabled="disabled" title="Save every change in one go (Ctrl+S)">💾 Save all <span id="pendingBadge" class="badge">0</span></button>
+                </span>
             </div>
 
             <div class="stats" aria-live="polite">
@@ -582,9 +614,10 @@
                 </div>
 
                 <div class="legend">
-                    <span><b>✎</b> editable column - click a cell to edit; it saves when you leave the cell</span>
+                    <span><b>✎</b> editable column - click a cell to edit, then <b>Save all</b> (<span class="kbd">Ctrl</span>+<span class="kbd">S</span>)</span>
                     <span><span class="kbd">Enter</span> <span class="kbd">↑</span> <span class="kbd">↓</span> rows · <span class="kbd">Tab</span> next cell</span>
-                    <span><span class="kbd">Esc</span> undo the cell</span>
+                    <span><span class="kbd">Esc</span> cancel typing · <span class="kbd">Ctrl</span>+<span class="kbd">Z</span> back to the saved value</span>
+                    <span><span class="sw" style="background:#FEF3C7"></span>unsaved</span>
                     <span><span class="sw" style="background:#DCFCE7"></span>saved</span>
                     <span><span class="sw" style="background:#DBEAFE"></span>type <b>DELETED</b> in Remarks: title gets “(DELETED)”, Man Hours = 0</span>
                     <span><b>START</b> accepts 0 or 0.1</span>
@@ -648,10 +681,26 @@
                 if (!srvToast.classList.contains('toast-error')) { setTimeout(function () { srvToast.classList.add('toast-hide'); }, 6000); }
             }
 
+            // Unsaved-change guard for the project / discipline drop-downs (they post back).
+            window.confirmDiscard = function () { return true; };
+            Array.prototype.forEach.call(document.querySelectorAll('select[data-loading]'), function (sel) {
+                sel.setAttribute('data-prev', sel.value);
+            });
+            document.addEventListener('focusin', function (e) {
+                var t = e.target;
+                if (t && t.tagName === 'SELECT') { t.setAttribute('data-prev', t.value); }
+            });
             document.addEventListener('change', function (e) {
                 var t = e.target;
-                if (t && t.tagName === 'SELECT' && t.hasAttribute('data-loading')) { window.showLoader(); }
-            });
+                if (!t || t.tagName !== 'SELECT' || !t.hasAttribute('data-loading')) { return; }
+                if (!window.confirmDiscard()) {
+                    // Capture phase: stopping here keeps the AutoPostBack handler from running.
+                    e.stopPropagation();
+                    t.value = t.getAttribute('data-prev') || t.value;
+                    return;
+                }
+                window.showLoader();
+            }, true);
             document.addEventListener('click', function (e) {
                 var t = e.target;
                 if (t && t.closest && t.closest('input[data-loading],button[data-loading]')) { window.showLoader(); }
@@ -660,6 +709,8 @@
             var grid = document.getElementById('ddrGrid');
             window.prepareExport = function () { return true; };
             if (!grid) { return; }   // access denied or no project
+            var saveBtn = document.getElementById('btnSaveAll');
+            var discardBtn = document.getElementById('btnDiscard');
 
             /* ================================================================
                Row model: values are read once and kept in sync with edits
@@ -683,12 +734,13 @@
             });
             function fieldOf(td) { return fields[td.cellIndex]; }
 
-            var rows = [];
+            var rows = [], byId = {};
             Array.prototype.forEach.call(tbody.rows, function (tr) {
                 if (!tr.hasAttribute('data-id')) { return; }
                 var r = { tr: tr, id: tr.getAttribute('data-id'), v: {}, text: '' };
                 readRow(r);
                 rows.push(r);
+                byId[r.id] = r;
             });
 
             function cellValue(td) {
@@ -740,7 +792,9 @@
                 } catch (e) { /* ignore a corrupt entry */ }
             }
 
+            var onlyPending = false;   // "show only rows with unsaved changes"
             function passes(r, skipField, q) {
+                if (onlyPending && !r.tr.classList.contains('row-dirty')) { return false; }
                 if (q && r.text.indexOf(q) < 0) { return false; }
                 for (var f in filters) {
                     if (f !== skipField && !filters[f].has(r.v[f])) { return false; }
@@ -805,6 +859,16 @@
                     b.addEventListener('click', onClear);
                     c.appendChild(b);
                     box.appendChild(c);
+                }
+                if (onlyPending) {
+                    chip('Only rows with unsaved changes', function () { onlyPending = false; applyFilters(); });
+                } else if (dirty.size > 0) {
+                    var a = document.createElement('button');
+                    a.type = 'button';
+                    a.className = 'chip chip-action';
+                    a.textContent = '✎ ' + dirty.size + ' unsaved change' + (dirty.size === 1 ? '' : 's') + ' - show only these rows';
+                    a.addEventListener('click', function () { onlyPending = true; applyFilters(); });
+                    box.appendChild(a);
                 }
                 if (search.value.trim()) {
                     chip('Search: “' + search.value.trim() + '”', function () { search.value = ''; applyFilters(); });
@@ -1021,6 +1085,7 @@
 
             document.getElementById('btnClearAll').addEventListener('click', function () {
                 filters = {};
+                onlyPending = false;
                 search.value = '';
                 applyFilters();
             });
@@ -1029,25 +1094,28 @@
             search.addEventListener('input', function () { clearTimeout(searchTimer); searchTimer = setTimeout(applyFilters, 150); });
 
             /* ================================================================
-               Editing: cells are plain text; a click drops one shared editor into the cell.
-               Each change is saved on its own (AJAX page method), no postback.
+               Editing (Excel-like): cells are plain text; a click drops one shared editor into
+               the cell. Changes stay pending (yellow) until Save all writes them in one
+               transaction. An uploaded CSV / Excel file is staged the same way.
                ================================================================ */
-            var pending = 0;
             var NUM_RE = /^\d*\.?\d+$|^\d+\.$/;
+            var dirty = new Set();        // cells with unsaved changes (data-orig = saved value)
+            var saving = false;
+            var skipUnload = false;
             var editor = document.createElement('input');
             editor.type = 'text';
             editor.className = 'cell-editor';
             editor.spellcheck = false;
             editor.autocomplete = 'off';
 
-            // A cell that failed to save shows the typed text and keeps the saved value in data-orig.
             function savedValue(td) {
                 if (td === editTd) { return editSaved; }
                 return td.hasAttribute('data-orig') ? td.getAttribute('data-orig') : td.textContent;
             }
+            function rowOf(td) { return byId[td.parentNode.getAttribute('data-id')]; }
 
             function beginEdit(td) {
-                if (editTd === td) { return; }
+                if (editTd === td || saving) { return; }
                 if (editTd) { endEdit(true); }
                 var f = fieldOf(td);
                 editSaved = savedValue(td);
@@ -1064,27 +1132,19 @@
                 editor.select();
             }
 
-            // commit: save when changed; otherwise (Esc) show the saved value again.
+            // commit = keep the typed text (staged as a pending change); otherwise restore the text.
             function endEdit(commit) {
                 var td = editTd;
                 if (!td) { return; }
-                var saved = editSaved;
                 var val = editor.value.trim();
+                var saved = editSaved;
                 editTd = null;
                 td.classList.remove('editing');
-                td.textContent = commit ? val : saved;
-                if (!commit || val === saved) {
-                    clearError(td);
-                    return;
+                if (commit) {
+                    stage(td, val, saved);
+                } else {
+                    td.textContent = editStart;
                 }
-                if (val === editStart && td.classList.contains('err')) { return; }   // same rejected text again
-                save(td, val, saved);
-            }
-
-            function clearError(td) {
-                td.classList.remove('err');
-                td.removeAttribute('data-orig');
-                td.removeAttribute('title');
             }
 
             function validate(td, val) {
@@ -1095,87 +1155,251 @@
                 if (k === 'n' && val !== '' && !NUM_RE.test(val)) {
                     return 'Man Hours must be a number (0 or more).';
                 }
+                if (maxOf[fieldOf(td)] > 0 && val.length > maxOf[fieldOf(td)]) {
+                    return headerOf[fieldOf(td)] + ' can hold at most ' + maxOf[fieldOf(td)] + ' characters.';
+                }
                 return null;
             }
 
-            function markError(td, saved, msg) {
-                td.classList.remove('saving', 'saved');
-                td.classList.add('err');
-                td.setAttribute('data-orig', saved);
-                td.title = msg + '  (click the cell and press Esc to restore the saved value)';
-            }
-
-            function save(td, val, saved) {
-                var tr = td.parentNode;
-                var problem = validate(td, val);
-                if (problem) { markError(td, saved, problem); showToast(problem, 'warn'); return; }
-                if (!window.PageMethods || !PageMethods.SaveCell) {
-                    markError(td, saved, 'Saving is not available.');
-                    showToast('Saving is not available - reload the page.', 'error');
-                    return;
-                }
-
-                clearError(td);
+            // Puts a value into a cell as a pending change (or clears it when it equals the saved value).
+            function stage(td, val, saved) {
+                td.textContent = val;
                 td.classList.remove('saved');
-                td.classList.add('saving');
-                td.setAttribute('data-orig', saved);   // until the server confirms
-                pending++;
-                PageMethods.SaveCell(key, parseInt(tr.getAttribute('data-id'), 10), fieldOf(td), val,
-                    function (res) {
-                        pending--;
-                        td.classList.remove('saving');
-                        if (!res || !res.Ok) {
-                            var msg = (res && res.Message) || 'The change was not saved.';
-                            markError(td, savedValue(td), msg);
-                            showToast(msg, 'error');
-                            return;
-                        }
-                        applyResult(tr, td, res);
-                        if (res.Message) { showToast(res.Message, res.Level || 'success'); }
-                    },
-                    function (err) {
-                        pending--;
-                        td.classList.remove('saving');
-                        var msg = 'Save failed: ' + ((err && err.get_message && err.get_message()) || 'network error') +
-                                  '. Your session may have expired - reload the page.';
-                        markError(td, savedValue(td), msg);
-                        showToast(msg, 'error');
-                    });
+                if (val === saved) {
+                    clearDirty(td);
+                } else {
+                    td.setAttribute('data-orig', saved);
+                    td.classList.add('dirty');
+                    dirty.add(td);
+                    var problem = validate(td, val);
+                    td.classList.toggle('err', !!problem);
+                    if (problem) { td.title = problem; } else { td.title = 'Unsaved - was: ' + (saved === '' ? '(blank)' : saved); }
+                }
+                rowChanged(td.parentNode);
             }
 
-            function applyResult(tr, savedTd, res) {
-                var vals = res.Values || {};
-                var html = res.Html || {};
+            function clearDirty(td) {
+                td.classList.remove('dirty', 'err');
+                td.removeAttribute('data-orig');
+                td.removeAttribute('title');
+                dirty.delete(td);
+            }
+
+            function rowChanged(tr) {
+                tr.classList.toggle('row-dirty', !!tr.querySelector('td.dirty'));
+                var r = byId[tr.getAttribute('data-id')];
+                if (r) { readRow(r); }
+                updateSaveBar();
+            }
+
+            var barTimer = null;
+            function updateSaveBar() {
+                var n = dirty.size;
+                saveBtn.disabled = n === 0 || saving;
+                discardBtn.disabled = n === 0 || saving;
+                saveBtn.classList.toggle('has-changes', n > 0);
+                document.getElementById('pendingBadge').textContent = n;
+                // Chips / stats are refreshed once per burst (an upload can stage thousands of cells).
+                clearTimeout(barTimer);
+                barTimer = setTimeout(function () { renderChips(); updateStats(); }, 30);
+            }
+
+            function pbarHtml(pct) {
+                var w = Math.max(0, Math.min(100, pct));
+                var cls = pct >= 100 ? 'pb-good' : (pct >= 50 ? 'pb-ok' : (pct >= 20 ? 'pb-warn' : 'pb-bad'));
+                return '<span class="pbar"><span class="pbar-val">' + pct.toFixed(2) + '%</span><span class="pbar-track">' +
+                       '<span class="pbar-fill ' + cls + '" style="width:' + (Math.round(w * 10) / 10) + '%"></span></span></span>';
+            }
+
+            function applyRow(tr, row) {
+                var vals = row.Values || {};
                 for (var i = 0; i < fields.length; i++) {
                     var f = fields[i];
                     if (!(f in vals)) { continue; }
                     var td = tr.cells[i];
                     if (td.classList.contains('e')) {
-                        if (td === editTd) {
-                            // Being edited (e.g. Tab from Remarks into Man Hours): take the server value
-                            // unless the user has already typed, so a stale value is not saved back.
-                            if (editor.value === editStart) { editor.value = vals[f]; editStart = vals[f]; editor.select(); }
-                            editSaved = vals[f];
-                        } else if (td === savedTd || !td.hasAttribute('data-orig')) {
-                            td.textContent = vals[f];
-                            td.removeAttribute('data-orig');
-                        } else {
-                            td.setAttribute('data-orig', vals[f]);   // keep the other cell's rejected text
-                        }
-                    } else if (f in html) {
-                        td.innerHTML = html[f];
+                        var changed = dirty.has(td) || td.textContent !== vals[f];
+                        clearDirty(td);
+                        td.textContent = vals[f];
+                        if (changed) { td.classList.add('saved'); }
+                    } else if (f === 'PERC') {
+                        td.innerHTML = vals[f] === '' ? '' : pbarHtml(parseFloat(vals[f]) * 100);
                         td.setAttribute('data-n', vals[f]);
+                    } else {
+                        td.textContent = vals[f];
                     }
                 }
-                clearError(savedTd);
-                savedTd.classList.add('saved');
                 tr.classList.add('row-saved');
-                tr.classList.toggle('row-deleted', !!res.Deleted);
-                var r = rows.find(function (x) { return x.tr === tr; });
-                if (r) { readRow(r); }
-                updateStats();   // rows stay visible until the filters are applied again
+                tr.classList.toggle('row-deleted', !!row.Deleted);
+                rowChanged(tr);
             }
 
+            function firstInvalid() {
+                var first = null;
+                dirty.forEach(function (td) { if (!first && td.classList.contains('err')) { first = td; } });
+                return first;
+            }
+
+            function reveal(td) {
+                if (td.parentNode.style.display === 'none') { onlyPending = true; filters = {}; search.value = ''; applyFilters(); }
+                td.scrollIntoView({ block: 'center', inline: 'nearest' });
+            }
+
+            function saveAll() {
+                if (saving) { return; }
+                if (editTd) { endEdit(true); }
+                if (dirty.size === 0) { showToast('There are no unsaved changes.', 'info'); return; }
+                var bad = firstInvalid();
+                if (bad) {
+                    var nBad = 0;
+                    dirty.forEach(function (td) { if (td.classList.contains('err')) { nBad++; } });
+                    showToast(nBad + ' cell(s) have invalid values (red). Fix them - or click the cell and press Ctrl+Z to restore it - then Save all.', 'warn');
+                    reveal(bad);
+                    return;
+                }
+                if (!window.PageMethods || !PageMethods.SaveAll) {
+                    showToast('Saving is not available - reload the page.', 'error');
+                    return;
+                }
+                var sent = Array.from(dirty);
+                var changes = sent.map(function (td) {
+                    return { Id: parseInt(td.parentNode.getAttribute('data-id'), 10), Field: fieldOf(td), Value: td.textContent.trim() };
+                });
+                saving = true;
+                updateSaveBar();
+                window.showLoader();
+                PageMethods.SaveAll(key, changes,
+                    function (res) {
+                        saving = false;
+                        window.hideLoader();
+                        if (!res || !res.Ok) {
+                            (res && res.Errors || []).forEach(function (er) {
+                                var r = byId[String(er.Id)];
+                                if (!r) { return; }
+                                var cells = er.Field && (er.Field in colOf) ? [r.tr.cells[colOf[er.Field]]]
+                                          : Array.prototype.filter.call(r.tr.cells, function (c) { return dirty.has(c); });
+                                cells.forEach(function (td) { if (dirty.has(td)) { td.classList.add('err'); td.title = er.Message; } });
+                            });
+                            updateSaveBar();
+                            showToast((res && res.Message) || 'Nothing was saved.', 'error');
+                            var bad2 = firstInvalid();
+                            if (bad2) { reveal(bad2); }
+                            return;
+                        }
+                        (res.Rows || []).forEach(function (row) {
+                            var r = byId[String(row.Id)];
+                            if (r) { applyRow(r.tr, row); }
+                        });
+                        // Cells whose row was not returned (e.g. it left the view) were still saved.
+                        sent.forEach(function (td) {
+                            if (dirty.has(td)) { clearDirty(td); td.classList.add('saved'); rowChanged(td.parentNode); }
+                        });
+                        if (onlyPending && dirty.size === 0) { onlyPending = false; applyFilters(); }
+                        updateSaveBar();
+                        showToast(res.Message, res.Level || 'success');
+                    },
+                    function (err) {
+                        saving = false;
+                        window.hideLoader();
+                        updateSaveBar();
+                        showToast('Nothing was saved: ' + ((err && err.get_message && err.get_message()) || 'network error') +
+                                  '. Your changes are still on screen - try Save all again, or reload the page if your session expired.', 'error');
+                    });
+            }
+
+            function discardAll() {
+                if (editTd) { endEdit(false); }
+                if (dirty.size === 0) { return; }
+                if (!window.confirm('Discard ' + dirty.size + ' unsaved change(s)?')) { return; }
+                Array.from(dirty).forEach(function (td) {
+                    td.textContent = td.getAttribute('data-orig') || '';
+                    clearDirty(td);
+                    rowChanged(td.parentNode);
+                });
+                if (onlyPending) { onlyPending = false; }
+                applyFilters();
+                updateSaveBar();
+            }
+
+            window.confirmDiscard = function () {
+                if (editTd) { endEdit(true); }
+                if (dirty.size === 0) { return true; }
+                var ok = window.confirm('You have ' + dirty.size + ' unsaved change(s). Continue and lose them?\n\n(Cancel, then Save all, to keep them.)');
+                if (ok) { skipUnload = true; }
+                return ok;
+            };
+
+            saveBtn.addEventListener('click', saveAll);
+            discardBtn.addEventListener('click', discardAll);
+
+            /* ---------- Upload: stage the differences from a CSV / Excel file ---------- */
+            var fileInput = document.getElementById('fileUpload');
+            var MAX_UPLOAD = 1400 * 1024;   // base64 must stay under ASP.NET's default 2 MB JSON limit
+
+            document.getElementById('btnUpload').addEventListener('click', function () {
+                if (editTd) { endEdit(true); }
+                fileInput.value = '';
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', function () {
+                var file = fileInput.files && fileInput.files[0];
+                if (!file) { return; }
+                if (!/\.(csv|txt|xlsx|xlsm)$/i.test(file.name)) { showToast('Upload a .csv or .xlsx file.', 'error'); return; }
+                if (file.size > MAX_UPLOAD) {
+                    showToast('The file is too large for one upload (max 1.4 MB). Upload it per discipline, or remove columns you did not change.', 'error');
+                    return;
+                }
+                if (!window.PageMethods || !PageMethods.PreviewUpload) { showToast('Upload is not available - reload the page.', 'error'); return; }
+                var reader = new FileReader();
+                reader.onerror = function () { showToast('The file could not be read.', 'error'); };
+                reader.onload = function () {
+                    var bytes = new Uint8Array(reader.result), bin = '';
+                    for (var i = 0; i < bytes.length; i += 0x8000) {
+                        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                    }
+                    window.showLoader();
+                    PageMethods.PreviewUpload(key, file.name, window.btoa(bin),
+                        function (res) { window.hideLoader(); stageUpload(file.name, res); },
+                        function (err) {
+                            window.hideLoader();
+                            showToast('Upload failed: ' + ((err && err.get_message && err.get_message()) || 'network error'), 'error');
+                        });
+                };
+                reader.readAsArrayBuffer(file);
+            });
+
+            function stageUpload(name, res) {
+                if (!res || !res.Ok) { showToast((res && res.Message) || 'The file could not be read.', 'error'); return; }
+                var staged = 0, offScreen = 0, invalid = 0, touched = {};
+                (res.Changes || []).forEach(function (c) {
+                    var r = byId[String(c.Id)];
+                    if (!r || !(c.Field in colOf)) { offScreen++; return; }
+                    var td = r.tr.cells[colOf[c.Field]];
+                    stage(td, c.Value, savedValue(td));
+                    if (td.classList.contains('err')) { invalid++; }
+                    touched[c.Id] = true;
+                    staged++;
+                });
+                var nRows = Object.keys(touched).length;
+                var lines = ['“' + name + '”: ' + res.FileRows + ' row(s) read, columns compared: ' + (res.Columns || []).join(', ') + '.'];
+                if (staged > 0) {
+                    lines.push(staged + ' change(s) in ' + nRows + ' row(s) are staged (yellow) - review them, then Save all.');
+                } else if (!offScreen) {
+                    lines.push('No differences found - nothing to save.');
+                }
+                if (invalid) { lines.push(invalid + ' staged value(s) are invalid (red) - fix them before saving.'); }
+                if (offScreen) { lines.push(offScreen + ' change(s) are for rows of another discipline - choose Discipline “All” and upload again.'); }
+                if (res.NotFoundCount) { lines.push(res.NotFoundCount + ' ID(s) are not in this project and were skipped: ' + res.NotFound.join(', ') + (res.NotFoundCount > res.NotFound.length ? ' …' : '') + '.'); }
+                if (res.NoIdCount) { lines.push(res.NoIdCount + ' row(s) without a valid ID were skipped.'); }
+                if (res.DuplicateIds) { lines.push(res.DuplicateIds + ' duplicate ID row(s): the last one wins.'); }
+                if (res.Ignored && res.Ignored.length) { lines.push('Ignored columns: ' + res.Ignored.join(', ') + '.'); }
+                var issues = invalid || offScreen || res.NotFoundCount || res.NoIdCount || res.DuplicateIds;
+                showToast(lines.join('\n'), issues ? 'warn' : (staged ? 'success' : 'info'), staged > 0 || issues);
+                if (staged > 0) { onlyPending = true; applyFilters(); scroller.scrollTop = 0; }
+            }
+
+            /* ---------- Cell navigation ---------- */
             function visibleSibling(tr, dir) {
                 do { tr = dir > 0 ? tr.nextElementSibling : tr.previousElementSibling; }
                 while (tr && tr.style.display === 'none');
@@ -1210,7 +1434,7 @@
             });
 
             editor.addEventListener('blur', function () {
-                // Clicking elsewhere commits the cell (the editor is moved, not destroyed, on navigation).
+                // Clicking elsewhere keeps the typed text (the editor is moved, not destroyed, on navigation).
                 setTimeout(function () { if (editTd && document.activeElement !== editor) { endEdit(true); } }, 0);
             });
 
@@ -1221,15 +1445,31 @@
                 else if (e.key === 'ArrowDown') { e.preventDefault(); moveFrom(td, 1, 0); }
                 else if (e.key === 'ArrowUp') { e.preventDefault(); moveFrom(td, -1, 0); }
                 else if (e.key === 'Tab') { e.preventDefault(); moveFrom(td, 0, e.shiftKey ? -1 : 1); }
-                else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); endEdit(false); }
+                else if (e.key === 'Escape') {
+                    // Cancel the typing; with nothing typed, just leave the cell (a pending change stays).
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (editor.value !== editStart) {
+                        editor.value = editStart;
+                        editor.select();
+                    } else {
+                        endEdit(false);
+                    }
+                }
+                else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && editor.value === editStart && editStart !== editSaved) {
+                    // Ctrl+Z before typing: back to the saved value (clears the pending change).
+                    e.preventDefault();
+                    editor.value = editSaved;
+                    endEdit(true);
+                }
             });
 
             window.addEventListener('beforeunload', function (e) {
                 store('addr2.scroll.' + stateKey, String(scroller.scrollTop));
                 if (editTd) { endEdit(true); }
-                if (pending > 0 || grid.querySelector('td.err')) {
+                if (!skipUnload && (dirty.size > 0 || saving)) {
                     e.preventDefault();
-                    e.returnValue = 'Some changes are still saving or were not saved.';
+                    e.returnValue = 'You have unsaved changes.';
                     return e.returnValue;
                 }
             });
@@ -1238,8 +1478,16 @@
                Export: the server exports exactly the rows on screen, in this order
                ================================================================ */
             window.prepareExport = function () {
+                if (editTd) { endEdit(true); }
+                if (dirty.size > 0 && !window.confirm('The download contains the SAVED values: your ' + dirty.size +
+                        ' unsaved change(s) are not in it.\n\nDownload anyway? (Cancel, then Save all, to include them.)')) {
+                    return false;
+                }
                 var ids = visibleRows().map(function (r) { return r.id; });
                 document.getElementById('hfExportIds').value = ids.length ? ids.join(',') : '-';
+                // A download does not leave the page: only skip the unsaved-changes prompt for this request.
+                skipUnload = true;
+                setTimeout(function () { skipUnload = false; }, 3000);
                 return true;
             };
 
@@ -1247,6 +1495,7 @@
                Keyboard shortcuts
                ================================================================ */
             document.addEventListener('keydown', function (e) {
+                if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveAll(); return; }
                 if (e.key === 'Escape' && !pop.hidden) { closeFilter(); return; }
                 var t = e.target;
                 var tag = (t && t.tagName) || '';
@@ -1260,6 +1509,7 @@
             /* ---------- Start-up ---------- */
             restoreState();
             applyFilters();
+            updateSaveBar();
             var sc = parseInt(load('addr2.scroll.' + stateKey) || '0', 10);
             if (sc > 0) { scroller.scrollTop = sc; }
         })();
