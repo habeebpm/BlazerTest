@@ -116,6 +116,13 @@
 
     protected string Mode { get { return S(G(R, "mode")) == "live" ? "Live" : "Dry-run"; } }
 
+    protected string ClaudeProblem { get { return S(G(R, "claude_problem")); } }
+    protected string ClaudeState
+    {
+        get { return ClaudeProblem.Length > 0 ? "stopped" : B(G(R, "claude_paused")) ? "paused" : "on"; }
+    }
+    protected string ClaudeChip { get { return ClaudeState == "on" ? "good" : ClaudeState == "stopped" ? "bad" : "warn"; } }
+
     protected string TelegramHours
     {
         get
@@ -261,7 +268,7 @@
     protected string TradesHtml()
     {
         if (Closed.Count == 0) return "<p class=\"empty\">No closed trades in the last 120 days.</p>";
-        StringBuilder sb = new StringBuilder("<ul class=\"rows\" id=\"trades\">");
+        StringBuilder sb = new StringBuilder("<ul class=\"rows\" id=\"trade-list\">");
         int shown = 0;
         foreach (object o in Closed)
         {
@@ -483,7 +490,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
   <div class="banner warn">Sample data - not your account.<p>This shows what the page looks like. <a href="Default.aspx">Back to your data</a>.</p></div>
 <% } %>
 <% if (!HasData) { %>
-  <section class="panel" id="overview">
+  <section class="panel" id="p-overview">
     <div class="card">
       <h3>No report yet</h3>
       <% if (LoadError == "denied") { %>
@@ -502,18 +509,22 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
     <div class="banner bad">The report is <%= AgeMinutes >= 120 ? Math.Round(AgeMinutes / 60).ToString(Inv) + " hours" : Math.Round(AgeMinutes).ToString(Inv) + " minutes" %> old.
       <p>The trading program is probably not running. Check the <code>start.bat</code> window and MT5 on the PC.</p></div>
   <% } %>
+  <% if (ClaudeProblem.Length > 0) { %>
+    <div class="banner bad">Claude entries have stopped: <%= H(ClaudeProblem) %>
+      <p>Telegram signals are still copied and open trades still managed. Fix it, then restart <code>start.bat</code>.</p></div>
+  <% } %>
   <% foreach (object p in L(G(R, "problems"))) { %>
     <div class="banner warn">Part of the report is missing: <%= H(S(p)) %></div>
   <% } %>
 
-  <section class="panel" id="overview" aria-label="Overview">
+  <section class="panel" id="p-overview" aria-label="Overview">
     <div class="card hero">
       <h2>Equity</h2>
       <div class="eq"><%= Account.ContainsKey("equity") ? Money(N(G(Account, "equity"))) : "–" %></div>
       <div class="today <%= Tone(TodayChange) %>">Today <%= Signed(TodayChange) %> (<%= TodayPct.ToString("+0.00;-0.00;0.00", Inv) %>%)</div>
       <div class="meta">Balance <%= Money(N(G(Account, "balance"))) %> · Free margin <%= Money(N(G(Account, "margin_free"))) %><%= Account.ContainsKey("leverage") ? " · 1:" + N(G(Account, "leverage")).ToString("0", Inv) : "" %></div>
       <div class="state">
-        <span class="chip <%= B(G(R, "claude_paused")) ? "warn" : "good" %>">Claude <%= B(G(R, "claude_paused")) ? "paused" : "on" %></span>
+        <span class="chip <%= ClaudeChip %>">Claude <%= ClaudeState %></span>
         <span class="chip <%= B(G(Day, "daily_loss_hit")) ? "bad" : "" %>"><%= B(G(Day, "daily_loss_hit")) ? "Daily loss cap hit" : "Daily cap OK" %></span>
         <span class="chip">Claude trades today <%= N(G(Day, "claude_trades")).ToString("0", Inv) %></span>
       </div>
@@ -533,7 +544,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
     </div>
   </section>
 
-  <section class="panel" id="trades" aria-label="Trades" hidden>
+  <section class="panel" id="p-trades" aria-label="Trades" hidden>
     <div class="card">
       <header><h2>Closed trades</h2>
         <div class="filters" role="group" aria-label="Filter trades">
@@ -546,9 +557,9 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
     </div>
   </section>
 
-  <section class="panel" id="claude" aria-label="Claude" hidden>
+  <section class="panel" id="p-claude" aria-label="Claude" hidden>
     <div class="card">
-      <header><h2>Claude's last word</h2><span class="chip <%= B(G(R, "claude_paused")) ? "warn" : "good" %>"><%= B(G(R, "claude_paused")) ? "Paused" : "On" %></span></header>
+      <header><h2>Claude's last word</h2><span class="chip <%= ClaudeChip %>"><%= ClaudeState.Substring(0, 1).ToUpperInvariant() + ClaudeState.Substring(1) %></span></header>
       <% string last = S(G(R, "last_verdict")); %>
       <%= last.Length > 0 ? "<p class=\"pre\">" + H(Clip(last, 3000)) + "</p>" : "<p class=\"empty\">Nothing yet.</p>" %>
       <p class="note">Claude opens trades only <%= H(TradeHours) %>.<%= TelegramHours.Length > 0 ? " Telegram signals: " + H(TelegramHours) + "." : "" %></p>
@@ -556,11 +567,11 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
     <div class="card"><h2>Recent evaluations</h2><%= DecisionsHtml() %></div>
   </section>
 
-  <section class="panel" id="signals" aria-label="Telegram signals" hidden>
+  <section class="panel" id="p-signals" aria-label="Telegram signals" hidden>
     <div class="card"><h2>Telegram signals</h2><%= SignalsHtml() %></div>
   </section>
 
-  <section class="panel" id="score" aria-label="Scorecard" hidden>
+  <section class="panel" id="p-score" aria-label="Scorecard" hidden>
     <%= ScoreHtml() %>
     <p class="note">Rules, unchanged: <%= H(RulesLine()) %>. Go live only after 30+ trades ON TRACK.</p>
   </section>
@@ -576,9 +587,11 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
 (function () {
   var tabs = document.querySelectorAll("nav.tabs a"), panels = document.querySelectorAll(".panel");
   function show() {
+    // Panels are "p-<tab>": no element carries the tab's own name, so the
+    // browser never jumps past the warnings at the top of the page.
     var id = (location.hash || "#overview").slice(1), found = false;
-    for (var i = 0; i < panels.length; i++) { var on = panels[i].id === id; panels[i].hidden = !on; if (on) found = true; }
-    if (!found && panels.length) { panels[0].hidden = false; id = panels[0].id; }
+    for (var i = 0; i < panels.length; i++) { var on = panels[i].id === "p-" + id; panels[i].hidden = !on; if (on) found = true; }
+    if (!found && panels.length) { panels[0].hidden = false; id = panels[0].id.slice(2); }
     for (var j = 0; j < tabs.length; j++) {
       if (tabs[j].getAttribute("href") === "#" + id) tabs[j].setAttribute("aria-current", "page"); else tabs[j].removeAttribute("aria-current");
     }
@@ -594,7 +607,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
   }
 
   // Trades filter.
-  var buttons = document.querySelectorAll(".filters button"), rows = document.querySelectorAll("#trades li");
+  var buttons = document.querySelectorAll(".filters button"), rows = document.querySelectorAll("#trade-list li");
   for (var b = 0; b < buttons.length; b++) buttons[b].addEventListener("click", function () {
     var f = this.getAttribute("data-filter");
     for (var x = 0; x < buttons.length; x++) buttons[x].setAttribute("aria-pressed", buttons[x] === this ? "true" : "false");

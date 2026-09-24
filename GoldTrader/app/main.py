@@ -524,6 +524,7 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> 
         return
     features["xtr"] = xtr_logic.snapshot_context(xtr_a, cfg.xtr_gate)
     verdict = claude_advisor.get_verdict(client, cfg, features)
+    status_report.note_claude_problem("")          # Claude answered - any earlier stop is over
     log.info("Claude verdict: direction=%s conviction=%s confluence=%d/3 - %s",
               verdict.direction, verdict.conviction, verdict.confluence_count, verdict.reasoning)
     xtr_decision = None
@@ -1046,6 +1047,7 @@ def main(argv: list | None = None) -> int:
                 sleep_seconds = cfg.poll_seconds
             else:
                 reason = str(exc)
+                status_report.note_claude_problem(reason[:300])
                 if reason not in claude_alerted and cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
                     claude_alerted.add(reason)
                     threading.Thread(
@@ -1104,7 +1106,12 @@ def main(argv: list | None = None) -> int:
                 heartbeat.mark_stale_alert_sent()
 
         try:
-            time.sleep(sleep_seconds)
+            # In short steps, so the dashboard file stays fresh even through
+            # the 30-minute wait after a Claude failure that needs you.
+            wake = time.time() + sleep_seconds
+            while time.time() < wake:
+                time.sleep(max(0.0, min(cfg.poll_seconds, wake - time.time())))
+                status_report.maybe_write(gw, cfg, spec, day)
         except KeyboardInterrupt:     # Ctrl+C lands here most of the time - no traceback
             log.info("Stopped.")
             return 0

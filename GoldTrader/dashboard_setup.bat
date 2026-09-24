@@ -25,6 +25,9 @@ echo [2/5] Web site "%SITE%" on port %PORT% ...
 "%APPCMD%" list site "%SITE%" >nul 2>&1 || "%APPCMD%" add site /name:"%SITE%" /physicalPath:"%ROOT%\dashboard" /bindings:http/*:%PORT%: >nul
 "%APPCMD%" set vdir "%SITE%/" /physicalPath:"%ROOT%\dashboard" >nul
 "%APPCMD%" set app "%SITE%/" /applicationPool:"%SITE%" >nul
+rem Pages are read as the site's own account (IIS AppPool\GoldTrader), not IUSR - that account is
+rem the one given read access below, wherever the GoldTrader folder lives.
+"%APPCMD%" set config "%SITE%" -section:system.webServer/security/authentication/anonymousAuthentication /userName:"" /commit:apphost >nul
 "%APPCMD%" start site "%SITE%" >nul 2>&1
 
 echo [3/5] Read access for the site: the dashboard and logs folders only ^(never keys.txt^)...

@@ -4247,6 +4247,11 @@ def test_status_report() -> bool:
         ok &= check("a failing part is left out and named; everything else is still reported",
                     "account" not in rep and any("account" in p for p in rep["problems"])
                     and len(rep["closed"]) == 12 and rep["signals"] == [], rep["problems"])
+        SR.note_claude_problem("Claude API billing error (HTTP 402) - out of credits")
+        stopped = SR.build(g, cfg, spec, day, now=1_790_000_000)["claude_problem"]
+        SR.note_claude_problem("")
+        ok &= check("a Claude stop that needs you (credits, key) is reported until Claude answers again",
+                    "out of credits" in stopped and SR.build(g, cfg, spec, day, now=1_790_000_000)["claude_problem"] == "")
         SR._state.update(last=0.0)
         wrote = [SR.maybe_write(g, cfg, spec, day, now=1000.0), SR.maybe_write(g, cfg, spec, day, now=1030.0),
                  SR.maybe_write(g, cfg, spec, day, now=1061.0)]

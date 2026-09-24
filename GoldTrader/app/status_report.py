@@ -40,7 +40,13 @@ MAX_SIGNALS = 40
 SIGNALS_FILE = "TelegramSMC_Signals.csv"
 TELEGRAM_MAGIC_DEFAULT = 20260922
 
-_state = {"last": 0.0, "scorecard_at": 0.0, "scorecard": None, "warned": False}
+_state = {"last": 0.0, "scorecard_at": 0.0, "scorecard": None, "warned": False, "claude_problem": ""}
+
+
+def note_claude_problem(reason: str) -> None:
+    """Claude stopped for a reason that needs the owner (credits, API key,
+    model) - shown on the dashboard until a cycle succeeds ("" clears it)."""
+    _state["claude_problem"] = reason or ""
 
 
 def source_magics(cfg) -> dict:
@@ -185,6 +191,7 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
         {k: r.get(k, "") for k in ("time_utc", "action", "direction", "accepted", "sanity_reason",
                                   "smc_reason", "order_type", "order_price", "lots", "dry_run", "raw_text")}
         for r in tail_csv(_signals_path(gateway), MAX_SIGNALS)])
+    report["claude_problem"] = _state["claude_problem"]
     report["problems"] = problems
     return report
 
