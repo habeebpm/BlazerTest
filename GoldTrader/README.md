@@ -1,123 +1,97 @@
 # GoldTrader - setup guide
 
-Everything is in this one folder. You only ever double-click the `.bat`
-files here.
+Everything is in this folder. You only double-click the `.bat` files.
 
 | File | What it does |
 |---|---|
-| `setup.bat` | Installs everything, tests it, puts the EAs into MT5 |
-| `check.bat` | First time: asks your settings. Later: checks MT5 + settings |
+| `setup.bat` | Installs everything and puts the EAs into MT5 |
+| `check.bat` | First time: asks your settings. Later: checks everything |
 | `start.bat` | Runs the system - leave its window open |
-| `settings.bat` | Change a setting later (API key, Telegram ids, relay) |
+| `settings.bat` | Change a setting later |
 
-## You need (once)
+## Before you start (once)
 
-1. **MetaTrader 5**, logged in to a **demo** account with XAUUSD.
+1. **MetaTrader 5** logged in to a **demo** account with XAUUSD.
 2. **Python 3.12+ (64-bit)** from python.org - tick **"Add python.exe to PATH"**.
-3. **Telegram bot token:** Telegram -> **@BotFather** -> `/newbot` -> copy the token.
-4. **Your chat id:** send your bot any message, then open
-   `https://api.telegram.org/bot<TOKEN>/getUpdates` - the number after
-   `"chat":{"id":` is your chat id.
-5. **Anthropic API key** (with credits) from <https://console.anthropic.com/>.
-6. Your bot added as **admin** of your signal channel (not your channel? see
-   Relay bridge below).
-7. Windows: **Settings -> System -> Power -> Sleep = Never**.
-
-Starting with a small account (about $1,000)? Read **Small accounts** in
-`docs/REFERENCE.md` first - at that size the Claude API bill decides the result.
+3. **Telegram bot:** @BotFather -> `/newbot` -> copy the **bot token**.
+4. **Your chat id:** message your bot, open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` -> copy the number after `"chat":{"id":`.
+5. **Anthropic API key** from <https://console.anthropic.com/>.
+6. Make your bot an **admin** of your signal channel (not your channel? see Relay below).
+7. Windows: **Sleep = Never**.
 
 ## Step 1 - Install
 
-Close MetaEditor (MT5 may stay open) -> double-click **`setup.bat`** -> wait
-for `ALL SELF-TESTS PASSED` and `0 error(s)` for both EAs.
+Close MetaEditor -> double-click **`setup.bat`** -> wait for
+`ALL SELF-TESTS PASSED` and `0 error(s)`.
+Run it again after every update.
 
-- "Several MT5 installations found": run
-  `python goldtrader.py install-mt5 --choice 1` in this folder.
-- "MetaEditor not found": open `UnifiedTrader_EA` in MetaEditor, press **F7**.
+## Step 2 - Settings
 
-## Step 2 - Your settings
-
-Double-click **`check.bat`**. It asks everything in one go (API key, bot
-token, chat id, relay yes/no). Answer **Y** to the test message - it must
-arrive in Telegram. Saved permanently, also after a restart.
+Double-click **`check.bat`** -> answer the questions -> **Y** to the test
+message (it must arrive in Telegram). Saved for good.
 
 ## Step 3 - MT5
 
-1. **Tools -> Options -> Expert Advisors** -> tick **Allow WebRequest** ->
-   add `https://api.telegram.org` -> OK.
-2. Open an **XAUUSD M15** chart -> drag **UnifiedTrader_EA** onto it ->
-   **Inputs** -> **Load** -> `UnifiedTrader_EA_Default.set`.
-3. Fill in `InpBotToken` (bot token) and `InpControlChatId` (your chat id).
-4. **Common** tab -> tick **Allow DLL imports** (only for the Google Drive
-   copy below) -> **OK** -> turn on **Algo Trading**.
-5. **Experts** tab -> find `message from chat <id>` for your signal channel
-   (post something in it if nothing shows) -> EA **Inputs** ->
-   `InpChannelId1` = that id -> **OK**.
+1. **Tools -> Options -> Expert Advisors** -> tick **Allow WebRequest** -> add
+   `https://api.telegram.org`.
+2. Open **XAUUSD M15** -> drag **UnifiedTrader_EA** on it -> **Inputs** ->
+   **Load** `UnifiedTrader_EA_Default.set`.
+3. Fill in `InpBotToken` and `InpControlChatId` (your chat id).
+4. **Common** tab -> tick **Allow DLL imports** -> **OK** -> **Algo Trading** on.
+5. **Experts** tab -> copy the id from `message from chat <id>` (post in your
+   channel if nothing shows) -> **Inputs** -> `InpChannelId1` = that id.
 
-## Step 4 - Start (demo)
+## Step 4 - Start
 
-1. EA **Inputs** -> `InpDryRun` = `false` -> **OK**.
-2. Double-click **`start.bat`** and leave the window open.
+1. EA **Inputs** -> `InpDryRun` = `false`.
+2. Double-click **`start.bat`**. Done.
 
-Done. Machine learning and the weekly report run by themselves.
+## What happens then
 
-## What to expect
+| | |
+|---|---|
+| Telegram signals | Copied when they arrive |
+| Claude trades | 08:00-16:45 and 18:15-20:00 New York time, about 4 a week |
+| Every trade | 2% risk, stop $6, locked at +$6, then trailed $3; max 5 per direction |
+| Protection | 10% daily loss cap, spread limit, news pause, margin guard, no Friday-evening entries |
+| Every week | A scorecard in Telegram: TOO EARLY / NOT PROVEN YET / ON TRACK / STOP AND REVIEW |
 
-- **Telegram signals** are copied when they arrive (news, spread and XTR
-  filters still apply).
-- **Claude trades only 08:00-16:45 and 18:15-20:00 New York time** (UTC
-  12:00-20:45 and 22:15-24:00 in summer, one hour later in winter), never
-  on Friday evening, never when the spread is wide. Outside those hours the
-  log says `outside trading hours` - that is normal, and it costs nothing.
-- About **4 Claude trades a week**, with losing weeks and months in between
-  (the one-year backtest's worst fall was 27% from the peak).
-- Every trade: a stop of $6 (at 0.01 lot), locked at +$6, then trailed $3.
-- Every week a **scorecard** arrives in Telegram with a plain verdict:
-  TOO EARLY / NOT PROVEN YET / ON TRACK / STOP AND REVIEW (rules in
-  `docs/REFERENCE.md`). Judge it by that, not by a single day.
+Check your broker's leverage for gold: at 1:20 a $1,000 account holds one
+trade at a time (the margin guard handles it).
 
 ## Every day
 
-- Keep **MT5** and the **`start.bat`** window open. If MT5 or the internet
-  drops, `start.bat` restarts itself every minute.
-- **After a PC restart:** open MT5 (Algo Trading on) -> `start.bat`.
+- Keep **MT5** and the **`start.bat`** window open (it restarts itself if MT5 or the internet drops).
+- After a PC restart: open MT5 (Algo Trading on) -> `start.bat`.
 
-**Telegram buttons:**
-
-| Button | Does |
+| Telegram button | Does |
 |---|---|
-| `PauseHab` / `ResumeHab` | Pause (closes + stops) / resume everything |
+| `PauseHab` / `ResumeHab` | Stop (closes all) / resume everything |
 | `PauseTelHab` / `ResumeTelHab` | Telegram-signal trades only |
 | `PauseClaudeHab` / `ResumeClaudeHab` | Claude trades only |
-| `Stats` / `News` / `Why` | Equity + win %, economic calendar, Claude's last reasoning |
+| `Stats` / `News` / `Why` | Results, economic calendar, Claude's last reasoning |
+
+## Going live
+
+Only after 2-4 weeks of demo with the scorecard ON TRACK: log MT5 into the
+real account, keep the same settings, start small.
 
 ---
 
 ## Optional
 
-**Relay bridge** (signal channel you are NOT admin of): create a private
-Telegram group with your bot as admin -> <https://my.telegram.org> -> API
-development tools -> copy `api_id` + `api_hash` -> `settings.bat` -> answer
-**y** to the relay -> `relay_login.bat` (phone + code; it prints the chat
-ids) -> EA `InpChannelId1` = the relay group id -> restart `start.bat`.
+**Relay** (a channel you are not admin of): make a private group with your
+bot as admin -> <https://my.telegram.org> -> API development tools -> copy
+`api_id` + `api_hash` -> `settings.bat` -> **y** to relay -> `relay_login.bat`
+-> `InpChannelId1` = the group id -> restart `start.bat`.
 
-**Price files to Google Drive:** the preset already copies them to
-`G:\MyDrive\MyMQChartDrive` (needs Allow DLL imports, step 3.4). Create that
-folder in Google Drive; if Explorer shows a different path (e.g.
-`G:\My Drive\MyMQChartDrive`), put that path in EA `InpXtrExportCopyTo`.
-Files appear within a minute and update every minute. Not wanted: make
-`InpXtrExportCopyTo` empty.
+**Price files to Google Drive:** already copied to `G:\MyDrive\MyMQChartDrive`.
+If your Drive folder path is different, change `InpXtrExportCopyTo`; to turn
+it off, leave it empty.
 
 **Trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->
-**Load** `TelegramSMC_TradeLogger_Unified.set`. Web dashboard: see
-`docs/REFERENCE.md`.
+**Load** `TelegramSMC_TradeLogger_Unified.set`.
 
-**Real money** (only after a good demo): real account (small balance), EA
-`InpDryRun` = `true`, remove `--live` in `start.bat`, run 1-2 days, check
-the logs -> `InpDryRun` = `false`, put `--live` back, restart `start.bat`.
-
----
-
-How it decides, every limit, all options, troubleshooting:
-[`docs/REFERENCE.md`](docs/REFERENCE.md). One-year backtest:
-[`docs/BACKTEST_REPORT.md`](docs/BACKTEST_REPORT.md).
+Details, options and troubleshooting: [`docs/REFERENCE.md`](docs/REFERENCE.md).
+Backtest: [`docs/BACKTEST_REPORT.md`](docs/BACKTEST_REPORT.md).
