@@ -448,14 +448,14 @@ a{ color:inherit; }
 .circle-btn{
     width:34px;
     height:34px;
-    line-height:32px;
     border-radius:50%;
-    text-align:center;
     text-decoration:none;
     border:1px solid var(--primary-light);
     background:var(--card);
     color:var(--primary-light);
-    display:inline-block;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
     transition:.2s;
     cursor:pointer;
 }
@@ -463,6 +463,16 @@ a{ color:inherit; }
 .circle-btn:hover{
     background:var(--primary-light);
     color:white;
+}
+
+.circle-btn svg{
+    width:18px;
+    height:18px;
+    stroke:currentColor;
+    stroke-width:3;
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
 }
 
 /* ==========================
@@ -1208,8 +1218,12 @@ dialog.confirm-dialog::backdrop{
                     <asp:Literal ID="litRef" runat="server" />
                 </div>
                 <div class="context-nav">
-                    <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev">&#8592;</asp:LinkButton>
-                    <asp:LinkButton ID="btnCtdNext" runat="server" CssClass="circle-btn" ToolTip="Next CTD" OnClick="CTD_Next">&#8594;</asp:LinkButton>
+                    <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+                    </asp:LinkButton>
+                    <asp:LinkButton ID="btnCtdNext" runat="server" CssClass="circle-btn" ToolTip="Next CTD" OnClick="CTD_Next">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                    </asp:LinkButton>
                 </div>
             </div>
 
