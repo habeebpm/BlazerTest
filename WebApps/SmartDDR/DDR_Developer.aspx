@@ -1073,18 +1073,25 @@ dialog.confirm-dialog::backdrop{
 
                 <div class="nav-section">
                     <div class="nav-section-label">Quick Actions</div>
-                    <asp:LinkButton ID="DDR1" runat="server" CssClass="nav-item"
-                        OnClick="DDR1_Click"
-                        OnClientClick="showLoader();"
-                        ToolTip="Add one document row and one activity row">
+                    <asp:LinkButton ID="btnAllocateHours" runat="server" CssClass="nav-item"
+                        OnClick="btnAllocateHours_Click"
+                        CausesValidation="False"
+                        ToolTip="Evenly splits this CTD's total hours across all DDR rows; the first row absorbs any rounding remainder so the totals match exactly">
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></svg></span>
-                        <span>DDR + Activity</span>
+                        <span>Allocate Hours</span>
                     </asp:LinkButton>
                     <asp:LinkButton ID="Plip_Search" runat="server" CssClass="nav-item"
                         CausesValidation="False"
                         OnClientClick="openPLIPDrawer(this); return false;">
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" /></svg></span>
                         <span>PLIP Search</span>
+                    </asp:LinkButton>
+                    <asp:LinkButton ID="btnOpenMultiplier" runat="server" CssClass="nav-item"
+                        OnClick="btnOpenMultiplier_Click"
+                        CausesValidation="False"
+                        ToolTip="Create multiple copies of a DDR row">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M4 16V6a2 2 0 0 1 2-2h10" /></svg></span>
+                        <span>DDR Multiplier</span>
                     </asp:LinkButton>
                 </div>
 
@@ -1265,13 +1272,14 @@ dialog.confirm-dialog::backdrop{
                         OnClick="btnSaveAll_Click"
                         OnClientClick="return validateAllDdrRows();" />
 
-                    <asp:Button ID="btnAllocateHours"
+                    <asp:Button ID="DDR1"
                         runat="server"
-                        Text="Allocate Hours"
+                        Text="DDR + Activity"
                         CssClass="btn-secondary"
-                        OnClick="btnAllocateHours_Click"
+                        OnClick="DDR1_Click"
+                        OnClientClick="showLoader();"
                         CausesValidation="False"
-                        ToolTip="Evenly splits this CTD's total hours across all DDR rows; the first row absorbs any rounding remainder so the totals match exactly" />
+                        ToolTip="Add one document row and one activity row" />
                 </div>
             </div>
 
@@ -1617,11 +1625,9 @@ dialog.confirm-dialog::backdrop{
             <button type="button" class="drawer-close" onclick="closeMultiplierDrawer()" aria-label="Close">&#10006;</button>
         </div>
         <div class="drawer-body">
-            <asp:HiddenField ID="hfMultiplyRow" runat="server" />
-
             <div class="search-group">
-                <label>Row being multiplied</label>
-                <asp:Literal ID="litMultiplyTarget" runat="server" />
+                <label for="<%= ddlMultiplyTargetRow.ClientID %>">Row to multiply</label>
+                <asp:DropDownList ID="ddlMultiplyTargetRow" runat="server" CssClass="drawer-input" />
             </div>
 
             <div class="search-group">

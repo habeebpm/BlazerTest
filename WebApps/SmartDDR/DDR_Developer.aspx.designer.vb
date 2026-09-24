@@ -21,7 +21,7 @@ Partial Public Class DDR_Developer
     Protected WithEvents ctd_ddr_match As Global.System.Web.UI.WebControls.GridView
     Protected WithEvents CTDDDRSOURCE As Global.System.Web.UI.WebControls.SqlDataSource
 
-    Protected WithEvents DDR1 As Global.System.Web.UI.WebControls.LinkButton
+    Protected WithEvents DDR1 As Global.System.Web.UI.WebControls.Button
 
     Protected WithEvents hfSelectedRow As Global.System.Web.UI.WebControls.HiddenField
 
@@ -43,14 +43,15 @@ Partial Public Class DDR_Developer
     Protected WithEvents CTD_Grid As Global.System.Web.UI.WebControls.GridView
     Protected WithEvents CTD_Source As Global.System.Web.UI.WebControls.SqlDataSource
 
+    Protected WithEvents btnAllocateHours As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents Plip_Search As Global.System.Web.UI.WebControls.LinkButton
+    Protected WithEvents btnOpenMultiplier As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents CSV_Template As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents fuCsv As Global.System.Web.UI.WebControls.FileUpload
     Protected WithEvents CSV_Upload As Global.System.Web.UI.WebControls.LinkButton
 
     Protected WithEvents btnAddDDR As Global.System.Web.UI.WebControls.Button
     Protected WithEvents btnSaveAll As Global.System.Web.UI.WebControls.Button
-    Protected WithEvents btnAllocateHours As Global.System.Web.UI.WebControls.Button
 
     Protected WithEvents grdDDREntry As Global.System.Web.UI.WebControls.GridView
 
@@ -66,8 +67,7 @@ Partial Public Class DDR_Developer
     Protected WithEvents UpdatePanel1 As Global.System.Web.UI.UpdatePanel
     Protected WithEvents ctdGrid As Global.System.Web.UI.WebControls.GridView
 
-    Protected WithEvents hfMultiplyRow As Global.System.Web.UI.WebControls.HiddenField
-    Protected WithEvents litMultiplyTarget As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents ddlMultiplyTargetRow As Global.System.Web.UI.WebControls.DropDownList
     Protected WithEvents rblMultiplyMode As Global.System.Web.UI.WebControls.RadioButtonList
     Protected WithEvents txtMultiplyCount As Global.System.Web.UI.WebControls.TextBox
     Protected WithEvents btnApplyMultiplier As Global.System.Web.UI.WebControls.Button

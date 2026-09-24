@@ -427,29 +427,65 @@ Public Class DDR_Developer
         End If
     End Sub
 
+    ''' <summary>
+    ''' Fills the drawer's row picker from grdDDREntry's currently rendered
+    ''' rows. Called both when the drawer is opened for a specific row (the
+    ''' per-row "&times;N" button - preselectRowIndex identifies it) and when
+    ''' it's opened globally from the sidebar (preselectRowIndex = -1, so the
+    ''' first row is left selected by default).
+    ''' </summary>
+    Private Sub PopulateMultiplyRowPicker(Optional preselectRowIndex As Integer = -1)
+        ddlMultiplyTargetRow.Items.Clear()
+        For Each row As GridViewRow In grdDDREntry.Rows
+            If row.RowType <> DataControlRowType.DataRow Then Continue For
+            Dim txtDocumentNo As TextBox = TryCast(row.FindControl("txtDocumentNo"), TextBox)
+            Dim label As String = "Row " & (row.RowIndex + 1) & ": " & If(txtDocumentNo?.Text, "").Trim()
+            ddlMultiplyTargetRow.Items.Add(New ListItem(label, row.RowIndex.ToString()))
+        Next
+
+        If preselectRowIndex >= 0 Then
+            Dim item As ListItem = ddlMultiplyTargetRow.Items.FindByValue(preselectRowIndex.ToString())
+            If item IsNot Nothing Then
+                ddlMultiplyTargetRow.ClearSelection()
+                item.Selected = True
+            End If
+        End If
+    End Sub
+
     ''' <summary>Opens the multiplier drawer targeting the row whose "&times;N" button was clicked.</summary>
     Protected Sub btnMultiplyRow_Click(sender As Object, e As EventArgs)
         Dim btn As LinkButton = CType(sender, LinkButton)
         Dim row As GridViewRow = CType(btn.NamingContainer, GridViewRow)
-        Dim txtDocumentNo As TextBox = TryCast(row.FindControl("txtDocumentNo"), TextBox)
 
-        hfMultiplyRow.Value = row.RowIndex.ToString()
-        litMultiplyTarget.Text = "Row " & (row.RowIndex + 1) & ": " &
-            HttpUtility.HtmlEncode(If(txtDocumentNo?.Text, "").Trim())
+        PopulateMultiplyRowPicker(row.RowIndex)
 
         ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenMultiplier",
             "openMultiplierDrawer(document.getElementById('" & btn.ClientID & "'));", True)
     End Sub
 
+    ''' <summary>Opens the multiplier drawer from the sidebar, with no row pre-selected.</summary>
+    Protected Sub btnOpenMultiplier_Click(sender As Object, e As EventArgs)
+        PopulateMultiplyRowPicker()
+        If ddlMultiplyTargetRow.Items.Count = 0 Then
+            ShowToast("error", "Add a DDR line before multiplying.")
+            Return
+        End If
+
+        Dim btn As LinkButton = CType(sender, LinkButton)
+        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenMultiplierGlobal",
+            "openMultiplierDrawer(document.getElementById('" & btn.ClientID & "'));", True)
+    End Sub
+
     ''' <summary>
-    ''' Creates N copies of the targeted row. Mode A gives each copy the next
-    ''' DUM01..DUM99/DU100+ sequence number in the row's 4th "-"-segment; mode
-    ''' B increments the document number's trailing digit run once per copy.
-    ''' All N copies come from this one target row - it is left unchanged.
+    ''' Creates N copies of the row picked in the drawer. Mode A gives each
+    ''' copy the next DUM01..DUM99/DU100+ sequence number in the row's 4th
+    ''' "-"-segment; mode B increments the document number's trailing digit
+    ''' run once per copy. All N copies come from this one source row - it is
+    ''' left unchanged.
     ''' </summary>
     Protected Sub btnApplyMultiplier_Click(sender As Object, e As EventArgs)
         Dim rowIndex As Integer
-        If Not Integer.TryParse(hfMultiplyRow.Value, rowIndex) Then
+        If Not Integer.TryParse(ddlMultiplyTargetRow.SelectedValue, rowIndex) Then
             ShowToast("error", "Choose a row to multiply first.")
             Return
         End If
@@ -498,7 +534,6 @@ Public Class DDR_Developer
         Next
 
         RebindTempGrid(dt)
-        hfMultiplyRow.Value = ""
         ShowToast("success", n.ToString() & " copy/copies created from row " & (rowIndex + 1) & ".")
     End Sub
 

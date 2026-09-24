@@ -26,7 +26,7 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   decimal places, with the *first* row absorbing whatever rounding
   remainder is left over so the DDR total matches the CTD total exactly.
   Edits the rendered `txtHours` boxes in place; still requires Save All to
-  persist. Lives in the "DDR Line Items" toolbar next to Save All.
+  persist. Lives in the sidebar's "Quick Actions" section.
 - **Match flag on the CTD/DDR Hours grid** — the sidebar's `ctd_ddr_match`
   grid now has a flag column: 🚩 when a CTD's `CTD Hrs` and `DDR Hrs` don't
   match, ✅ when they do. (There's no widely-supported "green flag" glyph in
@@ -42,9 +42,16 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   `DUM99`, `DU100`, `DU101`, ... This is self-correcting across postbacks
   and CTDs since it always re-scans the live grid rather than keeping
   separate counter state.
-- **DDR Multiplier** — a "×N" action next to each row's Delete button opens
-  a drawer (`multiplierDrawer`) with two modes, driven by `rblMultiplyMode`
-  and a copy count `txtMultiplyCount` (1–50):
+- **DDR Multiplier** — opens a drawer (`multiplierDrawer`) with a row
+  picker (`ddlMultiplyTargetRow`) and two modes, driven by
+  `rblMultiplyMode` and a copy count `txtMultiplyCount` (1–50). It can be
+  opened two ways: the sidebar's "Quick Actions" shortcut
+  (`btnOpenMultiplier`, opens with no row pre-selected — the picker
+  defaults to the first row) or each row's own "×N" action next to its
+  Delete button (`btnMultiplyRow`, pre-selects that row in the picker).
+  `PopulateMultiplyRowPicker()` fills the dropdown from the grid's
+  currently rendered rows either way, so both entry points share the same
+  targeting UI:
   - **Mode A** (`btnApplyMultiplier_Click`, `useDumSequence = True`) —
     creates N copies of the row, each getting the next DUM/DU sequence
     number via the same numbering scheme above (computed once up front,
@@ -282,6 +289,13 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   this is a same-signature swap (`LinkButton.Click` uses the same
   `EventHandler` delegate as `Button.Click`), so no code-behind changes
   were needed beyond updating the designer file's field types to match.
+  The sidebar's "Quick Actions" section now holds **Allocate Hours**,
+  **PLIP Search** and **DDR Multiplier** as global shortcuts (each
+  converted from `asp:Button` to `asp:LinkButton` for the same
+  icon+label reason above); **"DDR + Activity" (`DDR1`)** moved back out
+  to the main content's "DDR Line Items" toolbar next to Add DDR Line/
+  Save All, since it acts on that grid specifically rather than being a
+  page-global action.
 
 ## Known limitations / follow-ups worth doing next
 - `NavigateToAdjacentCtd` still hardcodes `Discipline = '13. Process'`
