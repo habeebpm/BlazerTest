@@ -16,6 +16,7 @@ GoldTrader launcher - everything runs from this folder.
     python goldtrader.py backtest [options]
     python goldtrader.py scorecard      real demo/live results of both sources + verdict
     python goldtrader.py xtr-export [options] e.g. --check (VPS Drive upload test)
+    python goldtrader.py dashboard-password   set the web dashboard's password (dashboard/)
     python goldtrader.py test           every self-test
 
 Double-click versions: setup.bat, settings.bat, check.bat, start.bat, relay_login.bat.
@@ -286,6 +287,7 @@ def main(argv=None) -> int:
     p.add_argument("--all", action="store_true", help="install into every MT5 installation found")
     p.add_argument("--no-compile", action="store_true", dest="no_compile")
     sub.add_parser("settings")
+    sub.add_parser("dashboard-password")
     for name in ("check", "test-alert", "test-feeds", "relay-login", "once"):
         sub.add_parser(name)
     p = sub.add_parser("test-news")
@@ -303,6 +305,8 @@ def main(argv=None) -> int:
         return cmd_install_mt5(args)
     if args.cmd == "settings":
         return py(APP_DIR, "main.py", "--setup")
+    if args.cmd == "dashboard-password":
+        return py(APP_DIR, "dashboard_password.py")
     if args.cmd == "test-news":
         return py(APP_DIR, "main.py", "--test-news-check", args.direction)
     if args.cmd == "start":

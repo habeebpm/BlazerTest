@@ -34,3 +34,4 @@ GoldTrader/relay/*.session
 GoldTrader/relay/*.session-journal
 GoldTrader/drive_export/xtr_data/
 GoldTrader/keys.txt
+GoldTrader/dashboard/App_Data/password.txt

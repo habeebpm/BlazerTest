@@ -4114,6 +4114,140 @@ def test_three_legs_to_claude_to_trade() -> bool:
     return ok
 
 
+class DashGateway(FakeGateway):
+    """FakeGateway plus what status_report.py reads for the web dashboard."""
+    def __init__(self, files_dir, closed=(), fail_account=False, **kw):
+        super().__init__(**kw)
+        self.files_dir, self.closed, self.fail_account = files_dir, list(closed), fail_account
+        self.common = {"claudesmc_pause.txt": "paused", "claudesmc_last_verdict.txt": "BUY 3/3 full - executed"}
+
+    def account_summary(self):
+        if self.fail_account:
+            raise RuntimeError("account_info() failed")
+        return {"balance": 10000.0, "equity": self.equity, "margin": 70.0, "margin_free": 9900.0,
+                "currency": "USD", "leverage": 500}
+
+    def closed_trades(self, symbol, magics, lookback_days=14):
+        return [t for t in self.closed if t["magic"] in magics]
+
+    def read_common_file(self, name):
+        return self.common.get(name)
+
+    def terminal_files_dir(self):
+        return self.files_dir
+
+
+def test_status_report() -> bool:
+    print("\n=== 42. dashboard file logs/status.json (web page data) ===")
+    import tempfile
+    import status_report as SR
+    ok = True
+    spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+                         volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+    with tempfile.TemporaryDirectory() as d:
+        logs, files = os.path.join(d, "logs"), os.path.join(d, "Files")
+        os.makedirs(logs), os.makedirs(files)
+        with open(os.path.join(files, "TelegramSMC_Signals.csv"), "wb") as f:     # MT5 FILE_ANSI (cp1252)
+            f.write(('time_utc,chat_id,action,direction,accepted,sanity_reason,raw_text\r\n'
+                     '"2026.09.24 09:00:00","-100","OPEN","BUY","1","","GOLD BUY 4300 \u2013 SL 4290"\r\n'
+                     '"2026.09.24 09:05:00","-100","OPEN","SELL","0","spread 60 points","<b>SELL</b> now"\r\n'
+                     ).encode("cp1252"))
+        with open(os.path.join(logs, "decisions.csv"), "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["time", "direction", "conviction", "reasoning"])
+            for i in range(50):
+                w.writerow([f"t{i}", "buy", "full", "line one\nline two"])
+        t0 = datetime(2026, 9, 20, 14, tzinfo=timezone.utc)
+        closed = [{"time": t0 + timedelta(hours=i), "magic": 20260921 if i % 2 else 20260922,
+                   "direction": "buy", "pnl_dollars": 6.0 if i % 3 else -6.0, "volume": 0.01, "ticket": i}
+                  for i in range(12)]
+        pos = [{"ticket": 7, "magic": 20260922, "direction": "sell", "volume": 0.03, "price_open": 4300.0,
+                "sl": 4306.0, "tp": 0.0, "profit": -1.5, "time": t0}]
+        cfg = AdvisorConfig(dry_run=False, log_dir=logs, shared_cap_magic_numbers=[20260922])
+        day = main_mod.DayRoll()
+        day.day_start_equity, day.trades_today = 10000.0, 2
+        g = DashGateway(files, closed=closed, equity=10012.5, positions=pos)
+        SR._state.update(last=0.0, scorecard=None, scorecard_at=0.0)
+        rep = SR.build(g, cfg, spec, day, now=1_790_000_000)
+        ok &= check("account, day, pause state and last verdict are reported",
+                    rep["account"]["equity"] == 10012.5 and rep["day"]["start_equity"] == 10000.0
+                    and rep["claude_paused"] is True and "executed" in rep["last_verdict"]
+                    and rep["mode"] == "live" and rep["problems"] == [], rep.get("problems"))
+        ok &= check("open positions are tagged by source (Telegram magic from --shared-cap-magic)",
+                    rep["positions"][0]["source"] == "Telegram" and rep["positions"][0]["profit"] == -1.5)
+        ok &= check("closed trades newest first, tagged Claude/Telegram",
+                    len(rep["closed"]) == 12 and rep["closed"][0]["ticket"] == "11"
+                    and {c["source"] for c in rep["closed"]} == {"Claude", "Telegram"})
+        sc = rep["scorecard"]
+        ok &= check("the scorecard is computed live per source with its verdict",
+                    set(sc) == {"Claude", "Telegram", "Combined"} and sc["Combined"]["trades"] == 12
+                    and sc["Claude"]["verdict"] == "TOO EARLY", {k: v.get("verdict") for k, v in sc.items()})
+        ok &= check("Claude decisions: the last 40, newest first, multi-line reasoning kept",
+                    len(rep["decisions"]) == SR.MAX_DECISIONS and rep["decisions"][0]["time"] == "t49"
+                    and rep["decisions"][0]["reasoning"] == "line one\nline two")
+        sig = rep["signals"]
+        ok &= check("the EA's ANSI signal log is read (cp1252 dash kept), newest first, raw text as-is",
+                    len(sig) == 2 and sig[0]["sanity_reason"] == "spread 60 points"
+                    and sig[0]["raw_text"] == "<b>SELL</b> now" and "\u2013" in sig[1]["raw_text"], sig)
+        g_bad = DashGateway(os.path.join(d, "nowhere"), closed=closed, fail_account=True, equity=1.0)
+        rep = SR.build(g_bad, cfg, spec, day, now=1_790_000_000)
+        ok &= check("a failing part is left out and named; everything else is still reported",
+                    "account" not in rep and any("account" in p for p in rep["problems"])
+                    and len(rep["closed"]) == 12 and rep["signals"] == [], rep["problems"])
+        SR._state.update(last=0.0)
+        wrote = [SR.maybe_write(g, cfg, spec, day, now=1000.0), SR.maybe_write(g, cfg, spec, day, now=1030.0),
+                 SR.maybe_write(g, cfg, spec, day, now=1061.0)]
+        path = os.path.join(logs, "status.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        ok &= check("written at most once a minute, atomically (no temp file left), valid JSON",
+                    wrote == [True, False, True] and data["version"] == 1
+                    and not os.path.exists(path + ".tmp"), wrote)
+        SR._state.update(last=0.0)
+        ro = AdvisorConfig(log_dir=os.path.join(path, "not-a-dir"))
+        ok &= check("an unwritable logs folder never raises (trading unaffected)",
+                    SR.maybe_write(g, ro, spec, day, now=5000.0) is False)
+        SR._state.update(last=0.0, scorecard=None, scorecard_at=0.0, warned=False)
+    return ok
+
+
+def test_dashboard_password() -> bool:
+    print("\n=== 43. web dashboard password (salted PBKDF2, never the password itself) ===")
+    import base64
+    import hashlib
+    import tempfile
+    import dashboard_password as DP
+    ok = True
+    stored = DP.hash_password("correct horse 1", salt=b"0123456789abcdef", iterations=1000)
+    scheme, iters, salt, digest = stored.split("$")
+    ok &= check("format pbkdf2-sha256$iterations$salt$hash - the one Login.aspx verifies",
+                scheme == "pbkdf2-sha256" and iters == "1000" and base64.b64decode(salt) == b"0123456789abcdef"
+                and base64.b64decode(digest) == hashlib.pbkdf2_hmac("sha256", b"correct horse 1",
+                                                                    b"0123456789abcdef", 1000, 32))
+    ok &= check("right password verifies, wrong or garbled ones do not",
+                DP.verify("correct horse 1", stored) and not DP.verify("correct horse 2", stored)
+                and not DP.verify("x", "nonsense") and "correct horse" not in stored)
+    ok &= check("a new random salt every time (two hashes of one password differ)",
+                DP.hash_password("same password") != DP.hash_password("same password"))
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "App_Data", "password.txt")
+        answers = iter(["short", "long enough 1", "different 12", "long enough 1", "long enough 1"])
+        lines = []
+        DP.PASSWORD_FILE, old = path, DP.PASSWORD_FILE     # never the real file
+        try:
+            rcs = [DP.main(ask=lambda p: next(answers), out=lines.append) for _ in range(3)]
+        finally:
+            DP.PASSWORD_FILE = old
+        ok &= check("too short or not repeated the same: nothing saved; otherwise saved as a hash",
+                    rcs == [1, 1, 0] and os.path.exists(path)
+                    and DP.verify("long enough 1", open(path).read()), (rcs, lines))
+    gi = os.path.join(os.path.dirname(paths.PACKAGE_ROOT), ".gitignore")
+    if os.path.exists(gi):
+        ok &= check("the password file is in .gitignore",
+                    "GoldTrader/dashboard/App_Data/password.txt" in open(gi, encoding="utf-8").read())
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -4158,6 +4292,8 @@ def main() -> int:
         test_claude_prescreen(),
         test_keys_file(),
         test_three_legs_to_claude_to_trade(),
+        test_status_report(),
+        test_dashboard_password(),
     ]
     print()
     if all(results):

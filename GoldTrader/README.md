@@ -10,6 +10,7 @@ Everything is in this folder. You only double-click the `.bat` files.
 | `settings.bat` | Change a setting later |
 | `relay_login.bat` | Telegram login for the relay (only if you skipped it in Step 2) |
 | `keys.txt` | All your keys and ids in one private file (made by `setup.bat`) |
+| `dashboard_setup.bat` | Optional: your reports on your phone (run as administrator) |
 
 ## Before you start (once)
 
@@ -107,6 +108,12 @@ channel's id (the EA's **Experts** tab shows it as `message from chat <id>`).
 **Price files to Google Drive:** already copied to `G:\MyDrive\MyMQChartDrive`.
 If your Drive folder path is different, change `InpXtrExportCopyTo`; to turn
 it off, leave it empty.
+
+**Reports on your phone:** right-click `dashboard_setup.bat` -> Run as
+administrator, choose a password, then open `http://<PC name>:8080` - at
+home on the same Wi-Fi, or anywhere with Tailscale on the PC and the phone.
+Equity, open trades, results per source, Claude's decisions, Telegram
+signals and the scorecard, refreshed every minute. Read-only.
 
 **Trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->
 **Load** `TelegramSMC_TradeLogger_Unified.set`.

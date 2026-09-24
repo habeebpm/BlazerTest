@@ -32,6 +32,7 @@ import mt5_gateway as gw
 import news_check
 import relay_supervisor
 import services
+import status_report
 import tactics
 import telegram_alert
 import xtr_logic
@@ -1076,6 +1077,10 @@ def main(argv: list | None = None) -> int:
                 failed_bar, failed_attempts = None, 0
             else:
                 log.exception("Error during evaluation cycle - will retry next poll")
+
+        # The web dashboard's file (dashboard/, logs/status.json) - at most
+        # once a minute, never raises, never touches trading.
+        status_report.maybe_write(gw, cfg, spec, day)
 
         if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
             if heartbeat.due_heartbeat(cfg):

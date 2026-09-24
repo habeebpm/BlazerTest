@@ -14,7 +14,7 @@ do when something goes wrong.
 | Drive export (`drive_export/`) | Python, optional (VPS) | Price files to Google Drive without Drive for Desktop |
 | ML retrain, conviction report, **scorecard** | Python, automatic | Daily / weekly, see `settings.ini`; the scorecard goes to your Telegram |
 | TelegramSMC_TradeLogger | MT5 chart, optional | Trade journal CSV (both sources) |
-| Dashboard (`dashboard/`) | IIS, optional | Web page over the journal CSVs |
+| Dashboard (`dashboard/`) | IIS, optional | Password-protected phone page: equity, positions, trades, Claude's decisions, Telegram signals, scorecard (read-only) |
 
 `start.bat` runs the trading program and every companion switched on in
 `settings.ini`. It restarts the program after a crash or when MT5 was not
@@ -130,6 +130,8 @@ instead of restarting.
 | `logs/ml_snapshots.csv`, `logs/ml_win_probability_model.joblib` | ML data + model (~0.3 KB per trade, ~50 KB model) |
 | `logs/ml_retrain.log`, `logs/calibration_report.log`, `logs/scorecard.log` | Output of the automatic jobs |
 | `logs/day_state.json`, `logs/xtr_state.json`, `logs/services_state.json` | State kept across restarts |
+| `logs/status.json` | The dashboard's data, rewritten once a minute |
+| `dashboard/App_Data/password.txt` | The dashboard password's salted hash (never uploaded) |
 | MT5 `MQL5\Files\TelegramSMC_Signals.csv` / `..._Results.csv` | EA signal log / trade journal |
 | MT5 `Common\Files\XTR_Data\` | Price files (and your Drive folder if set) |
 | `relay/tg_relay_bridge.session` | The relay's Telegram login |
@@ -214,14 +216,33 @@ with the service account's email (Editor) -> test:
 -> `settings.ini [xtr_export] enabled = true` with those options -> EA
 `InpXtrExport = false`.
 
-## Dashboard (optional)
+## Dashboard on your phone (optional)
 
-1. Windows features: **Internet Information Services** + **ASP.NET 4.8**.
-2. Copy `dashboard\` to `C:\inetpub\wwwroot\dashboard\`.
-3. `Web.config`: `SignalsCsvPath` / `ResultsCsvPath` = the two MT5
-   `MQL5\Files\TelegramSMC_*.csv` files (File -> Open Data Folder).
-4. IIS Manager -> `dashboard` -> Convert to Application -> open
-   `http://localhost/dashboard/Dashboard.aspx`. No login: keep it off the internet.
+A web page on this PC's IIS: equity and today's change, open positions,
+closed trades per source, Claude's recent decisions (and why no trade),
+the Telegram signal log (and why a signal was not copied) and the live
+scorecard. Read-only - nothing on it can trade. It refreshes every minute
+and turns red ("Not updating") if `start.bat` stops.
+
+1. **Right-click `dashboard_setup.bat` -> Run as administrator.** It turns
+   on IIS + ASP.NET 4.8, creates the site `GoldTrader` on port **8080**
+   pointing at this `dashboard` folder, gives the site read access to
+   `dashboard` and `logs` only (never `keys.txt`), opens port 8080 to your
+   home network and Tailscale only, and asks for the page's password.
+2. Open `http://localhost:8080` on the PC and sign in. Without data yet,
+   "See the page with sample data" shows what it will look like.
+3. **Phone at home:** `http://<PC name>:8080` on the same Wi-Fi.
+4. **Phone anywhere:** install **Tailscale** (free) on the PC and the
+   phone, sign in to both with the same account, then open
+   `http://<PC name>:8080`. The connection is encrypted and nothing is
+   opened to the internet. Don't forward port 8080 on your router: that
+   exposes the page to everyone, over plain HTTP.
+
+Change the password: `python goldtrader.py dashboard-password`. Five wrong
+passwords lock sign-in from that device for 15 minutes. The data comes from
+`logs/status.json`, written by the trading program once a minute; if the
+site is not in `GoldTrader\dashboard`, set `LogsFolder` in
+`dashboard\Web.config`.
 
 ## Backtest
 
@@ -259,6 +280,9 @@ without the tactics. Results on a year of real prices:
 | No signals copied | `InpChannelId1` = the relay group id; bot is admin of the relay group; the `start.bat` window shows `Companion programs: relay_bridge` and no relay error; `relay_login.bat` lists the ids again |
 | Drive folder empty | EA Common tab -> Allow DLL imports; exact path from Explorer; Experts tab `XtrBarExport:` lines |
 | Relay "not logged in" | `relay_login.bat` |
+| Dashboard "Not updating" | `start.bat` or MT5 stopped on the PC |
+| Dashboard "No report yet" / page error on the PC | Run `dashboard_setup.bat` as administrator again; `start.bat` must be running |
+| Phone cannot open the dashboard | Same Wi-Fi or Tailscale on both; `http://` not `https://`; port 8080 |
 | Relay "Source channel ... not found" / "Relay group ... not found" | Join the channel with the same Telegram account; check the ids in `keys.txt` against the list `relay_login.bat` prints. Ids (`-100...`) and `@names` both work |
 | News check "0 of 5 feeds" | Firewall/antivirus blocking the feeds; trading continues without it |
 | Compile errors in `setup.bat` | Close MetaEditor and run `setup.bat` again; send the error line |

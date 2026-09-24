@@ -209,6 +209,27 @@ def account_equity() -> float:
     return float(info.equity)
 
 
+def account_summary() -> dict:
+    """Balance, equity and margin for the dashboard (status_report.py)."""
+    m = mt5()
+    info = m.account_info()
+    if info is None:
+        raise RuntimeError(f"account_info() failed: {m.last_error()}")
+    return {"balance": float(info.balance), "equity": float(info.equity), "margin": float(info.margin),
+            "margin_free": float(info.margin_free), "currency": str(info.currency),
+            "leverage": int(info.leverage)}
+
+
+def terminal_files_dir() -> str:
+    """This terminal's own MQL5\\Files folder (where UnifiedTrader_EA writes
+    TelegramSMC_Signals.csv)."""
+    m = mt5()
+    info = m.terminal_info()
+    if info is None:
+        raise RuntimeError(f"terminal_info() failed: {m.last_error()}")
+    return os.path.join(info.data_path, "MQL5", "Files")
+
+
 def write_common_file(filename: str, text: str) -> None:
     """Writes `text` into MT5's shared Common\\Files folder - the ONE
     location both this Python process and a running MQL5 EA's FileOpen(...,
@@ -292,10 +313,12 @@ def symbol_positions(symbol: str) -> list:
     positions = m.positions_get(symbol=symbol)
     if positions is None:
         return []
+    times = server_to_utc([getattr(p, "time", 0) for p in positions]) if len(positions) else []
     return [{"ticket": p.ticket, "magic": p.magic,
              "direction": "buy" if p.type == m.POSITION_TYPE_BUY else "sell",
-             "volume": p.volume, "price_open": p.price_open, "sl": p.sl, "tp": p.tp}
-            for p in positions]
+             "volume": p.volume, "price_open": p.price_open, "sl": p.sl, "tp": p.tp,
+             "profit": float(getattr(p, "profit", 0.0)), "time": t.to_pydatetime()}
+            for p, t in zip(positions, times)]
 
 
 def pending_orders(symbol: str) -> list:
