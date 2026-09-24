@@ -164,6 +164,7 @@ Public Class DDR_Developer
 
         ScriptManager.RegisterStartupScript(Me, Me.GetType(), "KeepDrawerOpen", "openPLIPDrawer();", True)
         ShowToast("success", "PLIP " & plipId & " applied to the selected row.")
+        ShowPlipDetailFooter(plipId)
     End Sub
 
     ''' <summary>
@@ -187,7 +188,51 @@ Public Class DDR_Developer
     Protected Sub txtPLIP_TextChanged(sender As Object, e As EventArgs)
         Dim txtPLIP As TextBox = CType(sender, TextBox)
         Dim row As GridViewRow = CType(txtPLIP.NamingContainer, GridViewRow)
-        ApplyPlipLookup(row, txtPLIP.Text.Trim())
+        Dim plipId As String = txtPLIP.Text.Trim()
+        ApplyPlipLookup(row, plipId)
+        ShowPlipDetailFooter(plipId)
+    End Sub
+
+    ''' <summary>
+    ''' Looks up a PLIP's descriptive fields (same source/columns as the PLIP
+    ''' search drawer's results grid) and opens the footer drawer to show
+    ''' them, whenever a PLIP is picked for a DDR row - either from the
+    ''' search drawer or by typing an ID directly. Leaves the footer alone on
+    ''' a blank ID; closes it if the typed/selected ID doesn't resolve.
+    ''' </summary>
+    Private Sub ShowPlipDetailFooter(plipId As String)
+        If String.IsNullOrWhiteSpace(plipId) Then Return
+
+        Const sql As String = "
+            SELECT [PLIP_ID],[Information_Required] AS [PLIP_Title],
+                   [Discipline_Code]+'-'+[Document_Type_Name] AS [Doc_Type],
+                   [Critical_Documentation] AS [Critical],
+                   [Required_Handover_Status] AS [FHO_Status],
+                   [DCAFID_Latest] AS [DCAF]
+            FROM [ACAD_DATA].[dbo].[SPO_PLIP]
+            WHERE [Active_YN]='YES' AND [PLIP_ID] = @PLIP_ID"
+
+        Using con As New SqlConnection(ST_Common.WorleyDataConnString)
+            Using cmd As New SqlCommand(sql, con)
+                cmd.Parameters.AddWithValue("@PLIP_ID", plipId)
+                con.Open()
+                Using rd As SqlDataReader = cmd.ExecuteReader()
+                    If Not rd.Read() Then
+                        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "ClosePlipFooter", "closeFooterDrawer();", True)
+                        Return
+                    End If
+
+                    litFooterPlipId.Text = HttpUtility.HtmlEncode(rd("PLIP_ID").ToString())
+                    litFooterTitle.Text = HttpUtility.HtmlEncode(rd("PLIP_Title").ToString())
+                    litFooterDocType.Text = HttpUtility.HtmlEncode(rd("Doc_Type").ToString())
+                    litFooterCritical.Text = HttpUtility.HtmlEncode(rd("Critical").ToString())
+                    litFooterHo.Text = HttpUtility.HtmlEncode(rd("FHO_Status").ToString())
+                    litFooterDcaf.Text = HttpUtility.HtmlEncode(rd("DCAF").ToString())
+                End Using
+            End Using
+        End Using
+
+        ScriptManager.RegisterStartupScript(Me, Me.GetType(), "OpenPlipFooter", "openFooterDrawer();", True)
     End Sub
 
 #End Region

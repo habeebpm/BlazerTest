@@ -72,6 +72,17 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   green/red via the page's existing `--success`/`--danger` tokens, kept
   consistent with the rest of the page's palette rather than introducing
   a second one.
+- **PLIP detail footer drawer** — whenever a PLIP is picked for a DDR row,
+  either by selecting a result in the PLIP search drawer
+  (`gvPLIPSearch_RowCommand`) or by typing a PLIP ID directly into a row's
+  PLIP box (`txtPLIP_TextChanged`), a bottom-anchored footer drawer
+  (`plipFooterDrawer`) slides up showing that PLIP's Title, Doc Type,
+  Critical, Required HO Status and DCAF — the same fields as the PLIP
+  Drawer's own results columns, queried from `SPO_PLIP` by
+  `ShowPlipDetailFooter()`. It closes itself if the typed/selected ID
+  doesn't resolve to an active PLIP, and stays independent of the
+  PLIP/CTD/Multiplier popovers (no shared overlay), so it can stay open
+  alongside the search drawer while picking.
 - **Denser layout** — trimmed padding/margins across the sidebar, context
   bar, cards and grid container so more content fits without scrolling.
 - **Anchored PLIP/CTD/Multiplier drawers** — the search drawers no longer

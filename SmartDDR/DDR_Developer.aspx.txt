@@ -828,6 +828,64 @@ dialog.confirm-dialog::backdrop{
     clip:rect(0,0,0,0);
     white-space:nowrap;border:0;
 }
+
+/* ==========================
+   PLIP DETAIL FOOTER DRAWER
+========================== */
+
+.footer-drawer{
+    position:fixed;
+    left:0;
+    right:0;
+    bottom:0;
+    background:var(--card);
+    border-top:1px solid var(--border);
+    box-shadow:0 -10px 30px rgba(0,0,0,.15);
+    z-index:9990;
+    transform:translateY(100%);
+    transition:transform .2s ease;
+    max-height:220px;
+}
+
+.footer-drawer.open{
+    transform:translateY(0);
+}
+
+.footer-drawer-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:10px 16px;
+    background:linear-gradient(135deg,var(--primary),var(--primary-light));
+    color:white;
+}
+
+.footer-drawer-header h3{
+    font-size:14px;
+}
+
+.footer-drawer-body{
+    padding:12px 16px 16px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:24px;
+    overflow-y:auto;
+}
+
+.footer-detail{
+    min-width:140px;
+    font-size:13px;
+}
+
+.footer-detail b{
+    display:block;
+    font-size:10px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--text-light);
+    margin-bottom:2px;
+}
     </style>
 
     <script>
@@ -888,6 +946,12 @@ dialog.confirm-dialog::backdrop{
         function closeCTDDrawer() { closeDrawer("CTDDrawer", "drawerOverlay1"); }
         function openMultiplierDrawer(anchorEl) { openDrawer("multiplierDrawer", "drawerOverlay2", anchorEl); }
         function closeMultiplierDrawer() { closeDrawer("multiplierDrawer", "drawerOverlay2"); }
+
+        // The PLIP detail footer drawer isn't anchored/overlay-gated like the
+        // others - it just slides up from the bottom edge, so it can stay
+        // open alongside the PLIP search drawer while a row's PLIP is picked.
+        function openFooterDrawer() { document.getElementById("plipFooterDrawer").classList.add("open"); }
+        function closeFooterDrawer() { document.getElementById("plipFooterDrawer").classList.remove("open"); }
 
         function toggleRemarks(link) {
             var div = link.parentNode.querySelector("div");
@@ -1649,6 +1713,23 @@ dialog.confirm-dialog::backdrop{
     </div>
 
     <div id="drawerOverlay2" class="drawer-overlay" onclick="closeMultiplierDrawer()"></div>
+
+    <!-- PLIP Detail footer drawer: opens whenever a PLIP is picked for a DDR
+         row (search drawer selection or a typed PLIP ID), showing the same
+         descriptive fields as the PLIP Drawer's results columns. -->
+    <div id="plipFooterDrawer" class="footer-drawer" role="region" aria-label="PLIP details">
+        <div class="footer-drawer-header">
+            <h3>PLIP <asp:Literal ID="litFooterPlipId" runat="server" /></h3>
+            <button type="button" class="drawer-close" onclick="closeFooterDrawer()" aria-label="Close">&#10006;</button>
+        </div>
+        <div class="footer-drawer-body">
+            <div class="footer-detail"><b>Title</b><asp:Literal ID="litFooterTitle" runat="server" /></div>
+            <div class="footer-detail"><b>Doc Type</b><asp:Literal ID="litFooterDocType" runat="server" /></div>
+            <div class="footer-detail"><b>Critical</b><asp:Literal ID="litFooterCritical" runat="server" /></div>
+            <div class="footer-detail"><b>Required HO Status</b><asp:Literal ID="litFooterHo" runat="server" /></div>
+            <div class="footer-detail"><b>DCAF</b><asp:Literal ID="litFooterDcaf" runat="server" /></div>
+        </div>
+    </div>
 </form>
 
 </body>

@@ -72,4 +72,11 @@ Partial Public Class DDR_Developer
     Protected WithEvents txtMultiplyCount As Global.System.Web.UI.WebControls.TextBox
     Protected WithEvents btnApplyMultiplier As Global.System.Web.UI.WebControls.Button
 
+    Protected WithEvents litFooterPlipId As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents litFooterTitle As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents litFooterDocType As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents litFooterCritical As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents litFooterHo As Global.System.Web.UI.WebControls.Literal
+    Protected WithEvents litFooterDcaf As Global.System.Web.UI.WebControls.Literal
+
 End Class
