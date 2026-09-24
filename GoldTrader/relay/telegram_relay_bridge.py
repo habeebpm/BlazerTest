@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 
 import message_filter
 from signal_parser import parse_signal
@@ -65,6 +66,31 @@ def _env_int(name: str) -> int | None:
         return None
 
 
+def chat_ref(chat):
+    """A configured chat as Telethon needs it: a numeric id as an int
+    ("-1001234567890" -> -1001234567890), anything else (@name, invite link)
+    unchanged. Telethon reads a numeric STRING as a phone number, so an id
+    straight from keys.txt / the environment would never be found."""
+    if isinstance(chat, str) and re.fullmatch(r"\s*-?\d+\s*", chat):
+        return int(chat)
+    return chat
+
+
+async def resolve_chat(client, chat):
+    """The entity for a configured chat. A numeric id is only known once
+    this account's chat list is loaded (the saved session may not have it
+    yet), so on a miss the list is loaded once and the lookup retried.
+    Raises ValueError when the chat cannot be found."""
+    ref = chat_ref(chat)
+    try:
+        return await client.get_entity(ref)
+    except ValueError:
+        if not isinstance(ref, int):
+            raise
+    await client.get_dialogs()
+    return await client.get_entity(ref)
+
+
 def bot_api_chat_id(entity) -> int:
     """Convert a Telethon entity's own MTProto id into the -100-prefixed
     (channels/supergroups) or bare-negative (basic groups) form the Bot API
@@ -84,7 +110,7 @@ def bot_api_chat_id(entity) -> int:
 async def resolve_and_log(client, label: str, chats: list) -> None:
     for chat in chats:
         try:
-            entity = await client.get_entity(chat)
+            entity = await resolve_chat(client, chat)
         except Exception as exc:
             log.error("%s: could not resolve %r (%s)", label, chat, exc)
             continue
@@ -150,15 +176,31 @@ async def amain(client, args, sources: list, dest: str | None, filter_signals: b
         log.error("No relay group configured - set TELEGRAM_RELAY_GROUP or pass --dest.")
         return EXIT_CONFIG
 
-    dest_entity = await client.get_entity(dest)
+    try:
+        dest_entity = await resolve_chat(client, dest)
+    except ValueError as exc:
+        log.error("Relay group %r not found (%s) - check TELEGRAM_RELAY_GROUP in keys.txt; "
+                  "relay_login.bat lists every chat id this account can see.", dest, exc)
+        return EXIT_CONFIG
+    source_ids = []
+    for chat in sources:
+        try:
+            source_ids.append(bot_api_chat_id(await resolve_chat(client, chat)))
+        except ValueError as exc:
+            log.error("Source channel %r not found (%s) - skipped; check TELEGRAM_SOURCE_CHANNELS "
+                      "in keys.txt (join the channel with this Telegram account first).", chat, exc)
+    if not source_ids:
+        log.error("None of the source channels could be found - nothing to relay.")
+        return EXIT_CONFIG
     dest_title = getattr(dest_entity, "title", None) or dest
     log.info("Relaying %d source chat(s) -> %r (chat id %s)",
-             len(sources), dest_title, bot_api_chat_id(dest_entity))
+             len(source_ids), dest_title, bot_api_chat_id(dest_entity))
     log.info("Filtering: %s", "everything is relayed (--relay-everything)" if args.relay_everything
              else "only messages that parse as an actionable signal (--filter-signals)" if filter_signals
              else "trade messages only (default) - greetings, mood posts, long messages and media dropped")
 
-    @client.on(events.NewMessage(chats=sources))
+    # Resolved ids, not the configured strings (see chat_ref).
+    @client.on(events.NewMessage(chats=source_ids))
     async def handler(event):
         text = event.raw_text or ""
         why = relay_decision(event.message, text, args.relay_everything, filter_signals,
@@ -168,9 +210,17 @@ async def amain(client, args, sources: list, dest: str | None, filter_signals: b
             return
         try:
             await client.forward_messages(dest_entity, event.message)
-            log.info("Relayed from chat %s: %s", event.chat_id, text.splitlines()[0][:80])
-        except Exception:
-            log.exception("Failed to relay a message from chat %s", event.chat_id)
+        except Exception as exc:
+            # Channels with "Restrict saving content" refuse every forward
+            # (CHAT_FORWARDS_RESTRICTED): send the text as a new message
+            # instead - the EA only reads the text.
+            log.debug("Forward refused (%s) - sending the text instead.", exc)
+            try:
+                await client.send_message(dest_entity, text)
+            except Exception:
+                log.exception("Failed to relay a message from chat %s", event.chat_id)
+                return
+        log.info("Relayed from chat %s: %s", event.chat_id, text.strip().splitlines()[0][:80])
 
     log.info("Bridge running - Ctrl+C to stop.")
     await client.run_until_disconnected()

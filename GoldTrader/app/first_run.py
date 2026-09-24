@@ -127,9 +127,15 @@ def run_wizard(preset_path: str, env=None, ask=input, ask_secret=getpass.getpass
                 continue
             value = _ask_one(name, secret, prompt, pattern, env, ask, ask_secret, out)
             if value is not None:
-                saver(name, value)
-                env[name] = value
-                saved.append(name)
+                store(name, value)
+
+    def store(name, value):
+        if saver(name, value) is False:
+            out(f"  Could not write {name} to keys.txt (file read-only or open elsewhere?) - it is "
+                "used for this run only; add it to keys.txt in Notepad.")
+        else:
+            saved.append(name)
+        env[name] = value
 
     take("core")
     out("\n  Signals reach the EA through your relay group: your own Telegram account copies")
@@ -154,9 +160,7 @@ def run_wizard(preset_path: str, env=None, ask=input, ask_secret=getpass.getpass
                     if name == "TELEGRAM_RELAY_GROUP":
                         value = _ask_one(name, secret, prompt, pattern, env, ask, ask_secret, out)
                         if value is not None:
-                            saver(name, value)
-                            env[name] = value
-                            saved.append(name)
+                            store(name, value)
         else:
             out("  Later: double-click relay_login.bat once.")
         group = (env.get("TELEGRAM_RELAY_GROUP") or "").strip()

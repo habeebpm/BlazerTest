@@ -1247,6 +1247,11 @@ def test_mt5_gateway_recent_closed_trades() -> bool:
         # A different magic (e.g. the Telegram side's own trades) - excluded.
         FakeMt5History.Deal("XAUUSD", 999, FakeMt5History.DEAL_ENTRY_OUT,
                             FakeMt5History.DEAL_TYPE_SELL, 1600, 9.0, 0.0, 0.0, 104),
+        # Position 105 closed in two parts - one trade, P&L summed, last close time.
+        FakeMt5History.Deal("XAUUSD", 20260921, FakeMt5History.DEAL_ENTRY_OUT,
+                            FakeMt5History.DEAL_TYPE_SELL, 3000, 4.0, 0.0, 0.0, 105),
+        FakeMt5History.Deal("XAUUSD", 20260921, FakeMt5History.DEAL_ENTRY_OUT,
+                            FakeMt5History.DEAL_TYPE_SELL, 3600, -1.0, 0.0, 0.0, 105),
     ])
     gw._mt5 = fake_m
     try:
@@ -1254,6 +1259,10 @@ def test_mt5_gateway_recent_closed_trades() -> bool:
     finally:
         gw._mt5 = None
 
+    ok &= check("a position closed in two parts is ONE trade (P&L summed, time of the last close)",
+                trades[0]["ticket"] == 105 and abs(trades[0]["pnl_dollars"] - 3.0) < 1e-9
+                and sum(1 for t in trades if t["ticket"] == 105) == 1, trades[:1])
+    trades = trades[1:]
     ok &= check("only this symbol+magic's DEAL_ENTRY_OUT deals are returned",
                 len(trades) == 2, trades)
     ok &= check("newest first", trades[0]["ticket"] == 102 and trades[1]["ticket"] == 101, trades)
@@ -2888,6 +2897,25 @@ def _run_once_wiring(spec) -> bool:
                             len(fake.orders_sent) == 1 and "EXECUTED (dry-run" in msg
                             and "Entry: 2350.20" in msg and "TP1: 2356.20" in msg and "TP2: 2365.00" in msg
                             and "News check: clear" in msg and day.trades_today == 1, msg)
+
+        # Anything failing AFTER the order (here the alert text) must not make
+        # run_once raise: main() would retry the bar and could order again.
+        fake = FakeRunOnceGateway(bid=2350.0, ask=2350.2)
+        main_mod.gw = fake
+        main_mod.news_check.check_before_trade = lambda *a, **kw: news_check.NewsCheckResult(ran=True)
+        broken = main_mod.telegram_alert.format_full_conviction_message
+        main_mod.telegram_alert.format_full_conviction_message = lambda *a, **kw: 1 / 0
+        day = main_mod.DayRoll()
+        try:
+            main_mod.run_once(object(), cfg, spec, day)
+            raised = False
+        except Exception:
+            raised = True
+        finally:
+            main_mod.telegram_alert.format_full_conviction_message = broken
+        ok &= check("run_once: an error after the order is logged, never raised (no retry -> no second "
+                    "order), and the trade is counted",
+                    not raised and len(fake.orders_sent) == 1 and day.trades_today == 1)
     finally:
         (main_mod.gw, main_mod.market_intel.build_feature_snapshot, main_mod.claude_advisor.get_verdict,
          main_mod.news_check.check_before_trade, main_mod.telegram_alert.send_alert,
@@ -3902,6 +3930,15 @@ def test_margin_guard() -> bool:
     d = executor.execute(off, AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
                                             margin_guard=False), make_verdict("buy", 3, "full"), spec, 0)
     ok &= check("margin_guard=False switches it off", d.executed, d.reject_reason)
+    late = MarginGw(14.0, 700.0, equity=1000.0, positions=pos)
+
+    def news_then_margin_gone(direction, plan):
+        late.free = 100.0            # other trades filled during the news check
+        return "", "clear"
+    d = executor.execute(late, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                         pre_trade_check=news_then_margin_gone)
+    ok &= check("re-checked after the news check: margin gone meanwhile -> refused, no order",
+                not d.executed and "margin guard" in d.reject_reason and late.orders_sent == [], d.reject_reason)
     return ok
 
 
@@ -3989,6 +4026,16 @@ def test_keys_file() -> bool:
         finally:
             os.environ.pop("TELEGRAM_SOURCE_CHANNELS", None)
             os.environ["GOLDTRADER_KEYS_FILE"] = old
+    lines = []
+    answers = iter(["123456789", "n"])                   # chat id, relay: no
+    secrets = iter(["sk-ant-abcdefghijklmnop", "-"])     # API key, bot token: skip
+    first_run.run_wizard(os.path.join(tempfile.gettempdir(), "no_such_settings.ini"), env={},
+                         ask=lambda p: next(answers), ask_secret=lambda p: next(secrets),
+                         out=lines.append, saver=lambda n, v: False,
+                         marker=os.path.join(tempfile.mkdtemp(), "marker"))
+    ok &= check("keys.txt not writable: the questions say so instead of claiming it was saved",
+                sum("Could not write" in x for x in lines) == 2
+                and any("0 setting(s) saved" in x for x in lines), lines[-1:])
     gi = os.path.join(os.path.dirname(paths.PACKAGE_ROOT), ".gitignore")
     if os.path.exists(gi):
         ok &= check("keys.txt is in .gitignore - never uploaded",

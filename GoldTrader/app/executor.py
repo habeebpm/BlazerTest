@@ -473,8 +473,9 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
         # the stop is still sl_dollars from the price actually filled.
         plan = build_plan(gateway, cfg, spec, verdict.direction)
         if spec.tick_size > 0:
-            budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity,
-                                                     plan.risk_money)
+            budget_reason = (daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, plan.risk_money)
+                             or margin_guard_reason(gateway, cfg, spec, verdict.direction, plan.lots,
+                                                    plan.risk_money))
             if budget_reason:
                 return _reject(cfg, verdict, budget_reason, plan=plan, news_note=news_note)
 
@@ -492,7 +493,8 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
         comment = getattr(result, "comment", "") if result is not None else "order_send returned None"
         return _reject(cfg, verdict, f"order rejected by broker: retcode={retcode} {comment}".strip(),
                        plan=plan, news_note=news_note)
-    fill_price = getattr(result, "price", entry_price)
+    # Some brokers report price 0.0 on a market fill - keep the requested price then.
+    fill_price = getattr(result, "price", 0.0) or entry_price
     tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at ${cfg.tp1_dollars:g} via SL)"
     log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
               verdict.direction.upper(), lots, fill_price, sl_price, tp_desc,

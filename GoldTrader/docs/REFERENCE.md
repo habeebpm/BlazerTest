@@ -10,7 +10,7 @@ do when something goes wrong.
 |---|---|---|
 | **UnifiedTrader_EA** | MT5 chart | Copies Telegram trade signals (magic 20260922); manages exits of every position (Telegram and Claude's, magic 20260921); Telegram buttons; economic-calendar export; price files for Drive |
 | **Trading program** (`app/main.py`, via `start.bat`) | Python | Each closed M15 bar inside the trading hours: builds a market snapshot, asks Claude for a verdict, applies the gates, sends Claude's entries |
-| **Relay bridge** (`relay/`, via `start.bat`) | Python | The signal path: your own Telegram account copies the trade messages of your signal channel(s) into your private relay group, where the EA's bot reads them (`InpChannelId1` = the relay group). Works for any channel you can read |
+| **Relay bridge** (`relay/`, via `start.bat`) | Python | The signal path: your own Telegram account copies the trade messages of your signal channel(s) into your private relay group, where the EA's bot reads them (`InpChannelId1` = the relay group). Works for any channel you can read - one that blocks forwarding gets its text copied instead |
 | Drive export (`drive_export/`) | Python, optional (VPS) | Price files to Google Drive without Drive for Desktop |
 | ML retrain, conviction report, **scorecard** | Python, automatic | Daily / weekly, see `settings.ini`; the scorecard goes to your Telegram |
 | TelegramSMC_TradeLogger | MT5 chart, optional | Trade journal CSV (both sources) |
@@ -259,6 +259,7 @@ without the tactics. Results on a year of real prices:
 | No signals copied | `InpChannelId1` = the relay group id; bot is admin of the relay group; the `start.bat` window shows `Companion programs: relay_bridge` and no relay error; `relay_login.bat` lists the ids again |
 | Drive folder empty | EA Common tab -> Allow DLL imports; exact path from Explorer; Experts tab `XtrBarExport:` lines |
 | Relay "not logged in" | `relay_login.bat` |
+| Relay "Source channel ... not found" / "Relay group ... not found" | Join the channel with the same Telegram account; check the ids in `keys.txt` against the list `relay_login.bat` prints. Ids (`-100...`) and `@names` both work |
 | News check "0 of 5 feeds" | Firewall/antivirus blocking the feeds; trading continues without it |
 | Compile errors in `setup.bat` | Close MetaEditor and run `setup.bat` again; send the error line |
 | Change a key | `settings.bat` |

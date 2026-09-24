@@ -556,11 +556,24 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> 
     decision = executor.execute(gw, cfg, verdict, spec, day.trades_today, block,
                                 day_start_equity=day.day_start_equity,
                                 pre_trade_check=pre_trade_check, xtr=xtr_decision)
-    if decision.executed and xtr_decision is not None and xtr_state is not None and decision.plan:
-        xtr_state.record_entry(decision.ticket, xtr_decision, decision.plan.entry_price, xtr_a)
     if decision.executed:
         day.trades_today += 1
         day.save()
+    # From here on nothing may raise: main() retries a bar whose cycle raised,
+    # which after a sent order would ask Claude again and could open a
+    # second position. Bookkeeping and alerts are logged and skipped instead.
+    try:
+        after_decision(cfg, verdict, decision, features, xtr_decision, xtr_state, xtr_a, spec)
+    except Exception:
+        log.exception("Error after the %s decision - the %s; continuing.", verdict.direction,
+                      "order WAS sent" if decision.executed else "entry was not taken")
+
+
+def after_decision(cfg: AdvisorConfig, verdict, decision, features, xtr_decision, xtr_state, xtr_a,
+                   spec) -> None:
+    """Bookkeeping, "Why" file and alert after execute() - see run_once()."""
+    if decision.executed and xtr_decision is not None and xtr_state is not None and decision.plan:
+        xtr_state.record_entry(decision.ticket, xtr_decision, decision.plan.entry_price, xtr_a)
     if decision.executed and decision.ticket:
         # Feeds train_model()/train_ml_model.py's offline training later.
         # Only LIVE trades carry a broker ticket that MT5's deal history can
@@ -600,6 +613,7 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> 
                 plan = executor.build_plan(gw, cfg, spec, verdict.direction)
             except Exception:
                 log.debug("Could not price the alert's levels.", exc_info=True)
+                plan = None
         message = telegram_alert.format_full_conviction_message(
             cfg.symbol, verdict, decision.executed, decision.reject_reason, plan=plan,
             news_note=decision.news_note, dry_run=cfg.dry_run, digits=getattr(spec, "digits", 2),
@@ -745,7 +759,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "positions' risk would exceed it; pass 0 to disable. Existing positions "
                              "are left alone - UnifiedTrader_EA keeps managing them")
     parser.add_argument("--daily-target", type=float, dest="daily_target",
-                        help="stop new entries once the account is up this many pct on the UTC "
+                        help="stop new entries once the account is up this many pct on the trading "
                              "day (default: unset = disabled) - pass 0 to explicitly disable")
     parser.add_argument("--sl-dollars", type=float, dest="sl_dollars", help="stop-loss in USD (default 6)")
     parser.add_argument("--sl-mode", choices=["fixed", "atr"], dest="sl_mode",
@@ -1084,7 +1098,11 @@ def main(argv: list | None = None) -> int:
                                  daemon=True).start()
                 heartbeat.mark_stale_alert_sent()
 
-        time.sleep(sleep_seconds)
+        try:
+            time.sleep(sleep_seconds)
+        except KeyboardInterrupt:     # Ctrl+C lands here most of the time - no traceback
+            log.info("Stopped.")
+            return 0
 
 
 if __name__ == "__main__":

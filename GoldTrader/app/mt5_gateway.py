@@ -336,8 +336,10 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
 
 def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
     """Closed trades under any of `magics`, oldest first, from MT5's own deal
-    history (real broker fills, whoever closed them). One DEAL_ENTRY_OUT deal
-    per close; profit+swap+commission is its net P&L; time is true UTC."""
+    history (real broker fills, whoever closed them). One row per POSITION:
+    its DEAL_ENTRY_OUT deals (several when it was closed in parts) summed -
+    net P&L = profit+swap+commission, volume = the closed volume, time = the
+    last close in true UTC - so a partial close never counts as two trades."""
     m = mt5()
     now = datetime.now(timezone.utc)
     # The terminal reads these bounds on its SERVER clock (up to 14h ahead of
@@ -352,9 +354,17 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
     if not rows:
         return []
     times = server_to_utc([d.time for d in rows])
-    out = []
+    by_position = {}
     for d, t in zip(rows, times):
-        out.append({
+        pnl = float(d.profit + d.swap + d.commission)
+        volume = float(getattr(d, "volume", 0.0))
+        row = by_position.get(d.position_id)
+        if row is not None:
+            row["pnl_dollars"] += pnl
+            row["volume"] += volume
+            row["time"] = max(row["time"], t.to_pydatetime())
+            continue
+        by_position[d.position_id] = {
             "time": t.to_pydatetime(),
             "magic": int(d.magic),
             # The CLOSING deal's type is the opposite of the position's own
@@ -362,12 +372,11 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
             # versa) - flipped here so the direction reported is the
             # position's, not the deal's.
             "direction": "buy" if d.type == m.DEAL_TYPE_SELL else "sell",
-            "pnl_dollars": float(d.profit + d.swap + d.commission),
-            "volume": float(getattr(d, "volume", 0.0)),
+            "pnl_dollars": pnl,
+            "volume": volume,
             "ticket": d.position_id,
-        })
-    out.sort(key=lambda r: r["time"])
-    return out
+        }
+    return sorted(by_position.values(), key=lambda r: r["time"])
 
 
 def recent_closed_trades(symbol: str, magic: int, count: int = 10,

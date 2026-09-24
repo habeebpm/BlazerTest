@@ -103,7 +103,6 @@ class _FakeMsg:
 def test_message_filter() -> bool:
     print("\n=== 2. trade-only message filter + relay_decision ===")
     ok = True
-    ok = True
     wrong = [(t, want, mf.classify_message(t)) for t, want in FILTER_CASES
              if mf.classify_message(t)[0] != want]
     ok &= check(f"all {len(FILTER_CASES)} sample messages classified as expected (signal / command / skip)",
@@ -158,9 +157,112 @@ def test_message_filter() -> bool:
     return ok
 
 
+class _Entity:
+    def __init__(self, kind, id_, title):
+        self.__class__ = type(kind, (_Entity,), {})
+        self.id, self.title = id_, title
+
+
+class _FakeClient:
+    """Behaves like Telethon where it matters: a numeric STRING is looked up
+    as a phone number (never found); an int id is found only once the chat
+    list has been loaded; a protected channel refuses forwards."""
+    def __init__(self, protected=False):
+        self.chats = {-1001111: _Entity("Channel", 1111, "Gold Signals"),
+                      -1002222: _Entity("Channel", 2222, "My relay"),
+                      "@goldsignals": _Entity("Channel", 1111, "Gold Signals")}
+        self.dialogs_loaded, self.protected = False, protected
+        self.handler, self.chats_filter, self.sent = None, None, []
+
+    async def get_entity(self, ref):
+        if isinstance(ref, str) and ref.lstrip("-").isdigit():
+            raise ValueError(f'Cannot find any entity corresponding to "{ref}"')
+        if isinstance(ref, int) and not self.dialogs_loaded:
+            raise ValueError(f"Could not find the input entity for {ref}")
+        if ref not in self.chats:
+            raise ValueError(f"No user has {ref!r} as username")
+        return self.chats[ref]
+
+    async def get_dialogs(self):
+        self.dialogs_loaded = True
+
+    async def connect(self):
+        pass
+
+    async def is_user_authorized(self):
+        return True
+
+    async def get_me(self):
+        return type("Me", (), {"username": "me", "first_name": "Me", "id": 1})()
+
+    def on(self, builder):
+        self.chats_filter = builder.chats
+
+        def deco(fn):
+            self.handler = fn
+            return fn
+        return deco
+
+    async def forward_messages(self, dest, message):
+        if self.protected:
+            raise RuntimeError("CHAT_FORWARDS_RESTRICTED")
+        self.sent.append(("forward", dest.title, message.message))
+
+    async def send_message(self, dest, text):
+        self.sent.append(("copy", dest.title, text))
+
+    async def run_until_disconnected(self):
+        await self.handler(type("Ev", (), {"raw_text": "XAUUSD BUY 2650 SL 2640 TP 2660", "chat_id": -1001111,
+                                           "message": _FakeMsg(message="XAUUSD BUY 2650 SL 2640 TP 2660")})())
+
+
+def _run_bridge(client, sources, dest):
+    import argparse
+    import asyncio
+    import types as _types
+    fake = _types.ModuleType("telethon")
+    fake.events = _types.SimpleNamespace(NewMessage=lambda chats: _types.SimpleNamespace(chats=chats))
+    saved = sys.modules.get("telethon")
+    sys.modules["telethon"] = fake
+    try:
+        args = argparse.Namespace(no_login=True, check=False, relay_everything=False,
+                                  accept_photo_captions=False)
+        return asyncio.run(bridge.amain(client, args, sources, dest, False))
+    finally:
+        if saved is None:
+            sys.modules.pop("telethon", None)
+        else:
+            sys.modules["telethon"] = saved
+
+
+def test_chat_resolution() -> bool:
+    print("\n=== 3. relay: chat ids from keys.txt, protected channels ===")
+    ok = True
+    ok &= check("numeric ids (as saved in keys.txt) become ints, @names stay",
+                bridge.chat_ref("-1001234567890") == -1001234567890 and bridge.chat_ref(" 42 ") == 42
+                and bridge.chat_ref("@gold") == "@gold" and bridge.chat_ref(-5) == -5)
+    c = _FakeClient()
+    rc = _run_bridge(c, ["-1001111"], "-1002222")
+    ok &= check("ids typed as numbers are found (chat list loaded once) and the signal is relayed",
+                rc == 0 and c.dialogs_loaded and c.chats_filter == [-1001111]
+                and c.sent == [("forward", "My relay", "XAUUSD BUY 2650 SL 2640 TP 2660")], (rc, c.sent))
+    c = _FakeClient(protected=True)
+    rc = _run_bridge(c, ["@goldsignals"], "-1002222")
+    ok &= check("a channel that refuses forwards: the text is sent as a new message",
+                rc == 0 and c.sent == [("copy", "My relay", "XAUUSD BUY 2650 SL 2640 TP 2660")], c.sent)
+    c = _FakeClient()
+    rc = _run_bridge(c, ["@nosuchchannel", "-1001111"], "-1002222")
+    ok &= check("an unknown source is skipped, the others still relayed",
+                rc == 0 and c.chats_filter == [-1001111] and len(c.sent) == 1, (rc, c.chats_filter))
+    ok &= check("an unknown relay group or no usable source: configuration exit (no restart loop)",
+                _run_bridge(_FakeClient(), ["-1001111"], "-1009999") == bridge.EXIT_CONFIG
+                and _run_bridge(_FakeClient(), ["@nosuchchannel"], "-1002222") == bridge.EXIT_CONFIG)
+    return ok
+
+
 def main() -> int:
     print("Relay bridge self-test")
-    results = [test_parser(), test_message_filter()]
+    results = [test_parser(), test_message_filter(), test_chat_resolution()]
     print("\nALL PASS" if all(results) else "\nSOME CHECKS FAILED")
     return 0 if all(results) else 1
 
