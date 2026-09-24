@@ -13,7 +13,6 @@ Option Explicit On
 Partial Public Class Admin_DDR_EditV2
 
     Protected WithEvents frmAdminDDR As Global.System.Web.UI.HtmlControls.HtmlForm
-    Protected WithEvents ScriptManager1 As Global.System.Web.UI.ScriptManager
 
     ' Top bar
     Protected WithEvents LblInfo As Global.System.Web.UI.WebControls.Label

@@ -7,7 +7,7 @@ Imports System.Linq
 Imports System.Text
 Imports System.Text.RegularExpressions
 Imports System.Web
-Imports System.Web.Services
+Imports System.Web.Script.Serialization
 Imports System.Web.UI
 Imports System.Web.UI.WebControls
 Imports OX = DocumentFormat.OpenXml
@@ -17,9 +17,10 @@ Imports S = DocumentFormat.OpenXml.Spreadsheet
 ' Admin DDR editor, v2.
 ' The project's rows are read once into a DataTable cached in Session; discipline switches,
 ' search, Excel-like column filters, sorting and exports all work on that cache. Edits stay
-' pending in the page (like Excel) until Save all sends them to the SaveAll page method, which
-' writes them in one transaction. A CSV / Excel file can be uploaded: PreviewUpload returns the
-' cells that differ and the page stages them for review before Save all.
+' pending in the page (like Excel) until Save all posts them to ?op=save, which checks that nobody
+' else changed those cells meanwhile and writes everything in one transaction. An edited CSV /
+' Excel file posted to ?op=upload returns the cells that differ; the page stages them for review
+' before Save all.
 Public Class Admin_DDR_EditV2
     Inherits System.Web.UI.Page
 
@@ -108,6 +109,7 @@ Public Class Admin_DDR_EditV2
     Private _denied As Boolean
     Private _suppressRender As Boolean
     Private _loadFailed As Boolean
+    Private _ajax As Boolean
 
     Private ReadOnly Property SelectedProject As String
         Get
@@ -128,7 +130,6 @@ Public Class Admin_DDR_EditV2
             If String.IsNullOrEmpty(key) Then
                 key = Guid.NewGuid().ToString("N")
                 ViewState("GridKey") = key
-                RegisterGridKey(Session, key)
             End If
             Return key
         End Get
@@ -142,6 +143,7 @@ Public Class Admin_DDR_EditV2
             If value Is Nothing Then
                 Session.Remove(SessionPrefix & "GRID_" & GridKey)
             Else
+                RegisterGridKey(Session, GridKey)   ' (again) after an eviction or a new session
                 Session(SessionPrefix & "GRID_" & GridKey) = value
             End If
         End Set
@@ -158,6 +160,7 @@ Public Class Admin_DDR_EditV2
             keys = New List(Of String)()
             session(SessionPrefix & "KEYS") = keys
         End If
+        If keys.Contains(key) Then Return
         keys.Add(key)
         While keys.Count > MaxCachedPages
             session.Remove(SessionPrefix & "GRID_" & keys(0))
@@ -169,7 +172,16 @@ Public Class Admin_DDR_EditV2
 
 #Region "Page lifecycle"
 
+    Private Sub Page_Init(sender As Object, e As EventArgs) Handles Me.Init
+        ' Ties ViewState / event validation to the signed-in user: a page posted by one user
+        ' cannot be replayed by another.
+        If User IsNot Nothing AndAlso User.Identity IsNot Nothing AndAlso User.Identity.IsAuthenticated Then
+            ViewStateUserKey = User.Identity.Name
+        End If
+    End Sub
+
     Protected Sub Page_Load(sender As Object, e As EventArgs) Handles Me.Load
+        If _ajax Then Return
         _userName = CurrentUserName(Context)
         lblUser.Text = HttpUtility.HtmlEncode(If(_userName.Length > 0, _userName, "Guest"))
 
@@ -213,7 +225,7 @@ Public Class Admin_DDR_EditV2
     End Sub
 
     Private Sub Page_PreRender(sender As Object, e As EventArgs) Handles Me.PreRender
-        If _denied OrElse _suppressRender Then Return
+        If _ajax OrElse _denied OrElse _suppressRender Then Return
 
         hfKey.Value = GridKey
         hfExportIds.Value = ""
@@ -335,6 +347,7 @@ Public Class Admin_DDR_EditV2
     End Sub
 
     Private Sub DDLPROJNO_SelectedIndexChanged(sender As Object, e As EventArgs) Handles DDLPROJNO.SelectedIndexChanged
+        If _denied Then Return
         LoadData()
         BindDisciplines()
         UpdateProjectInfo()
@@ -343,10 +356,12 @@ Public Class Admin_DDR_EditV2
 
     ' Served from the cache: no database round trip.
     Private Sub DDLDISCIPLINE_SelectedIndexChanged(sender As Object, e As EventArgs) Handles DDLDISCIPLINE.SelectedIndexChanged
+        If _denied Then Return
         SaveUserPreference()
     End Sub
 
     Private Sub btnReload_Click(sender As Object, e As EventArgs) Handles btnReload.Click
+        If _denied Then Return
         LoadData()
         BindDisciplines()
         If Not _loadFailed Then
@@ -362,7 +377,14 @@ Public Class Admin_DDR_EditV2
 
     Private Sub LoadData()
         _loadFailed = False
-        GridData = Nothing
+        Dim existing As DataTable = GridData
+        If existing IsNot Nothing AndAlso
+           Not String.Equals(TryCast(existing.ExtendedProperties("Project"), String), SelectedProject, StringComparison.OrdinalIgnoreCase) Then
+            ' A duplicated browser tab shares this page's key: take a new one instead of replacing its data.
+            ViewState("GridKey") = Nothing
+        Else
+            GridData = Nothing
+        End If
         If SelectedProject.Length = 0 Then Return
         Try
             Dim dt As DataTable = QueryTable(LoadSql, P("@P", SelectedProject))
@@ -550,18 +572,89 @@ Public Class Admin_DDR_EditV2
 
 #End Region
 
-#Region "Save all (page method)"
+#Region "JSON endpoints (?op=save / ?op=upload)"
 
-    ' One edited cell, as sent by the page (and as returned by the upload preview).
+    ' The page answers two small JSON requests itself instead of using PageMethods: no
+    ' ScriptManager, no JSON size limit from web.config, and it works with FriendlyUrls.
+    ' Both require the X-ADDR header, which a cross-site form cannot send (CSRF).
+    Private Sub Page_PreInit(sender As Object, e As EventArgs) Handles Me.PreInit
+        Dim op As String = Request.QueryString("op")
+        If String.IsNullOrEmpty(op) OrElse Not String.Equals(Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase) Then Return
+        _ajax = True
+
+        Dim result As Object
+        Try
+            If Request.Headers("X-ADDR") <> "1" Then
+                result = New With {.Ok = False, .Message = "Request refused."}
+            ElseIf op = "save" Then
+                If Not If(Request.ContentType, "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase) Then
+                    result = New With {.Ok = False, .Message = "Request refused."}
+                Else
+                    Dim body As String
+                    Using sr As New StreamReader(Request.InputStream, Encoding.UTF8)
+                        body = sr.ReadToEnd()
+                    End Using
+                    Dim req As SaveRequest = Json().Deserialize(Of SaveRequest)(body)
+                    result = SaveAll(Context, If(req Is Nothing, Nothing, req.Key), If(req Is Nothing, Nothing, req.Changes))
+                End If
+            ElseIf op = "upload" Then
+                Dim file As HttpPostedFile = Request.Files("file")
+                If file Is Nothing OrElse file.ContentLength = 0 Then
+                    result = UploadFailed("No file was received (or it is empty).")
+                Else
+                    Dim bytes As Byte()
+                    Using br As New BinaryReader(file.InputStream)
+                        bytes = br.ReadBytes(file.ContentLength)
+                    End Using
+                    result = PreviewUpload(Context, Request.Form("key"), file.FileName, bytes)
+                End If
+            Else
+                result = New With {.Ok = False, .Message = "Unknown request."}
+            End If
+        Catch ex As Exception
+            result = New With {.Ok = False, .Message = "The request failed: " & ex.Message}
+        End Try
+
+        Response.Clear()
+        Response.ContentType = "application/json"
+        Response.Cache.SetCacheability(HttpCacheability.NoCache)
+        Response.Write(Json().Serialize(result))
+    End Sub
+
+    ' An endpoint request writes its JSON in PreInit; the page itself is not rendered.
+    Protected Overrides Sub Render(writer As HtmlTextWriter)
+        If _ajax Then Return
+        MyBase.Render(writer)
+    End Sub
+
+    Private Shared Function Json() As JavaScriptSerializer
+        Return New JavaScriptSerializer() With {.MaxJsonLength = Integer.MaxValue}
+    End Function
+
+    Public NotInheritable Class SaveRequest
+        Public Property Key As String
+        Public Property Changes As List(Of CellChange)
+    End Class
+
+#End Region
+
+#Region "Save all"
+
+    ' One edited cell. Orig = the saved value the user saw (used to detect other people's edits).
     Public NotInheritable Class CellChange
         Public Property Id As Integer
         Public Property Field As String
         Public Property Value As String
+        Public Property Orig As String
     End Class
 
+    ' Kind: "invalid" (bad value), "conflict" (changed by someone else; Current = the value now
+    ' in the database), "missing" (row deleted) or "db" (database error).
     Public NotInheritable Class CellError
         Public Property Id As Integer
         Public Property Field As String
+        Public Property Kind As String
+        Public Property Current As String
         Public Property Message As String
     End Class
 
@@ -576,6 +669,7 @@ Public Class Admin_DDR_EditV2
         Public Property Ok As Boolean
         Public Property Message As String = ""
         Public Property Level As String = "success"
+        Public Property ReloadSuggested As Boolean
         Public Property Errors As New List(Of CellError)()
         Public Property Rows As New List(Of RowResult)()
     End Class
@@ -586,12 +680,17 @@ Public Class Admin_DDR_EditV2
         Return New SaveAllResult() With {.Ok = False, .Message = message, .Level = "error"}
     End Function
 
+    Private Shared Function ColByField(field As String) As ColDef
+        Return Cols.FirstOrDefault(Function(c) c.Editable AndAlso c.Field.Equals(If(field, ""), StringComparison.OrdinalIgnoreCase))
+    End Function
+
     ' Saves every pending cell in ONE transaction: either all changes are written or none.
-    ' Called from the page with PageMethods.SaveAll(key, [{Id, Field, Value}, ...]).
-    <WebMethod(EnableSession:=True)>
-    Public Shared Function SaveAll(key As String, changes As List(Of CellChange)) As SaveAllResult
-        Dim ctx As HttpContext = HttpContext.Current
+    ' Before writing, the rows are locked and each cell is compared with the value the user
+    ' saw (Orig); if someone else changed it meanwhile, nothing is saved and the cell is reported.
+    Friend Shared Function SaveAll(ctx As HttpContext, key As String, changes As List(Of CellChange)) As SaveAllResult
         Dim currentId As Integer = 0
+        Dim committed As Boolean = False
+        Dim result As New SaveAllResult()
         Try
             If Not IsAdminUser(ctx, CurrentUserName(ctx)) Then Return SaveFailed("You do not have permission to edit the DDR.")
             If changes Is Nothing OrElse changes.Count = 0 Then
@@ -602,12 +701,13 @@ Public Class Admin_DDR_EditV2
             End If
 
             ' 1. Validate everything first; nothing is written when any cell is invalid.
-            Dim result As New SaveAllResult()
             Dim perRow As New Dictionary(Of Integer, Dictionary(Of String, SqlParameter))()
+            Dim origs As New Dictionary(Of Integer, Dictionary(Of String, String))()
+            Dim typed As New Dictionary(Of Integer, Dictionary(Of String, String))()
             Dim order As New List(Of Integer)()
             For Each ch As CellChange In changes
                 If ch Is Nothing Then Continue For
-                Dim col As ColDef = Cols.FirstOrDefault(Function(c) c.Editable AndAlso c.Field.Equals(If(ch.Field, ""), StringComparison.OrdinalIgnoreCase))
+                Dim col As ColDef = ColByField(ch.Field)
                 Dim problem As String = Nothing
                 Dim prm As SqlParameter = Nothing
                 If col Is Nothing Then
@@ -618,16 +718,20 @@ Public Class Admin_DDR_EditV2
                     prm = ToParameter(col, If(ch.Value, "").Trim(), problem)
                 End If
                 If problem IsNot Nothing Then
-                    result.Errors.Add(New CellError() With {.Id = ch.Id, .Field = If(col Is Nothing, ch.Field, col.Field), .Message = problem})
+                    result.Errors.Add(New CellError() With {.Id = ch.Id, .Field = If(col Is Nothing, ch.Field, col.Field), .Kind = "invalid", .Message = problem})
                     Continue For
                 End If
                 Dim fields As Dictionary(Of String, SqlParameter) = Nothing
                 If Not perRow.TryGetValue(ch.Id, fields) Then
                     fields = New Dictionary(Of String, SqlParameter)(StringComparer.OrdinalIgnoreCase)
                     perRow(ch.Id) = fields
+                    origs(ch.Id) = New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+                    typed(ch.Id) = New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
                     order.Add(ch.Id)
                 End If
                 fields(col.Field) = prm   ' the last edit of a cell wins
+                typed(ch.Id)(col.Field) = If(ch.Value, "").Trim()
+                If ch.Orig IsNot Nothing Then origs(ch.Id)(col.Field) = ch.Orig
             Next
             If result.Errors.Count > 0 Then
                 result.Ok = False
@@ -638,110 +742,196 @@ Public Class Admin_DDR_EditV2
                 Return result
             End If
 
-            ' 2. Write all rows in one transaction.
             Dim titleMax As Integer = ColumnMaxLength("Document_Title")
             Dim retired As New HashSet(Of Integer)()
-            Dim fresh As New DataTable()
             Using con As New SqlConnection(ConnString())
                 con.Open()
+
+                ' 2. Lock the rows, check nobody else changed the edited cells, then write.
                 Using tx As SqlTransaction = con.BeginTransaction()
                     Try
+                        Dim now As Dictionary(Of Integer, DataRow) = ReadForUpdate(con, tx, order)
+                        For Each id As Integer In order
+                            Dim cur As DataRow = Nothing
+                            If Not now.TryGetValue(id, cur) Then
+                                result.Errors.Add(New CellError() With {.Id = id, .Field = perRow(id).Keys.First(), .Kind = "missing",
+                                                                        .Message = "This row no longer exists (deleted by someone else)."})
+                                Continue For
+                            End If
+                            For Each kv As KeyValuePair(Of String, String) In origs(id)
+                                Dim col As ColDef = ColByField(kv.Key)
+                                Dim dbValue As String = InputText(cur(col.Field), col.Kind)
+                                ' Not a conflict when the database already holds the new value (e.g. a retry
+                                ' after a save whose reply was lost).
+                                If Not SameStored(dbValue, kv.Value, col.Kind) AndAlso Not SameStored(dbValue, typed(id)(col.Field), col.Kind) Then
+                                    result.Errors.Add(New CellError() With {.Id = id, .Field = col.Field, .Kind = "conflict", .Current = dbValue,
+                                        .Message = "Changed by someone else since you loaded it: now """ & dbValue & """ (you saw """ & kv.Value & """)."})
+                                End If
+                            Next
+                        Next
+                        If result.Errors.Count > 0 Then
+                            tx.Rollback()
+                            Dim nConflict As Integer = result.Errors.Where(Function(x) x.Kind = "conflict").Count()
+                            Dim nMissing As Integer = result.Errors.Count - nConflict
+                            result.Ok = False
+                            result.Level = "warn"
+                            result.Message = "Nothing was saved."
+                            If nConflict > 0 Then
+                                result.Message &= String.Format(CultureInfo.InvariantCulture,
+                                    " {0} cell(s) were changed by someone else since you loaded the page (marked orange - hover to see their value)." &
+                                    " Save all again to overwrite them with your values, or click a cell and press Ctrl+Z to keep theirs.", nConflict)
+                            End If
+                            If nMissing > 0 Then
+                                result.Message &= String.Format(CultureInfo.InvariantCulture,
+                                    " {0} row(s) no longer exist - click Reload (your other changes will need to be entered again).", nMissing)
+                            End If
+                            Return result
+                        End If
+
                         For Each id As Integer In order
                             currentId = id
-                            Dim fields As Dictionary(Of String, SqlParameter) = perRow(id)
-                            Using cmd As SqlCommand = BuildRowUpdate(con, tx, id, fields, titleMax, retired)
-                                If cmd.ExecuteNonQuery() = 0 Then
-                                    tx.Rollback()
-                                    Dim r As SaveAllResult = SaveFailed("Nothing was saved: DDR row " & id.ToString(CultureInfo.InvariantCulture) & " no longer exists. Reload the page.")
-                                    r.Errors.Add(New CellError() With {.Id = id, .Field = fields.Keys.First(), .Message = "This row no longer exists."})
-                                    Return r
-                                End If
+                            Using cmd As SqlCommand = BuildRowUpdate(con, tx, id, perRow(id), titleMax, retired)
+                                cmd.ExecuteNonQuery()
                             End Using
                         Next
                         currentId = 0
                         tx.Commit()
+                        committed = True
                     Catch
-                        Try
-                            tx.Rollback()
-                        Catch
-                            ' The connection may already be broken; the transaction is gone either way.
-                        End Try
+                        If Not committed Then
+                            Try
+                                tx.Rollback()
+                            Catch
+                                ' The connection may already be broken; the transaction is gone either way.
+                            End Try
+                        End If
                         Throw
                     End Try
                 End Using
 
-                ' 3. Read the saved rows back (PERC / STATUS are recalculated by the view).
-                For start As Integer = 0 To order.Count - 1 Step 1000
-                    Dim chunk As List(Of Integer) = order.Skip(start).Take(1000).ToList()
-                    Using cmd As New SqlCommand()
-                        cmd.Connection = con
-                        cmd.CommandTimeout = 120
-                        Dim names As New List(Of String)()
-                        For i As Integer = 0 To chunk.Count - 1
-                            Dim n As String = "@I" & i.ToString(CultureInfo.InvariantCulture)
-                            names.Add(n)
-                            cmd.Parameters.Add(New SqlParameter(n, SqlDbType.Int) With {.Value = chunk(i)})
-                        Next
-                        cmd.CommandText = RowsSql & " WHERE [DDR_ID] IN (" & String.Join(",", names) & ")"
-                        Using da As New SqlDataAdapter(cmd)
-                            da.Fill(fresh)
-                        End Using
-                    End Using
-                Next
-            End Using
-
-            ' 4. Keep the session cache in step, and send the fresh values back.
-            Dim dt As DataTable = If(KeyPattern.IsMatch(If(key, "")), CachedTable(ctx.Session, key), Nothing)
-            Dim freshById As New Dictionary(Of Integer, DataRow)()
-            For Each fr As DataRow In fresh.Rows
-                Dim n As Double
-                If TryGetNumber(fr("DDR_ID"), n) Then freshById(CInt(n)) = fr
-            Next
-            For Each id As Integer In order
-                Dim cached As DataRow = FindRow(dt, id)
-                Dim source As DataRow = Nothing
-                freshById.TryGetValue(id, source)
-                If cached IsNot Nothing AndAlso source IsNot Nothing Then
-                    For Each c As ColDef In Cols
-                        If c.Kind = ColKind.Key Then Continue For
-                        Try
-                            cached(c.Field) = source(c.Field)
-                        Catch ex As Exception
-                            ' Type mismatch between the view and the cached column: keep the cached value.
-                        End Try
-                    Next
+                Dim cellCount As Integer = perRow.Values.Sum(Function(f) f.Count)
+                result.Ok = True
+                result.Message = String.Format(CultureInfo.CurrentCulture, "Saved {0:N0} change(s) in {1:N0} row(s).", cellCount, order.Count)
+                If retired.Count > 0 Then
+                    result.Message &= String.Format(CultureInfo.CurrentCulture, " {0:N0} document(s) marked DELETED (title + Man Hours = 0).", retired.Count)
                 End If
-                Dim shown As DataRow = If(source, cached)
-                If shown Is Nothing Then Continue For   ' e.g. the row no longer matches the view
-                Dim rr As New RowResult() With {.Id = id, .Deleted = IsDeletedRow(shown)}
-                For Each c As ColDef In Cols
-                    If c.Kind = ColKind.Key Then Continue For
-                    rr.Values(c.Field) = If(c.Kind = ColKind.Status, ReadOnlyText(shown(c.Field), c.Kind), InputText(shown(c.Field), c.Kind))
-                Next
-                result.Rows.Add(rr)
-            Next
 
-            Dim cellCount As Integer = perRow.Values.Sum(Function(f) f.Count)
-            result.Ok = True
-            result.Message = String.Format(CultureInfo.CurrentCulture, "Saved {0:N0} change(s) in {1:N0} row(s).", cellCount, order.Count)
-            If retired.Count > 0 Then
-                result.Message &= String.Format(CultureInfo.CurrentCulture, " {0:N0} document(s) marked DELETED (title + Man Hours = 0).", retired.Count)
-            End If
-            Dim dups As List(Of String) = DuplicateDocumentNos(dt, perRow)
-            If dups.Count > 0 Then
-                result.Level = "warn"
-                result.Message &= " Note: document number(s) used by more than one row: " & String.Join(", ", dups) & "."
-            End If
+                ' 3. Read the saved rows back (PERC / STATUS are recalculated by the view) and keep
+                '    the session cache in step. The data is already committed: a failure here is
+                '    reported as a warning, never as "nothing was saved".
+                Dim dt As DataTable = If(KeyPattern.IsMatch(If(key, "")), CachedTable(ctx.Session, key), Nothing)
+                Try
+                    Dim fresh As Dictionary(Of Integer, DataRow) = ReadRows(con, order)
+                    For Each id As Integer In order
+                        Dim cached As DataRow = FindRow(dt, id)
+                        Dim source As DataRow = Nothing
+                        fresh.TryGetValue(id, source)
+                        If cached IsNot Nothing AndAlso source IsNot Nothing Then CopyRowValues(source, cached)
+                        Dim shown As DataRow = If(source, cached)
+                        If shown Is Nothing Then Continue For   ' e.g. the row no longer matches the view
+                        result.Rows.Add(ToRowResult(id, shown))
+                    Next
+                Catch ex As Exception
+                    result.Rows.Clear()
+                    result.ReloadSuggested = True
+                    result.Level = "warn"
+                    result.Message &= " The updated values could not be read back (" & ex.Message & ") - click Reload to see them."
+                End Try
+
+                Dim dups As List(Of String) = DuplicateDocumentNos(dt, perRow)
+                If dups.Count > 0 Then
+                    result.Level = "warn"
+                    result.Message &= " Note: document number(s) used by more than one row: " & String.Join(", ", dups) & "."
+                End If
+            End Using
             Return result
 
+        Catch ex As Exception When committed
+            ' Only reachable if something fails between the commit and the end of the method.
+            result.Ok = True
+            result.Rows.Clear()
+            result.ReloadSuggested = True
+            result.Level = "warn"
+            result.Message = "Saved, but the page could not be refreshed (" & ex.Message & ") - click Reload."
+            Return result
         Catch ex As SqlException
             Dim r As SaveAllResult = SaveFailed("Nothing was saved - database error" &
-                If(currentId > 0, " on DDR row " & currentId.ToString(CultureInfo.InvariantCulture), "") & ": " & ex.Message)
-            If currentId > 0 Then r.Errors.Add(New CellError() With {.Id = currentId, .Field = "", .Message = ex.Message})
+                If(currentId > 0, " on DDR row " & currentId.ToString(CultureInfo.InvariantCulture), "") & ": " & ex.Message &
+                " Your changes are still on screen: Save all again to retry.")
+            If currentId > 0 Then r.Errors.Add(New CellError() With {.Id = currentId, .Field = "", .Kind = "db", .Message = ex.Message})
             Return r
         Catch ex As Exception
             Return SaveFailed("Nothing was saved: " & ex.Message)
         End Try
+    End Function
+
+    ' Current values of the edited columns, read from the table itself and locked until the commit.
+    Private Shared Function ReadForUpdate(con As SqlConnection, tx As SqlTransaction, ids As List(Of Integer)) As Dictionary(Of Integer, DataRow)
+        Dim colList As String = String.Join(", ", Cols.Where(Function(c) c.Editable).Select(Function(c) "[" & c.Field & "]"))
+        Return ReadByIds(con, tx, "SELECT [DDR_ID], " & colList & " FROM [CTD_DDR_DISC] WITH (UPDLOCK, ROWLOCK)", ids)
+    End Function
+
+    ' Rows as the page shows them (from the view).
+    Private Shared Function ReadRows(con As SqlConnection, ids As List(Of Integer)) As Dictionary(Of Integer, DataRow)
+        Return ReadByIds(con, Nothing, RowsSql, ids)
+    End Function
+
+    Private Shared Function ReadByIds(con As SqlConnection, tx As SqlTransaction, selectSql As String, ids As List(Of Integer)) As Dictionary(Of Integer, DataRow)
+        Dim result As New Dictionary(Of Integer, DataRow)()
+        Dim table As New DataTable()
+        For start As Integer = 0 To ids.Count - 1 Step 1000     ' SQL Server allows ~2100 parameters
+            Dim chunk As List(Of Integer) = ids.Skip(start).Take(1000).ToList()
+            Using cmd As New SqlCommand() With {.Connection = con, .Transaction = tx, .CommandTimeout = 120}
+                Dim names As New List(Of String)()
+                For i As Integer = 0 To chunk.Count - 1
+                    Dim n As String = "@I" & i.ToString(CultureInfo.InvariantCulture)
+                    names.Add(n)
+                    cmd.Parameters.Add(New SqlParameter(n, SqlDbType.Int) With {.Value = chunk(i)})
+                Next
+                cmd.CommandText = selectSql & " WHERE [DDR_ID] IN (" & String.Join(",", names) & ")"
+                Using da As New SqlDataAdapter(cmd)
+                    da.Fill(table)
+                End Using
+            End Using
+        Next
+        For Each r As DataRow In table.Rows
+            Dim n As Double
+            If TryGetNumber(r("DDR_ID"), n) Then result(CInt(n)) = r
+        Next
+        Return result
+    End Function
+
+    Private Shared Sub CopyRowValues(source As DataRow, target As DataRow)
+        For Each c As ColDef In Cols
+            If c.Kind = ColKind.Key Then Continue For
+            Try
+                target(c.Field) = source(c.Field)
+            Catch ex As Exception
+                ' Type mismatch between the view and the cached column: keep the cached value.
+            End Try
+        Next
+    End Sub
+
+    Private Shared Function ToRowResult(id As Integer, shown As DataRow) As RowResult
+        Dim rr As New RowResult() With {.Id = id, .Deleted = IsDeletedRow(shown)}
+        For Each c As ColDef In Cols
+            If c.Kind = ColKind.Key Then Continue For
+            rr.Values(c.Field) = If(c.Kind = ColKind.Status, ReadOnlyText(shown(c.Field), c.Kind), InputText(shown(c.Field), c.Kind))
+        Next
+        Return rr
+    End Function
+
+    ' Same stored value? Text compares exactly; Man Hours / START numerically (blank = 0).
+    Private Shared Function SameStored(a As String, b As String, kind As ColKind) As Boolean
+        Dim x As String = If(a, "").Trim()
+        Dim y As String = If(b, "").Trim()
+        If String.Equals(x, y, StringComparison.Ordinal) Then Return True
+        If kind <> ColKind.Number AndAlso kind <> ColKind.Start Then Return False
+        Dim p, q As Double
+        If x.Length = 0 Then x = "0"
+        If y.Length = 0 Then y = "0"
+        Return Double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, p) AndAlso
+               Double.TryParse(y, NumberStyles.Float, CultureInfo.InvariantCulture, q) AndAlso Math.Abs(p - q) < 0.000001
     End Function
 
     ' Validates / converts one value. Returns Nothing and sets problem when it is invalid.
@@ -852,53 +1042,59 @@ Public Class Admin_DDR_EditV2
         Public Property NotFoundCount As Integer
         Public Property NoIdCount As Integer
         Public Property DuplicateIds As Integer
+        Public Property Suspicious As Integer
+        Public Property SuspiciousSamples As New List(Of String)()
         Public Property Columns As New List(Of String)()
         Public Property Ignored As New List(Of String)()
     End Class
 
     Private Const MaxUploadBytes As Integer = 8 * 1024 * 1024
+    Private Shared ReadOnly ScientificNumber As New Regex("^[+-]?\d(\.\d+)?E[+-]?\d+$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly CommaDecimal As New Regex("^\d+,\d+$", RegexOptions.Compiled)
+    Private Shared ReadOnly LeadingZeros As New Regex("^0+\d", RegexOptions.Compiled)
 
     Private Shared Function UploadFailed(message As String) As UploadResult
         Return New UploadResult() With {.Ok = False, .Message = message}
     End Function
 
-    ' Reads an uploaded CSV / XLSX (base64) and returns the cells that differ from the database.
-    ' Nothing is written here: the page stages the changes and the user reviews them and
-    ' clicks Save all.
-    <WebMethod(EnableSession:=True)>
-    Public Shared Function PreviewUpload(key As String, fileName As String, base64 As String) As UploadResult
-        Dim ctx As HttpContext = HttpContext.Current
+    ' Reads an uploaded CSV / XLSX and returns the cells that differ from the database.
+    ' Nothing is written: the page stages the changes; the user reviews them and clicks Save all.
+    Friend Shared Function PreviewUpload(ctx As HttpContext, key As String, fileName As String, bytes As Byte()) As UploadResult
         Try
             If Not IsAdminUser(ctx, CurrentUserName(ctx)) Then Return UploadFailed("You do not have permission to edit the DDR.")
             Dim dt As DataTable = If(KeyPattern.IsMatch(If(key, "")), CachedTable(ctx.Session, key), Nothing)
             If dt Is Nothing Then Return UploadFailed("Your session has expired. Reload the page, then upload the file again.")
-
-            Dim bytes As Byte()
-            Try
-                bytes = Convert.FromBase64String(If(base64, ""))
-            Catch ex As FormatException
-                Return UploadFailed("The file could not be read.")
-            End Try
-            If bytes.Length = 0 Then Return UploadFailed("The file is empty.")
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Return UploadFailed("The file is empty.")
             If bytes.Length > MaxUploadBytes Then Return UploadFailed("The file is too large (max 8 MB).")
 
             Dim ext As String = Path.GetExtension(If(fileName, "")).ToLowerInvariant()
             Dim table As List(Of String())
-            If ext = ".xlsx" OrElse ext = ".xlsm" Then
+            Dim isXlsx As Boolean = ext = ".xlsx" OrElse ext = ".xlsm"
+            If isXlsx Then
                 table = ReadXlsx(bytes)
             ElseIf ext = ".csv" OrElse ext = ".txt" Then
                 table = ReadCsv(bytes)
             Else
                 Return UploadFailed("Upload a .csv or .xlsx file (for example one downloaded from this page).")
             End If
-            Return BuildPreview(dt, table)
+
+            ' Compare with the database, not with the (older) copy loaded with the page.
+            Dim refresh As Func(Of List(Of Integer), Dictionary(Of Integer, DataRow)) =
+                Function(ids)
+                    Using con As New SqlConnection(ConnString())
+                        con.Open()
+                        Return ReadRows(con, ids)
+                    End Using
+                End Function
+            Return BuildPreview(dt, table, isXlsx, refresh)
 
         Catch ex As Exception
             Return UploadFailed("The file could not be read: " & ex.Message)
         End Try
     End Function
 
-    Private Shared Function BuildPreview(dt As DataTable, table As List(Of String())) As UploadResult
+    Private Shared Function BuildPreview(dt As DataTable, table As List(Of String()), isXlsx As Boolean,
+                                         refresh As Func(Of List(Of Integer), Dictionary(Of Integer, DataRow))) As UploadResult
         Dim result As New UploadResult() With {.Ok = True}
 
         ' Header: the first row with any text. Columns match by header or field name,
@@ -930,43 +1126,92 @@ Public Class Admin_DDR_EditV2
         If idCol < 0 Then Return UploadFailed("The file needs an ""ID"" (DDR_ID) column - use the CSV / Excel downloaded from this page.")
         If map.Count = 0 Then Return UploadFailed("The file has no editable columns (RAMZ ID, Document No, Title, Remarks ...).")
 
+        ' Pass 1: rows of this project.
         Dim idsSeen As New HashSet(Of Integer)()
-        Dim changedRows As New HashSet(Of Integer)()
-        Dim lastChange As New Dictionary(Of String, CellChange)()   ' id|field -> change (a later duplicate row wins)
+        Dim found As New List(Of KeyValuePair(Of Integer, String()))()
         For r As Integer = headerIndex + 1 To table.Count - 1
             Dim cells As String() = table(r)
             If Not cells.Any(Function(c) Not String.IsNullOrWhiteSpace(c)) Then Continue For
             result.FileRows += 1
             Dim idText As String = CleanUploadValue(If(idCol < cells.Length, cells(idCol), ""))
             Dim idNum As Double
-            If Not Double.TryParse(idText, NumberStyles.Float, CultureInfo.InvariantCulture, idNum) OrElse idNum <= 0 OrElse idNum <> Math.Floor(idNum) Then
+            If Not Double.TryParse(idText, NumberStyles.Float, CultureInfo.InvariantCulture, idNum) OrElse idNum <= 0 OrElse
+               idNum > Integer.MaxValue OrElse idNum <> Math.Floor(idNum) Then
                 result.NoIdCount += 1
                 Continue For
             End If
             Dim id As Integer = CInt(idNum)
             If Not idsSeen.Add(id) Then result.DuplicateIds += 1
-            Dim row As DataRow = FindRow(dt, id)
-            If row Is Nothing Then
+            If FindRow(dt, id) Is Nothing Then
                 result.NotFoundCount += 1
                 If result.NotFound.Count < 10 Then result.NotFound.Add(id.ToString(CultureInfo.InvariantCulture))
                 Continue For
             End If
+            found.Add(New KeyValuePair(Of Integer, String())(id, cells))
+        Next
+
+        ' Refresh those rows from the database (also updates the session copy).
+        If refresh IsNot Nothing AndAlso found.Count > 0 Then
+            Try
+                Dim fresh As Dictionary(Of Integer, DataRow) = refresh(idsSeen.ToList())
+                For Each kv As KeyValuePair(Of Integer, DataRow) In fresh
+                    Dim cached As DataRow = FindRow(dt, kv.Key)
+                    If cached IsNot Nothing Then CopyRowValues(kv.Value, cached)
+                Next
+            Catch ex As Exception
+                ' Compare with the copy loaded with the page; Save all still checks for conflicts.
+            End Try
+        End If
+
+        ' Pass 2: the cells that differ.
+        Dim lastChange As New Dictionary(Of String, CellChange)()   ' id|field -> change (a later duplicate row wins)
+        For Each fr As KeyValuePair(Of Integer, String()) In found
+            Dim row As DataRow = FindRow(dt, fr.Key)
+            Dim cells As String() = fr.Value
             For Each kv As KeyValuePair(Of Integer, ColDef) In map
-                If kv.Key >= cells.Length Then Continue For    ' short row: leave the cell alone
                 Dim col As ColDef = kv.Value
-                Dim fileValue As String = CleanUploadValue(cells(kv.Key))
+                Dim fileValue As String
+                If kv.Key < cells.Length Then
+                    fileValue = CleanUploadValue(cells(kv.Key))
+                ElseIf isXlsx Then
+                    fileValue = ""          ' Excel does not store empty cells at the end of a row
+                Else
+                    Continue For            ' short CSV row: leave the cell alone
+                End If
                 Dim current As String = InputText(row(col.Field), col.Kind)
-                Dim k As String = id.ToString(CultureInfo.InvariantCulture) & "|" & col.Field
-                If SameValue(fileValue, current, col.Kind) Then
+                Dim k As String = fr.Key.ToString(CultureInfo.InvariantCulture) & "|" & col.Field
+
+                If col.Kind = ColKind.Number OrElse col.Kind = ColKind.Start Then
+                    If CommaDecimal.IsMatch(fileValue) Then fileValue = fileValue.Replace(","c, "."c)   ' "12,5" from a ';' CSV
+                ElseIf Not String.Equals(fileValue, current, StringComparison.Ordinal) AndAlso LooksMangled(fileValue, current) Then
+                    ' Excel turned the value into scientific notation / dropped leading zeros: not a real edit.
+                    result.Suspicious += 1
+                    If result.SuspiciousSamples.Count < 5 Then result.SuspiciousSamples.Add(current & " → " & fileValue)
+                    lastChange.Remove(k)
+                    Continue For
+                End If
+
+                If SameStored(fileValue, current, col.Kind) Then
                     lastChange.Remove(k)
                 Else
-                    lastChange(k) = New CellChange() With {.Id = id, .Field = col.Field, .Value = fileValue}
+                    lastChange(k) = New CellChange() With {.Id = fr.Key, .Field = col.Field, .Value = fileValue, .Orig = current}
                 End If
             Next
         Next
         result.Changes = lastChange.Values.ToList()
         result.ChangedRows = result.Changes.Select(Function(c) c.Id).Distinct().Count()
         Return result
+    End Function
+
+    ' Typical damage from opening a CSV in Excel: 1234567890123456 -> 1.23457E+15, 00123 -> 123.
+    Private Shared Function LooksMangled(fileValue As String, current As String) As Boolean
+        Dim a, b As Double
+        If ScientificNumber.IsMatch(fileValue) AndAlso
+           Double.TryParse(current, NumberStyles.Float, CultureInfo.InvariantCulture, b) AndAlso
+           Double.TryParse(fileValue, NumberStyles.Float, CultureInfo.InvariantCulture, a) AndAlso
+           b <> 0 AndAlso Math.Abs(a - b) / Math.Abs(b) < 0.00001 Then Return True
+        Return LeadingZeros.IsMatch(current) AndAlso fileValue.Length > 0 AndAlso
+               String.Equals(current.TrimStart("0"c), fileValue, StringComparison.Ordinal)
     End Function
 
     Private Shared Function NormalizeHeader(h As String) As String
@@ -978,20 +1223,6 @@ Public Class Admin_DDR_EditV2
         Dim v As String = If(value, "").Trim()
         If v.Length > 1 AndAlso v(0) = "'"c AndAlso "=+-@".IndexOf(v(1)) >= 0 Then v = v.Substring(1)
         Return v
-    End Function
-
-    ' Spreadsheet round trips change the look of numbers (12.5000 / 12.5, 0.1 / .1, 00123 / 123):
-    ' treat numerically equal values as unchanged so only real edits are staged.
-    Private Shared Function SameValue(fileValue As String, current As String, kind As ColKind) As Boolean
-        If String.Equals(fileValue, current, StringComparison.Ordinal) Then Return True
-        Dim a, b As Double
-        Dim aNum As Boolean = Double.TryParse(fileValue, NumberStyles.Float, CultureInfo.InvariantCulture, a)
-        Dim bNum As Boolean = Double.TryParse(current, NumberStyles.Float, CultureInfo.InvariantCulture, b)
-        If kind = ColKind.Number OrElse kind = ColKind.Start Then
-            If fileValue.Length = 0 Then aNum = True : a = 0     ' blank saves as 0
-            If current.Length = 0 Then bNum = True : b = 0
-        End If
-        Return aNum AndAlso bNum AndAlso Math.Abs(a - b) < 0.000001
     End Function
 
     ' CSV: UTF-8 / UTF-16 (BOM) or ANSI (Excel's "CSV (Comma delimited)"); comma, semicolon or tab.
@@ -1149,12 +1380,14 @@ Public Class Admin_DDR_EditV2
     ' Column sizes of CTD_DDR_DISC, read once per application: feeds maxlength on the inputs and
     ' the server-side length check, so over-long text gets a clear message instead of a SQL error.
     Private Shared _colLengths As Dictionary(Of String, Integer)
+    Private Shared _colLengthsRetryAt As DateTime = DateTime.MinValue
     Private Shared ReadOnly ColLengthsLock As New Object()
 
     Private Shared Function ColumnMaxLength(field As String) As Integer
         Dim map As Dictionary(Of String, Integer) = _colLengths
         If map Is Nothing Then
             SyncLock ColLengthsLock
+                If _colLengths Is Nothing AndAlso DateTime.UtcNow < _colLengthsRetryAt Then Return 0
                 If _colLengths Is Nothing Then
                     Dim m As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
                     Try
@@ -1166,7 +1399,9 @@ Public Class Admin_DDR_EditV2
                         Next
                         _colLengths = m
                     Catch ex As Exception
-                        Return 0   ' unknown: let SQL Server enforce it, and try again next time
+                        ' Unknown: SQL Server enforces it. Retry in 5 minutes, not on every cell.
+                        _colLengthsRetryAt = DateTime.UtcNow.AddMinutes(5)
+                        Return 0
                     End Try
                 End If
                 map = _colLengths
@@ -1212,6 +1447,7 @@ Public Class Admin_DDR_EditV2
 #Region "Export"
 
     Private Sub btnExcel_Click(sender As Object, e As EventArgs) Handles btnExcel.Click
+        If _denied Then Return
         Dim dt As DataTable = GetExportTable()
         If dt Is Nothing OrElse dt.Rows.Count = 0 Then
             ShowMessage("There are no rows on screen to export.", "warn")
@@ -1222,6 +1458,7 @@ Public Class Admin_DDR_EditV2
     End Sub
 
     Private Sub btnCSV_Click(sender As Object, e As EventArgs) Handles btnCSV.Click
+        If _denied Then Return
         Dim dt As DataTable = GetExportTable()
         If dt Is Nothing OrElse dt.Rows.Count = 0 Then
             ShowMessage("There are no rows on screen to export.", "warn")
