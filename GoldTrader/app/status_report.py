@@ -26,6 +26,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 import scorecard
+import tactics
 
 log = logging.getLogger("status")
 
@@ -139,7 +140,9 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
         "updated_utc": datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"),
         "symbol": cfg.symbol,
         "mode": "dry-run" if cfg.dry_run else "live",
-        "trade_hours_ny": cfg.trade_windows_ny,
+        "trade_hours": cfg.trade_windows,
+        "trade_days": cfg.trade_days,
+        "trade_zone": tactics.zone_label(cfg),
         "sources": {name: magic for magic, name in names.items()},
         "rules": {"risk_percent": cfg.risk_percent, "sl_dollars": cfg.sl_dollars,
                   "tp1_dollars": cfg.tp1_dollars, "trail_dollars": cfg.trail_dollars,

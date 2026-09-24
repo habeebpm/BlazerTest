@@ -116,6 +116,19 @@
 
     protected string Mode { get { return S(G(R, "mode")) == "live" ? "Live" : "Dry-run"; } }
 
+    // "06:00-23:00 Oman time, Mon-Fri" (a report from before the Oman window says New York).
+    protected string TradeHours
+    {
+        get
+        {
+            string hours = S(G(R, "trade_hours"));
+            if (hours.Length == 0 && R.ContainsKey("trade_hours_ny")) return S(G(R, "trade_hours_ny")) + " New York time";
+            if (hours.Length == 0) return "at any hour";
+            string zone = S(G(R, "trade_zone")), days = S(G(R, "trade_days"));
+            return hours + (zone.Length > 0 ? " " + zone + " time" : "") + (days.Length > 0 ? ", " + days : "");
+        }
+    }
+
     protected double TodayChange
     {
         get
@@ -258,7 +271,7 @@
     protected string DecisionsHtml()
     {
         IList list = L(G(R, "decisions"));
-        if (list.Count == 0) return "<p class=\"empty\">No Claude evaluations yet. They happen in trading hours when 2 of 3 checks agree.</p>";
+        if (list.Count == 0) return "<p class=\"empty\">No Claude evaluations yet. They happen inside the trading hours when 2 of 3 checks agree.</p>";
         StringBuilder sb = new StringBuilder("<ul class=\"rows\">");
         foreach (object o in list)
         {
@@ -528,7 +541,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
       <header><h2>Claude's last word</h2><span class="chip <%= B(G(R, "claude_paused")) ? "warn" : "good" %>"><%= B(G(R, "claude_paused")) ? "Paused" : "On" %></span></header>
       <% string last = S(G(R, "last_verdict")); %>
       <%= last.Length > 0 ? "<p class=\"pre\">" + H(Clip(last, 3000)) + "</p>" : "<p class=\"empty\">Nothing yet.</p>" %>
-      <p class="note">Entries only <%= H(S(G(R, "trade_hours_ny"))) %> New York time.</p>
+      <p class="note">New entries only <%= H(TradeHours) %> - Claude and Telegram alike.</p>
     </div>
     <div class="card"><h2>Recent evaluations</h2><%= DecisionsHtml() %></div>
   </section>

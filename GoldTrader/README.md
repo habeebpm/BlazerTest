@@ -71,8 +71,9 @@ Google Drive/Dropbox/OneDrive; it is never uploaded to git.
 
 | | |
 |---|---|
+| Trading hours | New entries **06:00-23:00 Oman time, Monday-Friday** - Claude and Telegram alike; open trades are managed around the clock |
 | Telegram signals | Your channel -> relay group -> EA, copied within seconds |
-| Claude trades | 08:00-16:45 and 18:15-20:00 New York time, about 4 a week |
+| Claude trades | When 2 of 3 checks agree and Claude says "full" |
 | Every trade | 2% risk, stop $6, locked at +$6, then trailed $3; max 5 per direction |
 | Protection | 10% daily loss cap, spread limit, news pause, margin guard, no Friday-evening entries |
 | Every week | A scorecard in Telegram: TOO EARLY / NOT PROVEN YET / ON TRACK / STOP AND REVIEW |

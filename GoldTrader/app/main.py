@@ -130,7 +130,7 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
     if args.no_prescreen:
         cfg.claude_prescreen = False
     if args.trade_hours is not None:
-        cfg.trade_windows_ny = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
+        cfg.trade_windows = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
             else args.trade_hours
     if args.friday_cutoff is not None:
         cfg.friday_cutoff_ny = "" if args.friday_cutoff.strip().lower() in ("", "off") \
@@ -836,9 +836,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(on by default; needs the MQL5 EA's calendar export - see "
                              "econ_calendar.py). The calendar is still shown to Claude.")
     parser.add_argument("--trade-hours", dest="trade_hours",
-                        help="entries only inside these New York-time windows, e.g. "
-                             "\"08:00-16:45\" (default: see config.py trade_windows_ny; "
-                             "'any' = no restriction) - entry filter only")
+                        help="entries only inside these windows, in config.py's trade_timezone "
+                             "(default 06:00-23:00 Oman time, Monday-Friday; several: "
+                             "\"06:00-12:00,14:00-23:00\"; 'any' = no restriction) - entry filter only")
     parser.add_argument("--friday-cutoff", dest="friday_cutoff",
                         help="no new entry on Friday from this New York time (e.g. 16:00; "
                              "'off' = none)")

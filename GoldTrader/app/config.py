@@ -120,14 +120,15 @@ class AdvisorConfig:
     xtr_bars: int = 200
 
     # --- Entry tactics (tactics.py) - WHEN an entry may be taken; entry
-    #     filters only, never lot/SL/TP/trail/cap. Times are New York time
-    #     (daylight saving followed automatically). "" / 0 switches one off.
-    #     One-year test (docs/BACKTEST_REPORT.md): the trading hours below
-    #     improved the average trade in the untouched Sep-Mar period too,
-    #     halved the drawdown and skip about half of the paid Claude calls.
-    #     min_adx was not consistent across periods, so it ships off.
-    trade_windows_ny: str = "08:00-16:45,18:15-20:00"   # US session + early evening; not Asia/London morning
-    friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this time (weekend gap)
+    #     filters only, never lot/SL/TP/trail/cap. "" / 0 switches one off.
+    #     Trading hours: 06:00-23:00 Oman time (UTC+4, no daylight saving),
+    #     Monday-Friday - the owner's choice; the same window is set in
+    #     UnifiedTrader_EA for Telegram entries (InpTradeHours). One-year
+    #     test of these hours: docs/BACKTEST_REPORT.md. min_adx ships off.
+    trade_windows: str = "06:00-23:00"     # entry hours in trade_timezone; several: "06:00-12:00,14:00-23:00"
+    trade_timezone: str = "Asia/Muscat"    # Oman; any IANA name works, e.g. "America/New_York"
+    trade_days: str = "Mon-Fri"            # market days, in trade_timezone
+    friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this New York time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
     min_adx: float = 0.0              # e.g. 25: no entry while M15 ADX14 is below this
 

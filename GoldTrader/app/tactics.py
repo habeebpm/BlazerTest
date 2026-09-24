@@ -5,13 +5,14 @@ never touch the lot, the stop-loss, TP1, the trail or the position cap.
 Four checks, each switchable in config.py (see docs/BACKTEST_REPORT.md for
 the one-year test behind the defaults):
 
-  * trading hours  - entries only inside trade_windows_ny (New York time, so
-                     US/UK daylight-saving shifts are followed automatically).
-                     Gold's Asian session is a range that turns momentum
-                     entries into false breakouts, and the London morning
-                     sweeps tight stops; both lost over the tested year.
-  * Friday cutoff  - no new entry after friday_cutoff_ny: a $6 stop cannot
-                     protect a position held over the weekend gap.
+  * trading hours  - entries only inside trade_windows on trade_days, in
+                     trade_timezone (default 06:00-23:00 Oman time, Monday
+                     to Friday - UnifiedTrader_EA applies the same window to
+                     Telegram entries). Any IANA time zone works, daylight
+                     saving included.
+  * Friday cutoff  - no new entry after friday_cutoff_ny (New York time): a
+                     $6 stop cannot protect a position held over the weekend
+                     gap.
   * spread guard   - no entry while the spread is above max_spread_points
                      (daily reopen, news spikes, thin liquidity). With a $6
                      stop, a 50-point spread is already 8% of the risk.
@@ -27,7 +28,41 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-NEW_YORK = ZoneInfo("America/New_York")
+NEW_YORK = ZoneInfo("America/New_York")      # gold's own clock: daily break, trading day, Friday cutoff
+
+DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+ZONE_LABELS = {"Asia/Muscat": "Oman", "America/New_York": "New York", "Europe/London": "London",
+               "Asia/Dubai": "UAE", "UTC": "UTC"}
+
+
+def zone(cfg) -> ZoneInfo:
+    try:
+        return ZoneInfo((cfg.trade_timezone or "UTC").strip())
+    except Exception:
+        raise ValueError(f"unknown time zone {cfg.trade_timezone!r} (use e.g. Asia/Muscat)") from None
+
+
+def zone_label(cfg) -> str:
+    """"Oman" for Asia/Muscat - how the hours are written for people."""
+    name = (cfg.trade_timezone or "UTC").strip()
+    return ZONE_LABELS.get(name, name)
+
+
+def parse_days(spec: str) -> set:
+    """"Mon-Fri" -> {0..4}; "Mon,Wed,Fri"; "" / "any" -> every day (0=Monday).
+    Raises ValueError on a typo, so it is caught at start-up."""
+    spec = (spec or "").strip().lower()
+    if spec in ("", "any", "all"):
+        return set(range(7))
+    days = set()
+    for part in spec.split(","):
+        part = part.strip()
+        ends = [p.strip()[:3] for p in part.split("-")]
+        if len(ends) > 2 or any(e not in DAY_NAMES for e in ends):
+            raise ValueError(f"trading days not understood: {spec!r} (use e.g. Mon-Fri)")
+        a, b = DAY_NAMES.index(ends[0]), DAY_NAMES.index(ends[-1])
+        days.update(range(a, b + 1) if a <= b else list(range(a, 7)) + list(range(0, b + 1)))
+    return days
 
 
 def _minutes(hhmm: str) -> int:
@@ -74,16 +109,20 @@ def in_windows(minute_of_day: int, windows: list) -> bool:
 
 
 def time_block(cfg, now) -> str:
-    """Trading-hours and Friday-cutoff check for `now` (UTC)."""
-    ny = _as_utc(now).astimezone(NEW_YORK)
-    minute = ny.hour * 60 + ny.minute
+    """Trading days/hours (trade_timezone) and Friday-cutoff (New York)
+    check for `now` (UTC)."""
+    utc = _as_utc(now)
+    ny = utc.astimezone(NEW_YORK)
     cutoff = (cfg.friday_cutoff_ny or "").strip()
-    if cutoff and ny.weekday() == 4 and minute >= _minutes(cutoff):
+    if cutoff and ny.weekday() == 4 and ny.hour * 60 + ny.minute >= _minutes(cutoff):
         return f"Friday after {cutoff} New York - no new entry before the weekend"
-    windows = parse_windows(cfg.trade_windows_ny)
-    if windows and not in_windows(minute, windows):
-        return (f"outside trading hours ({ny:%H:%M} New York; entries only "
-                f"{cfg.trade_windows_ny} New York)")
+    local, label = utc.astimezone(zone(cfg)), zone_label(cfg)
+    if local.weekday() not in parse_days(cfg.trade_days):
+        return f"not a trading day ({local:%A} {label} time; entries only {cfg.trade_days})"
+    windows = parse_windows(cfg.trade_windows)
+    if windows and not in_windows(local.hour * 60 + local.minute, windows):
+        return (f"outside trading hours ({local:%H:%M} {label} time; entries only "
+                f"{cfg.trade_windows} {label} time)")
     return ""
 
 
@@ -162,7 +201,9 @@ def prescreen_block(cfg, features: dict) -> str:
 
 def validate(cfg) -> None:
     """Raises ValueError on a malformed time setting."""
-    parse_windows(cfg.trade_windows_ny)
+    parse_windows(cfg.trade_windows)
+    parse_days(cfg.trade_days)
+    zone(cfg)
     if (cfg.friday_cutoff_ny or "").strip():
         _minutes(cfg.friday_cutoff_ny)
 
@@ -181,7 +222,9 @@ def trading_day(now, server_offset_seconds: int | None = None):
 
 def describe(cfg) -> str:
     """One line for the start-up log."""
-    parts = [f"hours {cfg.trade_windows_ny} New York" if cfg.trade_windows_ny else "any hour"]
+    parts = [f"hours {cfg.trade_windows} {zone_label(cfg)} time" if cfg.trade_windows else "any hour"]
+    if parse_days(cfg.trade_days) != set(range(7)):
+        parts.append(cfg.trade_days)
     if cfg.friday_cutoff_ny:
         parts.append(f"Friday cutoff {cfg.friday_cutoff_ny}")
     if cfg.max_spread_points:

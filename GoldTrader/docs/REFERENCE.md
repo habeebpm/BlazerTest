@@ -72,8 +72,11 @@ Telegram signals (EA side) are copied when they parse as a trade and no
 clear M15/H1 is against them (`InpXtrHtfFilter`), inside the same position
 cap, daily cap, news filter and spread limit (`InpMaxSpreadPoints`, 50).
 Greetings, mood posts, long commentary, videos, audio and stickers are
-ignored. The trading hours apply to Claude's entries only - the signal
-provider chooses their own timing.
+ignored. The trading hours apply here too: a signal posted outside
+06:00-23:00 Oman time or at the weekend is logged "outside trading hours"
+and not copied (`InpTradeHours`, `InpTradeUtcOffsetHours`,
+`InpTradeWeekdaysOnly`). Close, breakeven and cancel messages work at any
+hour, and open trades are managed around the clock.
 
 ## Entry tactics (when Claude may trade)
 
@@ -84,17 +87,23 @@ position cap never change.
 
 | Tactic | Default | Why |
 |---|---|---|
-| Trading hours | 08:00-16:45 and 18:15-20:00 **New York time** | Asian-session and London-morning entries lost; these hours passed the fresh-data test, halved the drawdown under every XTR setting and skip about half of the paid Claude calls |
+| Trading hours | **06:00-23:00 Oman time, Monday-Friday** (Claude and Telegram) | Your choice; its one-year test is in [`BACKTEST_REPORT.md`](BACKTEST_REPORT.md) |
 | Friday cutoff | no new entry from 16:00 New York on Friday | A $6 stop cannot protect a position over the weekend gap |
 | Spread guard | no entry above 50 points | Reopen and news spikes; 50 points is already 8% of the $6 risk |
 | Trend filter | off (`--min-adx 25` to try it) | Helped Mar-Jul, not Aug-Sep |
 
-New York time follows US daylight saving by itself. In your clock: UTC
-12:00-20:45 and 22:15-24:00 from March to early November, one hour later in
-winter. Outside the hours the log says `No evaluation this cycle (no Claude
-call): outside trading hours` - that is normal.
+Oman keeps UTC+4 all year (no daylight saving): 06:00-23:00 Oman is
+02:00-19:00 UTC, i.e. from the Tokyo morning through London to the US
+afternoon (22:00-15:00 New York in summer, 21:00-14:00 in winter). Gold's
+own daily break (17:00-18:00 New York) falls outside it. Outside the hours
+the log says `No evaluation this cycle (no Claude call): outside trading
+hours` - that is normal.
 
-Change them in `start.bat` (`GT_ARGS`): `--trade-hours "08:00-16:45"`
+The window lives in two places, which must match: `app/config.py`
+(`trade_windows`, `trade_timezone`, `trade_days`) for Claude and the EA
+inputs `InpTradeHours` / `InpTradeUtcOffsetHours` / `InpTradeWeekdaysOnly`
+for Telegram (the self-test checks they agree). For Claude only, try other
+hours in `start.bat` (`GT_ARGS`): `--trade-hours "06:00-12:00,14:00-23:00"`
 (`any` = all day), `--friday-cutoff off`, `--max-spread 40`,
 `--min-adx 25`. A mistyped value stops `start.bat` with a clear message
 instead of restarting.
@@ -196,7 +205,7 @@ program converts them to real UTC: by default it assumes the usual gold
 broker clock (New York + 7 hours, i.e. UTC+2 in winter, UTC+3 in summer),
 and a live tick confirms it or switches to your broker's fixed offset (the
 log says `Broker server clock: ...`). The trading hours use your PC's UTC
-clock, so keep Windows time synced (Settings -> Time -> Sync now).
+clock (Python and the EA alike), so keep Windows time synced (Settings -> Time -> Sync now).
 
 ## Price files for XTR (Drive)
 
@@ -272,8 +281,9 @@ without the tactics. Results on a year of real prices:
 |---|---|
 | "Python was not found" | Install Python 3.12+ 64-bit, tick "Add python.exe to PATH", reopen |
 | "Cannot reach MetaTrader 5" | Start MT5, log in, wait for prices, XAUUSD in Market Watch; `start.bat` retries by itself |
-| No Claude trades for hours | Normal outside 08:00-16:45 / 18:15-20:00 New York and on Friday evening; about 4 Claude trades a week is typical |
-| "Setting not understood" | A typo in `start.bat` `GT_ARGS` (times as HH:MM, e.g. `08:00-16:45`) |
+| No trades for hours | Normal outside 06:00-23:00 Oman time and at the weekend; Claude also needs 2 of 3 checks and a "full" verdict |
+| A Telegram signal was not copied | The dashboard's Signals tab / the EA's Experts tab says why (e.g. "outside trading hours") |
+| "Setting not understood" | A typo in `start.bat` `GT_ARGS` (times as HH:MM, e.g. `06:00-23:00`) |
 | `check.bat` shows `MISSING` | `settings.bat` |
 | No Telegram alert | `settings.bat` -> send the test message; you must have messaged the bot once |
 | EA: "InpBotToken is empty" | EA Inputs -> bot token |

@@ -1,5 +1,7 @@
 # Backtest report - XAUUSD, 19 Sep 2025 - 23 Sep 2026 (one year)
 
+> **Live trading hours changed (owner's choice):** new entries now run 06:00-23:00 Oman time, Monday-Friday, for Claude and Telegram alike. The report below tested the earlier New York hours (08:00-16:45 and 18:15-20:00); the test of the Oman window is in the section "Oman trading hours".
+
 Real history from Twelve Data (XAU/USD 5-minute bars; M15 and H1 built from
 them, H4/D1/W1 from the 4-hour series), converted to UTC, weekends and the
 daily 17:00-18:00 New York break removed. 24,056 closed M15 bars evaluated,

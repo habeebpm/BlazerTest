@@ -160,6 +160,9 @@ input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-so
 input double  InpMaxDailyLossPct   = 10.0;         // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
 input int     InpMaxSpreadPoints   = 50;           // Skip a Telegram entry while the spread is above this many points (0 = off)
 input bool    InpMarginGuard       = true;         // Skip a Telegram entry if free margin after it could not cover every open stop + its own
+input string  InpTradeHours        = "06:00-23:00"; // New Telegram entries only inside these hours, local time below ("" = any time) - same as app/config.py trade_windows
+input double  InpTradeUtcOffsetHours = 4.0;        // That local time's offset from UTC: Oman = 4 (no daylight saving)
+input bool    InpTradeWeekdaysOnly = true;         // New Telegram entries Monday-Friday only (local time) - same as app/config.py trade_days
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity (pips; 1 pip = 10 broker points) ==="
@@ -260,6 +263,9 @@ double   PositionSizeLots();
 double   OpenRiskMoney();
 string   DailyRiskBudgetReason(double newLots);
 string   MarginGuardReason(bool isBuy, double newLots);
+bool     ParseHHMM(string s, int &minutes);
+bool     ParseTradeHours(const string spec);
+string   TradeHoursReason();
 int      CountSameDirection(int direction);
 void     ExpirePendingOrders();
 int      ClosePositionsByMagic(long magic, const string &label);
@@ -316,6 +322,13 @@ int OnInit()
    {
       Print("UnifiedTrader_EA: InpFixedLot, InpReferenceLot, InpSlDollars, InpTp1Dollars and "
             "InpTrailDollars must all be positive.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(!ParseTradeHours(InpTradeHours) || InpTradeUtcOffsetHours < -12.0 || InpTradeUtcOffsetHours > 14.0)
+   {
+      PrintFormat("UnifiedTrader_EA: InpTradeHours '%s' / InpTradeUtcOffsetHours %.2f not understood - use "
+                  "e.g. 06:00-23:00 (or 06:00-12:00,14:00-23:00; empty = any time) and an offset "
+                  "between -12 and 14 (Oman = 4).", InpTradeHours, InpTradeUtcOffsetHours);
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpTelegramMagicNumber == InpClaudeMagicNumber)
@@ -1130,6 +1143,91 @@ string MarginGuardReason(bool isBuy, double newLots)
       return(StringFormat("margin guard: free margin after this trade %.2f would not cover %.2f if every "
                           "open stop and this one were hit", freeAfter, worst));
    return("");
+}
+
+//+------------------------------------------------------------------+
+//| Trading hours for NEW Telegram entries: InpTradeHours in the local|
+//| time InpTradeUtcOffsetHours (Oman = UTC+4, no daylight saving),   |
+//| Monday-Friday when InpTradeWeekdaysOnly - the same window         |
+//| app/config.py applies to Claude's entries. Close / breakeven /    |
+//| cancel commands and the management of open positions (SL lock,    |
+//| trail) run at any time: only new entries wait for the window.     |
+//+------------------------------------------------------------------+
+int g_tradeWinStart[];
+int g_tradeWinEnd[];
+
+bool ParseHHMM(string s, int &minutes)
+{
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   string hm[];
+   if(StringSplit(s, ':', hm) != 2 || StringLen(hm[0]) < 1 || StringLen(hm[0]) > 2 || StringLen(hm[1]) != 2)
+      return(false);
+   for(int k = 0; k < 2; k++)
+      for(int i = 0; i < StringLen(hm[k]); i++)
+         if(!IsDigitCh(StringGetCharacter(hm[k], i)))
+            return(false);
+   int h = (int)StringToInteger(hm[0]);
+   int m = (int)StringToInteger(hm[1]);
+   if(h > 24 || m > 59 || h * 60 + m > 1440)
+      return(false);
+   minutes = h * 60 + m;
+   return(true);
+}
+
+bool ParseTradeHours(const string spec)
+{
+   ArrayResize(g_tradeWinStart, 0);
+   ArrayResize(g_tradeWinEnd, 0);
+   string s = spec;
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   if(StringLen(s) == 0)
+      return(true);                                  // any time
+   string parts[];
+   int n = StringSplit(s, ',', parts);
+   for(int i = 0; i < n; i++)
+   {
+      string p = parts[i];
+      StringTrimLeft(p);
+      StringTrimRight(p);
+      if(StringLen(p) == 0)
+         continue;
+      string ab[];
+      int a = 0, b = 0;
+      if(StringSplit(p, '-', ab) != 2 || !ParseHHMM(ab[0], a) || !ParseHHMM(ab[1], b))
+         return(false);
+      int k = ArraySize(g_tradeWinStart);
+      ArrayResize(g_tradeWinStart, k + 1);
+      ArrayResize(g_tradeWinEnd, k + 1);
+      g_tradeWinStart[k] = a;
+      g_tradeWinEnd[k]   = b;
+   }
+   return(ArraySize(g_tradeWinStart) > 0);
+}
+
+// "" when a new entry may be taken now, else why not.
+string TradeHoursReason()
+{
+   long offset = (long)MathRound(InpTradeUtcOffsetHours * 3600.0);
+   datetime local = (datetime)((long)TimeGMT() + offset);
+   MqlDateTime t;
+   TimeToStruct(local, t);
+   string zone = "UTC" + (InpTradeUtcOffsetHours >= 0.0 ? "+" : "")
+                 + DoubleToString(InpTradeUtcOffsetHours, MathMod(InpTradeUtcOffsetHours, 1.0) == 0.0 ? 0 : 1);
+   if(InpTradeWeekdaysOnly && (t.day_of_week == 0 || t.day_of_week == 6))
+      return(StringFormat("not a trading day (weekend, %s); new entries Monday-Friday only", zone));
+   int n = ArraySize(g_tradeWinStart);
+   if(n == 0)
+      return("");
+   int minute = t.hour * 60 + t.min;
+   for(int i = 0; i < n; i++)
+   {
+      int a = g_tradeWinStart[i], b = g_tradeWinEnd[i];
+      if(a <= b) { if(minute >= a && minute < b) return(""); }
+      else if(minute >= a || minute < b) return("");  // a window over midnight, e.g. 20:00-02:00
+   }
+   return(StringFormat("outside trading hours (%02d:%02d %s; new entries only %s)", t.hour, t.min, zone, InpTradeHours));
 }
 
 //+------------------------------------------------------------------+
@@ -2098,6 +2196,14 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       Print("UnifiedTrader_EA: OPEN signal has no clear BUY/SELL direction - ignoring.");
       LogSignalRow(chatId, "OPEN", "", msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, "no BUY/SELL direction", false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   string hoursReason = TradeHoursReason();
+   if(hoursReason != "")
+   {
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", hoursReason);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, hoursReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    string xtrReason;

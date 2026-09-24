@@ -824,8 +824,8 @@ def main(argv: list | None = None) -> int:
                         help="spread around the daily reopen, 16:55-18:15 New York (default 80; 0 = "
                              "the normal spread all day)")
     parser.add_argument("--trade-hours", dest="trade_hours",
-                        help="entry trading hours, New York time (default: the live setting in "
-                             "config.py; 'any' = no restriction)")
+                        help="entry trading hours in config.py's trade_timezone (default: the live "
+                             "setting, 06:00-23:00 Oman time Monday-Friday; 'any' = no restriction)")
     parser.add_argument("--friday-cutoff", dest="friday_cutoff",
                         help="no new entry on Friday from this New York time ('off' = none)")
     parser.add_argument("--max-spread", type=int, dest="max_spread",
@@ -878,7 +878,7 @@ def main(argv: list | None = None) -> int:
     if args.sl_mode:
         base_cfg.sl_mode = args.sl_mode
     if args.trade_hours is not None:
-        base_cfg.trade_windows_ny = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
+        base_cfg.trade_windows = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
             else args.trade_hours
     if args.friday_cutoff is not None:
         base_cfg.friday_cutoff_ny = "" if args.friday_cutoff.strip().lower() in ("", "off") \

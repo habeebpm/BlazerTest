@@ -378,7 +378,7 @@ class FakeGateway:
         return self.equity
 
     def now(self):
-        # A fixed Wednesday 10:00 New York, inside the default trading hours:
+        # A fixed Wednesday 14:00 UTC (18:00 Oman), inside the default trading hours:
         # a test's outcome must never depend on the time of day it runs.
         return self._now or TEST_NOW
 
@@ -3612,15 +3612,24 @@ def test_first_run_wizard() -> bool:
     return ok
 
 
+def _raises(fn) -> bool:
+    try:
+        fn()
+    except ValueError:
+        return True
+    return False
+
+
 def test_tactics() -> bool:
     print("\n=== 34. entry tactics: trading hours, Friday cutoff, spread guard, trend strength ===")
     ok = True
     T = tactics
     cfg = AdvisorConfig()
     utc = timezone.utc
-    ok &= check("defaults: US session + early evening New York, Friday 16:00 cutoff, 50-point spread "
-                "guard, ADX filter off",
-                cfg.trade_windows_ny == "08:00-16:45,18:15-20:00" and cfg.friday_cutoff_ny == "16:00"
+    ok &= check("defaults: 06:00-23:00 Oman time, Monday-Friday, Friday 16:00 New York cutoff, "
+                "50-point spread guard, ADX filter off",
+                cfg.trade_windows == "06:00-23:00" and cfg.trade_timezone == "Asia/Muscat"
+                and cfg.trade_days == "Mon-Fri" and cfg.friday_cutoff_ny == "16:00"
                 and cfg.max_spread_points == 50 and cfg.min_adx == 0, T.describe(cfg))
     ok &= check("windows parse to minutes; a midnight-wrapping window works",
                 T.parse_windows("08:00-16:45,18:15-20:00") == [(480, 1005), (1095, 1200)]
@@ -3634,25 +3643,44 @@ def test_tactics() -> bool:
         except ValueError:
             bad.append(spec)
     ok &= check("a malformed window is an error, never 'any hour'", len(bad) == 4, bad)
-    summer = datetime(2026, 9, 23, 13, 0, tzinfo=utc)     # 09:00 New York (EDT)
-    asia = datetime(2026, 9, 23, 6, 0, tzinfo=utc)        # 02:00 New York
-    winter_in = datetime(2026, 1, 15, 13, 30, tzinfo=utc)  # 08:30 New York (EST)
-    winter_out = datetime(2026, 1, 15, 12, 30, tzinfo=utc)  # 07:30 New York (EST) - 08:30 in summer
-    rollover = datetime(2026, 9, 23, 21, 30, tzinfo=utc)  # 17:30 New York - daily break
-    ok &= check("New York time: 09:00 allowed, 02:00 (Asia) and 17:30 (daily break) refused",
-                T.time_block(cfg, summer) == "" and "outside trading hours" in T.time_block(cfg, asia)
-                and "outside trading hours" in T.time_block(cfg, rollover), T.time_block(cfg, asia))
-    ok &= check("daylight saving is followed: 13:30 UTC in January (08:30 EST) is in, 12:30 UTC is out",
-                T.time_block(cfg, winter_in) == "" and T.time_block(cfg, winter_out) != "")
+    ok &= check("trading days: Mon-Fri, lists, wrap-around ranges, '' = every day; a typo is an error",
+                T.parse_days("Mon-Fri") == {0, 1, 2, 3, 4} and T.parse_days("Mon,Wed") == {0, 2}
+                and T.parse_days("Sun-Thu") == {6, 0, 1, 2, 3} and T.parse_days("") == set(range(7))
+                and _raises(lambda: T.parse_days("Mon-Fry")))
+    wed_open = datetime(2026, 9, 23, 2, 0, tzinfo=utc)      # Wednesday 06:00 Oman (UTC+4)
+    wed_early = datetime(2026, 9, 23, 1, 59, tzinfo=utc)    # 05:59 Oman
+    wed_last = datetime(2026, 9, 23, 18, 59, tzinfo=utc)    # 22:59 Oman
+    wed_close = datetime(2026, 9, 23, 19, 0, tzinfo=utc)    # 23:00 Oman
+    ok &= check("Oman time: 06:00 and 22:59 allowed, 05:59 and 23:00 refused (the times are in the message)",
+                T.time_block(cfg, wed_open) == "" and T.time_block(cfg, wed_last) == ""
+                and "05:59 Oman time" in T.time_block(cfg, wed_early)
+                and "outside trading hours" in T.time_block(cfg, wed_close), T.time_block(cfg, wed_early))
+    saturday = datetime(2026, 9, 26, 8, 0, tzinfo=utc)      # Saturday 12:00 Oman
+    sunday = datetime(2026, 9, 27, 8, 0, tzinfo=utc)
+    monday = datetime(2026, 9, 28, 2, 0, tzinfo=utc)        # Monday 06:00 Oman
+    ok &= check("market days only: Saturday and Sunday refused, Monday 06:00 Oman open",
+                "not a trading day" in T.time_block(cfg, saturday) and "Sunday" in T.time_block(cfg, sunday)
+                and T.time_block(cfg, monday) == "", T.time_block(cfg, saturday))
+    ok &= check("Oman has no daylight saving: 06:00 Oman is 02:00 UTC in January as in September",
+                T.time_block(cfg, datetime(2026, 1, 14, 2, 0, tzinfo=utc)) == ""
+                and T.time_block(cfg, datetime(2026, 1, 14, 1, 59, tzinfo=utc)) != "")
+    ny = AdvisorConfig(trade_timezone="America/New_York", trade_windows="08:00-16:45", trade_days="")
+    ok &= check("any time zone works, daylight saving followed (New York: 13:30 UTC in January is "
+                "08:30 EST, in; 12:30 UTC is out)",
+                T.time_block(ny, datetime(2026, 1, 15, 13, 30, tzinfo=utc)) == ""
+                and "New York time" in T.time_block(ny, datetime(2026, 1, 15, 12, 30, tzinfo=utc)))
     ok &= check("a pandas Timestamp (the backtest clock) works like a datetime",
-                T.time_block(cfg, pd.Timestamp(summer)) == "" and T.time_block(cfg, pd.Timestamp(asia)) != "")
-    friday = datetime(2026, 9, 25, 20, 30, tzinfo=utc)    # Friday 16:30 New York
-    thursday = datetime(2026, 9, 24, 20, 30, tzinfo=utc)
-    ok &= check("Friday from 16:00 New York: no new entry; the same time on Thursday is fine",
-                "Friday" in T.time_block(cfg, friday) and T.time_block(cfg, thursday) == "")
-    anyhour = AdvisorConfig(trade_windows_ny="", friday_cutoff_ny="")
-    ok &= check("'' switches both time checks off", T.time_block(anyhour, asia) == ""
-                and T.time_block(anyhour, friday) == "")
+                T.time_block(cfg, pd.Timestamp(wed_open)) == "" and T.time_block(cfg, pd.Timestamp(wed_early)) != "")
+    friday = datetime(2026, 9, 25, 20, 30, tzinfo=utc)      # Friday 16:30 New York (00:30 Sat Oman)
+    friday_in = datetime(2026, 9, 25, 18, 30, tzinfo=utc)   # Friday 22:30 Oman
+    ok &= check("Friday: 22:30 Oman is fine; after 16:00 New York no new entry (the weekend gap)",
+                T.time_block(cfg, friday_in) == "" and "Friday" in T.time_block(cfg, friday))
+    anyhour = AdvisorConfig(trade_windows="", trade_days="", friday_cutoff_ny="")
+    ok &= check("'' switches every time check off", T.time_block(anyhour, wed_early) == ""
+                and T.time_block(anyhour, friday) == "" and T.time_block(anyhour, saturday) == "")
+    ok &= check("a wrong time zone name is caught at start-up",
+                _raises(lambda: T.validate(AdvisorConfig(trade_timezone="Oman/Muscat"))))
+    summer, asia = wed_open, wed_early
     ok &= check("spread guard: 60 points refused at a 50-point limit, 50 allowed, 0 = off",
                 "spread 60" in T.spread_block(cfg, 60) and T.spread_block(cfg, 50) == ""
                 and T.spread_block(AdvisorConfig(max_spread_points=0), 500) == "")
@@ -3687,7 +3715,7 @@ def test_tactics() -> bool:
         return main_mod.build_config(main_mod.build_parser().parse_args(list(argv)))
     c = cfg_for("--trade-hours", "any", "--friday-cutoff", "off", "--max-spread", "0", "--min-adx", "25")
     ok &= check("start.bat options map to config ('any' / 'off' / 0 switch off)",
-                c.trade_windows_ny == "" and c.friday_cutoff_ny == "" and c.max_spread_points == 0
+                c.trade_windows == "" and c.friday_cutoff_ny == "" and c.max_spread_points == 0
                 and c.min_adx == 25)
     ok &= check("a mistyped option or time stops with the settings-error code (no endless restarts)",
                 main_mod.main(["--trade-hours", "8-17", "--check"]) == main_mod.SETTINGS_ERROR
@@ -3763,6 +3791,17 @@ def test_ea_preset_python_consistency() -> bool:
            if num(ea[k]) != v or (k in ea_set and num(ea_set[k]) != v)}
     ok &= check("lot/SL/TP1/trail/cap/risk/daily cap/magic/spread limit: EA default = preset = Python",
                 not bad, bad)
+    from zoneinfo import ZoneInfo
+    tz_offset = ZoneInfo(cfg.trade_timezone).utcoffset(datetime(2026, 1, 15)).total_seconds() / 3600
+    tz_offset_summer = ZoneInfo(cfg.trade_timezone).utcoffset(datetime(2026, 7, 15)).total_seconds() / 3600
+    ok &= check("one trading window for both sources: EA default = preset = Python "
+                "(06:00-23:00, UTC+4 Oman all year, Monday-Friday)",
+                ea["InpTradeHours"] == ea_set.get("InpTradeHours") == cfg.trade_windows
+                and num(ea["InpTradeUtcOffsetHours"]) == num(ea_set["InpTradeUtcOffsetHours"]) == tz_offset
+                == tz_offset_summer
+                and ea["InpTradeWeekdaysOnly"] == ea_set.get("InpTradeWeekdaysOnly") == "true"
+                and tactics.parse_days(cfg.trade_days) == {0, 1, 2, 3, 4},
+                (ea.get("InpTradeHours"), ea.get("InpTradeUtcOffsetHours"), cfg.trade_windows, tz_offset))
     ok &= check("margin guard on in both the EA/preset and Python",
                 ea["InpMarginGuard"] == "true" and ea_set.get("InpMarginGuard") == "true" and cfg.margin_guard)
     files = {"InpLastVerdictFilename": cfg.last_verdict_filename,
