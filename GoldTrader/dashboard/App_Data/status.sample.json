@@ -3,9 +3,12 @@
  "updated_utc": "2026-09-24T13:30:00+00:00",
  "symbol": "XAUUSD",
  "mode": "live",
- "trade_hours": "06:00-23:00",
- "trade_days": "Mon-Fri",
- "trade_zone": "Oman",
+ "trade_hours": "08:00-16:45,18:15-20:00",
+ "trade_days": "Sun-Fri",
+ "trade_zone": "New York",
+ "telegram_hours": "06:00-23:00",
+ "telegram_zone": "Oman",
+ "telegram_days": "Mon-Fri",
  "sources": {
   "Claude": 20260921,
   "Telegram": 20260922

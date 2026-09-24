@@ -836,9 +836,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(on by default; needs the MQL5 EA's calendar export - see "
                              "econ_calendar.py). The calendar is still shown to Claude.")
     parser.add_argument("--trade-hours", dest="trade_hours",
-                        help="entries only inside these windows, in config.py's trade_timezone "
-                             "(default 06:00-23:00 Oman time, Monday-Friday; several: "
-                             "\"06:00-12:00,14:00-23:00\"; 'any' = no restriction) - entry filter only")
+                        help="Claude entries only inside these windows, in config.py's trade_timezone "
+                             "(default: the tested New York hours 08:00-16:45,18:15-20:00; 'any' = no "
+                             "restriction) - entry filter only; Telegram's window is the EA's InpTradeHours")
     parser.add_argument("--friday-cutoff", dest="friday_cutoff",
                         help="no new entry on Friday from this New York time (e.g. 16:00; "
                              "'off' = none)")

@@ -160,9 +160,9 @@ input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-so
 input double  InpMaxDailyLossPct   = 10.0;         // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
 input int     InpMaxSpreadPoints   = 50;           // Skip a Telegram entry while the spread is above this many points (0 = off)
 input bool    InpMarginGuard       = true;         // Skip a Telegram entry if free margin after it could not cover every open stop + its own
-input string  InpTradeHours        = "06:00-23:00"; // New Telegram entries only inside these hours, local time below ("" = any time) - same as app/config.py trade_windows
+input string  InpTradeHours        = "06:00-23:00"; // New Telegram entries only inside these hours, local time below ("" = any time) - mirrored in app/config.py telegram_trade_windows
 input double  InpTradeUtcOffsetHours = 4.0;        // That local time's offset from UTC: Oman = 4 (no daylight saving)
-input bool    InpTradeWeekdaysOnly = true;         // New Telegram entries Monday-Friday only (local time) - same as app/config.py trade_days
+input bool    InpTradeWeekdaysOnly = true;         // New Telegram entries Monday-Friday only (local time)
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity (pips; 1 pip = 10 broker points) ==="
@@ -1148,8 +1148,8 @@ string MarginGuardReason(bool isBuy, double newLots)
 //+------------------------------------------------------------------+
 //| Trading hours for NEW Telegram entries: InpTradeHours in the local|
 //| time InpTradeUtcOffsetHours (Oman = UTC+4, no daylight saving),   |
-//| Monday-Friday when InpTradeWeekdaysOnly - the same window         |
-//| app/config.py applies to Claude's entries. Close / breakeven /    |
+//| Monday-Friday when InpTradeWeekdaysOnly. (Claude's entries have   |
+//| their own tested window in app/config.py.) Close / breakeven /    |
 //| cancel commands and the management of open positions (SL lock,    |
 //| trail) run at any time: only new entries wait for the window.     |
 //+------------------------------------------------------------------+

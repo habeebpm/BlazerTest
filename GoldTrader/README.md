@@ -71,7 +71,7 @@ Google Drive/Dropbox/OneDrive; it is never uploaded to git.
 
 | | |
 |---|---|
-| Trading hours | New entries **06:00-23:00 Oman time, Monday-Friday** - Claude and Telegram alike; open trades are managed around the clock |
+| Trading hours | **Telegram signals: 06:00-23:00 Oman time, Mon-Fri.** **Claude: 16:00-00:45 and 02:15-04:00 Oman time** (summer; one hour later in winter) - its backtested best hours. Open trades are managed around the clock |
 | Telegram signals | Your channel -> relay group -> EA, copied within seconds |
 | Claude trades | When 2 of 3 checks agree and Claude says "full" |
 | Every trade | 2% risk, stop $6, locked at +$6, then trailed $3; max 5 per direction |

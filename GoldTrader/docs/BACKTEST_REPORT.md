@@ -1,6 +1,6 @@
 # Backtest report - XAUUSD, 19 Sep 2025 - 23 Sep 2026 (one year)
 
-> **Live trading hours changed (owner's choice):** new entries now run 06:00-23:00 Oman time, Monday-Friday, for Claude and Telegram alike. The report below tested the earlier New York hours (08:00-16:45 and 18:15-20:00); the test of the Oman window is in the section "Oman trading hours".
+> **Live trading hours:** Telegram signals 06:00-23:00 Oman time, Monday-Friday (the owner's window). Claude keeps the New York hours tested below (08:00-16:45 and 18:15-20:00 = 16:00-00:45 and 02:15-04:00 Oman in summer) - the Oman window was tested for Claude too and lost; see "Oman trading hours".
 
 Real history from Twelve Data (XAU/USD 5-minute bars; M15 and H1 built from
 them, H4/D1/W1 from the 4-hour series), converted to UTC, weekends and the
@@ -29,7 +29,7 @@ The year is split into three periods:
 | Mar - Jul 2026 | Used to confirm the trading hours (previous report) |
 | Aug - Sep 2026 | Where the trading-hours idea came from (first 7-week test) |
 
-## Oman trading hours (live setting)
+## Oman trading hours (tested for Claude, not used for Claude)
 
 Same year, same data, same mechanical verdicts, only the entry hours
 different (Claude's side - the Telegram side cannot be backtested: there is
@@ -37,9 +37,9 @@ no history of the channel's signals). 1R = the $6 stop.
 
 | Entry hours | Trades / week | Win % | Avg R | Return | Max DD | Sep-Mar (fresh) | Mar-Jul | Aug-Sep | Chance of luck | Claude calls / week |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **06:00-23:00 Oman, Mon-Fri** (live) | 8.3 | 40.5 | **-0.07** | **-58%** | **62%** | -0.07 | -0.04 | -0.16 | 86% | 155 (about $13) |
+| 06:00-23:00 Oman, Mon-Fri | 8.3 | 40.5 | **-0.07** | **-58%** | **62%** | -0.07 | -0.04 | -0.16 | 86% | 155 (about $13) |
 | 16:00-23:00 Oman, Mon-Fri (the positive part alone) | 2.9 | 41.7 | +0.07 | +8% | 27% | +0.11 | +0.11 | -0.20 | 30% | - |
-| 08:00-16:45 + 18:15-20:00 New York (before) | 4.3 | 43.7 | +0.14 | +57% | 27% | +0.17 | +0.16 | +0.04 | 9% | 92 (about $8) |
+| **08:00-16:45 + 18:15-20:00 New York** (live for Claude) | 4.3 | 43.7 | +0.14 | +57% | 27% | +0.17 | +0.16 | +0.04 | 9% | 92 (about $8) |
 
 At double spread: Oman -0.13R, -75%, drawdown 75%; New York +0.11R, +34%.
 

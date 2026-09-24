@@ -121,13 +121,23 @@ class AdvisorConfig:
 
     # --- Entry tactics (tactics.py) - WHEN an entry may be taken; entry
     #     filters only, never lot/SL/TP/trail/cap. "" / 0 switches one off.
-    #     Trading hours: 06:00-23:00 Oman time (UTC+4, no daylight saving),
-    #     Monday-Friday - the owner's choice; the same window is set in
-    #     UnifiedTrader_EA for Telegram entries (InpTradeHours). One-year
-    #     test of these hours: docs/BACKTEST_REPORT.md. min_adx ships off.
-    trade_windows: str = "06:00-23:00"     # entry hours in trade_timezone; several: "06:00-12:00,14:00-23:00"
-    trade_timezone: str = "Asia/Muscat"    # Oman; any IANA name works, e.g. "America/New_York"
-    trade_days: str = "Mon-Fri"            # market days, in trade_timezone
+    #     Claude's trading hours: the tested New York hours - 16:00-00:45
+    #     and 02:15-04:00 Oman time in summer, an hour later in winter
+    #     (New York daylight saving is followed automatically). A year of
+    #     backtests (docs/BACKTEST_REPORT.md): +0.14R a trade and positive in
+    #     all three periods, where 06:00-23:00 Oman lost -0.07R. The Sunday
+    #     18:15 slot is Monday morning in Oman - Monday-Friday in Oman terms.
+    #     min_adx ships off.
+    trade_windows: str = "08:00-16:45,18:15-20:00"   # entry hours in trade_timezone
+    trade_timezone: str = "America/New_York"         # any IANA name works, e.g. "Asia/Muscat" (Oman)
+    trade_days: str = "Sun-Fri"                      # in trade_timezone; Sunday = the 18:15 reopen slot
+    # Telegram signals: UnifiedTrader_EA's own window (InpTradeHours,
+    # InpTradeUtcOffsetHours, InpTradeWeekdaysOnly) - 06:00-23:00 Oman time,
+    # Monday-Friday. Mirrored here for the dashboard and the self-test only;
+    # the EA is what enforces it.
+    telegram_trade_windows: str = "06:00-23:00"
+    telegram_utc_offset_hours: float = 4.0            # Oman, no daylight saving
+    telegram_weekdays_only: bool = True
     friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this New York time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
     min_adx: float = 0.0              # e.g. 25: no entry while M15 ADX14 is below this

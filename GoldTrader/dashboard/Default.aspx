@@ -116,7 +116,17 @@
 
     protected string Mode { get { return S(G(R, "mode")) == "live" ? "Live" : "Dry-run"; } }
 
-    // "06:00-23:00 Oman time, Mon-Fri" (a report from before the Oman window says New York).
+    protected string TelegramHours
+    {
+        get
+        {
+            string hours = S(G(R, "telegram_hours")), zone = S(G(R, "telegram_zone")), days = S(G(R, "telegram_days"));
+            if (hours.Length == 0) return "";
+            return hours + (zone.Length > 0 ? " " + zone + " time" : "") + (days.Length > 0 ? ", " + days : "");
+        }
+    }
+
+    // Claude's window, e.g. "08:00-16:45,18:15-20:00 New York time, Sun-Fri".
     protected string TradeHours
     {
         get
@@ -541,7 +551,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
       <header><h2>Claude's last word</h2><span class="chip <%= B(G(R, "claude_paused")) ? "warn" : "good" %>"><%= B(G(R, "claude_paused")) ? "Paused" : "On" %></span></header>
       <% string last = S(G(R, "last_verdict")); %>
       <%= last.Length > 0 ? "<p class=\"pre\">" + H(Clip(last, 3000)) + "</p>" : "<p class=\"empty\">Nothing yet.</p>" %>
-      <p class="note">New entries only <%= H(TradeHours) %> - Claude and Telegram alike.</p>
+      <p class="note">Claude opens trades only <%= H(TradeHours) %>.<%= TelegramHours.Length > 0 ? " Telegram signals: " + H(TelegramHours) + "." : "" %></p>
     </div>
     <div class="card"><h2>Recent evaluations</h2><%= DecisionsHtml() %></div>
   </section>

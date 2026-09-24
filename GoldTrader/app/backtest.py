@@ -825,7 +825,7 @@ def main(argv: list | None = None) -> int:
                              "the normal spread all day)")
     parser.add_argument("--trade-hours", dest="trade_hours",
                         help="entry trading hours in config.py's trade_timezone (default: the live "
-                             "setting, 06:00-23:00 Oman time Monday-Friday; 'any' = no restriction)")
+                             "setting, 08:00-16:45,18:15-20:00 New York; 'any' = no restriction)")
     parser.add_argument("--friday-cutoff", dest="friday_cutoff",
                         help="no new entry on Friday from this New York time ('off' = none)")
     parser.add_argument("--max-spread", type=int, dest="max_spread",
