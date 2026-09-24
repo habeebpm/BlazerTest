@@ -58,6 +58,14 @@ Claude's judgment (Claude is told to treat "Asian range chop" as a red
 flag and may skip some of these), but the stand-in's New York hours were
 the only setting positive in all three periods.
 
+**Hour-by-hour scan (every hour allowed, then scored per Oman hour):** 580
+trades at any hour average -0.03R (-0.09R at double spread). Only two single
+hours were positive in all three periods - 03:00 and 12:00 Oman, about 27
+trades each - far too few to build a window on; picking hours out of such
+a table fits noise. No contiguous window beat the New York hours, so
+Claude keeps them. (Monday looked better than other days, +0.16R, but on
+one statistic only - not acted on.)
+
 ## Verdict
 
 1. **Trading hours passed the fresh test.** On Sep-Mar, which played no part
