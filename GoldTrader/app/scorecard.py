@@ -121,8 +121,10 @@ def main(argv: list | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
+    import keys
     import mt5_gateway as gw
     import telegram_alert
+    keys.load()
     cfg = AdvisorConfig(symbol=args.symbol)
     try:
         gw.connect()

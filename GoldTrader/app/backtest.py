@@ -58,6 +58,7 @@ import pandas as pd
 
 import claude_advisor
 import executor
+import keys
 import market_intel
 import mt5_gateway as gw
 import paths
@@ -861,6 +862,7 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
+    keys.load()     # ANTHROPIC_API_KEY for a paid (non --mechanical) run
 
     base_cfg = AdvisorConfig(dry_run=True)
     if args.model:

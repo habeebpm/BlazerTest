@@ -33,3 +33,4 @@ GoldTrader/logs/
 GoldTrader/relay/*.session
 GoldTrader/relay/*.session-journal
 GoldTrader/drive_export/xtr_data/
+GoldTrader/keys.txt

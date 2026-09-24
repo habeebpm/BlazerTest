@@ -101,11 +101,19 @@ instead of restarting.
 
 ## Settings
 
-- **Keys / ids** (saved permanently in your Windows user account):
-  `ANTHROPIC_API_KEY`, `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID`,
-  and for the relay `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
-  `TELEGRAM_SOURCE_CHANNELS`, `TELEGRAM_RELAY_GROUP`. Asked by the first
-  start; change with `settings.bat`; see them with `check.bat`.
+- **Keys / ids** in **`keys.txt`** (GoldTrader folder, one `NAME=value`
+  per line, editable in Notepad): `ANTHROPIC_API_KEY`,
+  `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID`, and for the relay
+  `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SOURCE_CHANNELS`,
+  `TELEGRAM_RELAY_GROUP` (optional `MT5_PASSWORD`). Created by `setup.bat`
+  (pre-filled with any key already set on the PC), filled by the first-start
+  questions / `settings.bat`, shown masked by `check.bat`. Read by the
+  trading program, the relay, the scorecard and the backtest on every start;
+  a value there wins over the same Windows environment variable, an empty
+  one leaves it alone. Change a value -> restart `start.bat`. The EA does not
+  read it: `InpBotToken`, `InpControlChatId` and `InpChannelId1` are still
+  typed in its inputs (same values). Private: `.gitignore` keeps it out of
+  git - never share it or keep the folder in a synced cloud folder.
 - **`settings.ini`:** companion programs on/off (`enabled`), extra options
   (`args`), schedule (`every_days`).
 - **`start.bat`:** the trading program's options (`GT_ARGS`). Everything
@@ -116,6 +124,7 @@ instead of restarting.
 
 | Where | What |
 |---|---|
+| `keys.txt` | Your keys and ids (private, never uploaded) |
 | `logs/decisions.csv` | Every Claude evaluation, executed or not |
 | `logs/trades.csv` | Every order sent |
 | `logs/ml_snapshots.csv`, `logs/ml_win_probability_model.joblib` | ML data + model (~0.3 KB per trade, ~50 KB model) |

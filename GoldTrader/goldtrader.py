@@ -74,6 +74,7 @@ def cmd_setup(_args) -> int:
         if rc != 0:
             print(f"\npip failed for {req} (exit {rc}).")
             return rc
+    py(APP_DIR, "keys.py")          # keys.txt, ready to fill in (never overwritten)
     return cmd_test(_args)
 
 

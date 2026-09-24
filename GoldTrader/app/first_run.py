@@ -1,7 +1,7 @@
 """
 First-run setup wizard for main.py: asks for every setting in one go and
-saves each one permanently (Windows user environment - exactly what setx
-does, so it survives a restart), then main.py carries on in the same run.
+saves each one in keys.txt (GoldTrader folder - survives a restart, can be
+edited in Notepad too), then main.py carries on in the same run.
 
     - runs by itself on the first start of main.py (and again whenever
       ANTHROPIC_API_KEY is missing), only when someone is at the keyboard -
@@ -23,7 +23,6 @@ from __future__ import annotations
 import getpass
 import os
 import re
-import subprocess
 
 import paths
 
@@ -58,13 +57,10 @@ def mask(value: str, secret: bool) -> str:
 
 
 def save_permanent(name: str, value: str) -> bool:
-    """This process (os.environ) + permanently for the Windows user (setx)."""
+    """This process (os.environ) + keys.txt, where every program reads it."""
+    import keys
     os.environ[name] = value
-    if os.name != "nt":
-        print(f"    (not Windows - add  export {name}=...  to your shell profile to keep it)")
-        return False
-    return subprocess.call(["setx", name, value], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL) == 0
+    return keys.save(name, value)
 
 
 def set_preset_enabled(path: str, section: str, enabled: bool) -> bool:
@@ -121,7 +117,7 @@ def run_wizard(preset_path: str, env=None, ask=input, ask_secret=getpass.getpass
     """Returns 0; `send_test(token, chat_id) -> bool` sends the test message,
     `login()` runs the relay's one-time Telegram login (default: the real one)."""
     env = os.environ if env is None else env
-    out("\n=== Settings (asked once - saved permanently, survive a PC restart) ===")
+    out("\n=== Settings (asked once - saved in keys.txt in the GoldTrader folder) ===")
     out("Enter = keep the current value, '-' = skip.\n")
     saved = []
 
@@ -175,7 +171,7 @@ def run_wizard(preset_path: str, env=None, ask=input, ask_secret=getpass.getpass
                 else "  Test message FAILED - check the bot token and chat id (and that you messaged the bot once).")
 
     missing = needed(env)
-    out(f"\n{len(saved)} setting(s) saved." + (f" Still missing: {', '.join(missing)} - main.py cannot "
+    out(f"\n{len(saved)} setting(s) saved in keys.txt." + (f" Still missing: {', '.join(missing)} - main.py cannot "
                                                "call Claude without it." if missing else ""))
     try:
         os.makedirs(os.path.dirname(marker) or ".", exist_ok=True)

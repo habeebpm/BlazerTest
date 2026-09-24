@@ -9,6 +9,7 @@ Everything is in this folder. You only double-click the `.bat` files.
 | `start.bat` | Runs the system - leave its window open |
 | `settings.bat` | Change a setting later |
 | `relay_login.bat` | Telegram login for the relay (only if you skipped it in Step 2) |
+| `keys.txt` | All your keys and ids in one private file (made by `setup.bat`) |
 
 ## Before you start (once)
 
@@ -41,7 +42,13 @@ Double-click **`check.bat`** and answer the questions:
   it lists your chats with their ids; type the relay group's id if asked;
 - **Y** to the test message (it must arrive in Telegram).
 
-Saved for good. At the end it tells you the number for `InpChannelId1`.
+Everything is saved in **`keys.txt`** in this folder. At the end it tells
+you the number for `InpChannelId1`.
+
+You can also open `keys.txt` in Notepad and type the values after the `=`
+(one per line, e.g. `ANTHROPIC_API_KEY=sk-ant-...`), save, then run
+`check.bat`. **Keep it private** - don't share it or put this folder in
+Google Drive/Dropbox/OneDrive; it is never uploaded to git.
 
 ## Step 3 - MT5
 

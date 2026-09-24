@@ -42,6 +42,11 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
+import tempfile as _tempfile
+
+# Never touch the real keys.txt: main.main() loads keys on start.
+os.environ["GOLDTRADER_KEYS_FILE"] = os.path.join(_tempfile.mkdtemp(prefix="gt_keys_"), "keys.txt")
+
 import backtest
 import calibration_report
 import claude_advisor
@@ -3932,6 +3937,65 @@ def test_claude_prescreen() -> bool:
     return ok
 
 
+def test_keys_file() -> bool:
+    print("\n=== 40. keys.txt: one private file every program reads and the questions write ===")
+    import tempfile
+    import keys
+    ok = True
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "keys.txt")
+        created = keys.ensure_file(path, {"ANTHROPIC_API_KEY": "sk-ant-old-1234", "OTHER": "x"})
+        text = open(path, encoding="utf-8").read()
+        ok &= check("created once from the template, pre-filled with keys already on this PC",
+                    created and not keys.ensure_file(path, {}) and "ANTHROPIC_API_KEY=sk-ant-old-1234\n" in text
+                    and all(f"\n{n}=" in text for n in keys.NAMES) and "OTHER" not in text
+                    and "PRIVATE" in text)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write('# TELEGRAM_API_ID=999\nTELEGRAM_ALERT_CHAT_ID = "123456789"\n')
+        got = keys.read(path)
+        ok &= check("read: comments ignored, spaces and quotes stripped",
+                    got["TELEGRAM_ALERT_CHAT_ID"] == "123456789" and got["TELEGRAM_API_ID"] == "", got)
+        env = {"TELEGRAM_API_ID": "keep-me", "ANTHROPIC_API_KEY": "sk-ant-env"}
+        loaded = keys.load(path, env)
+        ok &= check("load: file values win, empty values leave the setting alone",
+                    env["ANTHROPIC_API_KEY"] == "sk-ant-old-1234" and env["TELEGRAM_API_ID"] == "keep-me"
+                    and set(loaded) == {"ANTHROPIC_API_KEY", "TELEGRAM_ALERT_CHAT_ID"}, env)
+        before = open(path, encoding="utf-8").read()
+        ok &= check("save: updates the line in place, every comment kept",
+                    keys.save("TELEGRAM_API_HASH", "abc", path) and keys.read(path)["TELEGRAM_API_HASH"] == "abc"
+                    and open(path, encoding="utf-8").read().count("#") == before.count("#")
+                    and before.count("TELEGRAM_API_HASH=") == open(path, encoding="utf-8").read().count(
+                        "TELEGRAM_API_HASH="))
+        ok &= check("save: a name not in the file yet is appended",
+                    keys.save("MY_EXTRA", "1", path) and keys.read(path)["MY_EXTRA"] == "1")
+        crlf = os.path.join(d, "crlf.txt")
+        with open(crlf, "w", encoding="utf-8", newline="") as f:
+            f.write("\ufeff# notepad\r\nANTHROPIC_API_KEY=\r\n")
+        ok &= check("a Notepad file (BOM, CRLF) is read and saved correctly",
+                    keys.save("ANTHROPIC_API_KEY", "sk-ant-new", crlf) and keys.read(crlf)["ANTHROPIC_API_KEY"]
+                    == "sk-ant-new" and "sk-ant-new\r\n" in open(crlf, encoding="utf-8-sig", newline="").read())
+        missing = os.path.join(d, "none", "keys.txt")
+        ok &= check("a missing file reads as empty", keys.read(missing) == {})
+        ok &= check("keys.txt sits in the GoldTrader folder; the self-tests use a throwaway copy",
+                    keys.KEYS_FILE == os.path.join(paths.PACKAGE_ROOT, "keys.txt")
+                    and keys.keys_path() != keys.KEYS_FILE, keys.keys_path())
+        old = os.environ["GOLDTRADER_KEYS_FILE"]
+        os.environ["GOLDTRADER_KEYS_FILE"] = path
+        try:
+            saved = first_run.save_permanent("TELEGRAM_SOURCE_CHANNELS", "@goldsignals")
+            ok &= check("the setting questions save into keys.txt (and this process)",
+                        saved and keys.read(path)["TELEGRAM_SOURCE_CHANNELS"] == "@goldsignals"
+                        and os.environ.get("TELEGRAM_SOURCE_CHANNELS") == "@goldsignals")
+        finally:
+            os.environ.pop("TELEGRAM_SOURCE_CHANNELS", None)
+            os.environ["GOLDTRADER_KEYS_FILE"] = old
+    gi = os.path.join(os.path.dirname(paths.PACKAGE_ROOT), ".gitignore")
+    if os.path.exists(gi):
+        ok &= check("keys.txt is in .gitignore - never uploaded",
+                    "GoldTrader/keys.txt" in open(gi, encoding="utf-8").read())
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3974,6 +4038,7 @@ def main() -> int:
         test_scorecard(),
         test_margin_guard(),
         test_claude_prescreen(),
+        test_keys_file(),
     ]
     print()
     if all(results):

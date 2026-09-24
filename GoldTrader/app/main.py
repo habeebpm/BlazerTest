@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 import claude_advisor
 import executor
 import first_run
+import keys
 import market_intel
 import ml_advisor
 import mt5_gateway as gw
@@ -654,8 +655,8 @@ def send_test_alert(cfg: AdvisorConfig, spec) -> int:
     return 1
 
 
-# Settings saved with `setx` (INSTALL.md) - permanent in the Windows user
-# account, so they survive a restart. (name, secret, when it is needed)
+# Keys and ids kept in keys.txt (GoldTrader folder, see keys.py) and loaded
+# on every start. (name, secret, when it is needed)
 SAVED_SETTINGS = [
     ("ANTHROPIC_API_KEY", True, "always"),
     ("TELEGRAM_ALERT_BOT_TOKEN", True, "alerts"),
@@ -694,11 +695,10 @@ def log_settings_report(args, full: bool = True) -> None:
     preset = services.load_preset(args.preset)
     lines, missing = settings_report(args.relay or preset.relay_bridge.enabled)
     if full:
-        log.info("Saved settings (Windows user environment, kept across restarts):\n%s",
-                 "\n".join(lines))
+        log.info("Keys (%s):\n%s", keys.keys_path(), "\n".join(lines))
     if missing:
-        log.error("Missing: %s - set with setx (INSTALL.md step 5 / 7), then open a NEW Command "
-                  "Prompt.", ", ".join(missing))
+        log.error("Missing: %s - run settings.bat, or fill it in keys.txt (Notepad) and start again.",
+                  ", ".join(missing))
 
 
 def _send_setup_test(token: str, chat_id: str) -> bool:
@@ -866,13 +866,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "TELEGRAM_SOURCE_CHANNELS, TELEGRAM_RELAY_GROUP and a one-time --relay-login")
     parser.add_argument("--setup", action="store_true",
                         help="enter / change every setting (API key, Telegram ids, relay) in one go - "
-                             "saved permanently; also runs by itself on the first start")
+                             "saved in keys.txt; also runs by itself on the first start")
     parser.add_argument("--relay-login", action="store_true", dest="relay_login",
                         help="log the relay bridge in to Telegram once (asks for your phone number and "
                              "code) and print the source/relay chat ids, then exit")
     parser.add_argument("--login", type=int, help="MT5 account login (optional, if not already logged in)")
-    parser.add_argument("--password", help="MT5 account password (safer: set the MT5_PASSWORD "
-                                           "environment variable instead)")
+    parser.add_argument("--password", help="MT5 account password (safer: MT5_PASSWORD in keys.txt "
+                                           "instead)")
     parser.add_argument("--server", help="MT5 broker server name")
     parser.add_argument("--terminal-path", dest="terminal_path", help="path to terminal64.exe")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -889,6 +889,7 @@ def main(argv: list | None = None) -> int:
         return 0 if exc.code in (0, None) else SETTINGS_ERROR
 
     setup_logging(args.verbose)
+    keys.load()     # keys.txt -> this process and every program it starts
     # First start (or ANTHROPIC_API_KEY missing) with someone at the keyboard:
     # ask for every setting in one go, save them permanently, carry on.
     if args.setup or first_run.should_run():
