@@ -138,6 +138,7 @@ class AdvisorConfig:
     telegram_trade_windows: str = "06:00-23:00"
     telegram_utc_offset_hours: float = 4.0            # Oman, no daylight saving
     telegram_weekdays_only: bool = True
+    display_timezone: str = "Asia/Muscat"             # the owner's clock, for the dashboard (Oman)
     friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this New York time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
     min_adx: float = 0.0              # e.g. 25: no entry while M15 ADX14 is below this

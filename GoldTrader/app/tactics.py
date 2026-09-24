@@ -208,6 +208,23 @@ def validate(cfg) -> None:
         _minutes(cfg.friday_cutoff_ny)
 
 
+def windows_in(cfg, display_zone: str, now) -> str:
+    """cfg.trade_windows as clock times in display_zone on `now`'s date, e.g.
+    "16:00-00:45, 02:15-04:00" for New York hours shown in Oman time in
+    summer (they shift an hour when New York changes its clocks)."""
+    windows = parse_windows(cfg.trade_windows)
+    if not windows:
+        return "any hour"
+    src, dst = zone(cfg), ZoneInfo(display_zone)
+    day = _as_utc(now).astimezone(src).date()
+    out = []
+    for start, end in windows:
+        a = datetime(day.year, day.month, day.day, tzinfo=src) + timedelta(minutes=start)
+        b = datetime(day.year, day.month, day.day, tzinfo=src) + timedelta(minutes=end)
+        out.append(f"{a.astimezone(dst):%H:%M}-{b.astimezone(dst):%H:%M}")
+    return ", ".join(out)
+
+
 def trading_day(now, server_offset_seconds: int | None = None):
     """The trading day `now` (UTC) belongs to - the day the EA's daily cap
     uses (broker server midnight). With the broker's offset known that is

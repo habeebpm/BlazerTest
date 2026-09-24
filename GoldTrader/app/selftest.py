@@ -3643,6 +3643,11 @@ def test_tactics() -> bool:
                 and T.time_block(cfg, datetime(2026, 1, 15, 13, 30, tzinfo=utc)) == ""
                 and T.time_block(cfg, datetime(2026, 1, 15, 12, 30, tzinfo=utc)) != "")
     oman = AdvisorConfig(trade_windows="06:00-23:00", trade_timezone="Asia/Muscat", trade_days="Mon-Fri")
+    ok &= check("Claude's hours in Oman time for the dashboard: 16:00-00:45, 02:15-04:00 in summer, an hour "
+                "later in winter",
+                T.windows_in(cfg, "Asia/Muscat", datetime(2026, 7, 15, 12, tzinfo=utc)) == "16:00-00:45, 02:15-04:00"
+                and T.windows_in(cfg, "Asia/Muscat", datetime(2026, 1, 15, 12, tzinfo=utc)) == "17:00-01:45, 03:15-05:00"
+                and T.windows_in(AdvisorConfig(trade_windows=""), "Asia/Muscat", ny_in) == "any hour")
     ok &= check("windows parse to minutes; a midnight-wrapping window works",
                 T.parse_windows("08:00-16:45,18:15-20:00") == [(480, 1005), (1095, 1200)]
                 and T.in_windows(23 * 60, T.parse_windows("20:00-02:00"))
@@ -3816,6 +3821,13 @@ def test_ea_preset_python_consistency() -> bool:
                 (ea.get("InpTradeHours"), ea.get("InpTradeUtcOffsetHours"), cfg.telegram_trade_windows))
     ok &= check("Claude window: the tested New York hours (not the Oman window)",
                 cfg.trade_windows == "08:00-16:45,18:15-20:00" and cfg.trade_timezone == "America/New_York")
+    with open(os.path.join(mt5, "Experts", "UnifiedTrader_EA.mq5"), encoding="utf-8") as f:
+        ea_src = f.read()
+    body = ea_src[ea_src.index("bool PlaceCopiedOrder(bool isBuy"):]
+    body = body[:body.index("\n}\n")]
+    ok &= check("EA: a Telegram order the broker refuses is never logged as copied (PlaceCopiedOrder "
+                "returns the broker's answer)",
+                body.rstrip().endswith("return(ok);") and "return(true);" in body.split("if(InpDryRun)")[1][:600])
     ok &= check("margin guard on in both the EA/preset and Python",
                 ea["InpMarginGuard"] == "true" and ea_set.get("InpMarginGuard") == "true" and cfg.margin_guard)
     files = {"InpLastVerdictFilename": cfg.last_verdict_filename,
@@ -4222,6 +4234,8 @@ def test_status_report() -> bool:
         g = DashGateway(files, closed=closed, equity=10012.5, positions=pos)
         SR._state.update(last=0.0, scorecard=None, scorecard_at=0.0)
         rep = SR.build(g, cfg, spec, day, now=1_790_000_000)
+        ok &= check("Claude's hours are also given in the owner's clock (Oman)",
+                    rep["claude_hours_local"] and rep["local_zone"] == "Oman", rep.get("claude_hours_local"))
         ok &= check("account, day, pause state and last verdict are reported",
                     rep["account"]["equity"] == 10012.5 and rep["day"]["start_equity"] == 10000.0
                     and rep["claude_paused"] is True and "executed" in rep["last_verdict"]

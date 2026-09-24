@@ -149,6 +149,8 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
         "trade_hours": cfg.trade_windows,
         "trade_days": cfg.trade_days,
         "trade_zone": tactics.zone_label(cfg),
+        "claude_hours_local": tactics.windows_in(cfg, cfg.display_timezone, datetime.fromtimestamp(now, timezone.utc)),
+        "local_zone": tactics.ZONE_LABELS.get(cfg.display_timezone, cfg.display_timezone),
         "telegram_hours": cfg.telegram_trade_windows,
         "telegram_zone": "Oman" if cfg.telegram_utc_offset_hours == 4 else f"UTC{cfg.telegram_utc_offset_hours:+g}",
         "telegram_days": "Mon-Fri" if cfg.telegram_weekdays_only else "",

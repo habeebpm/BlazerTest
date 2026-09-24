@@ -133,15 +133,18 @@
         }
     }
 
-    // Claude's window, e.g. "08:00-16:45,18:15-20:00 New York time, Sun-Fri".
+    // Claude's window in your own clock when the report has it: "16:00-00:45, 02:15-04:00 Oman time
+    // (08:00-16:45,18:15-20:00 New York)"; otherwise as configured.
     protected string TradeHours
     {
         get
         {
-            string hours = S(G(R, "trade_hours"));
+            string local = S(G(R, "claude_hours_local")), localZone = S(G(R, "local_zone"));
+            string hours = S(G(R, "trade_hours")), zone = S(G(R, "trade_zone")), days = S(G(R, "trade_days"));
+            if (local.Length > 0 && localZone.Length > 0 && hours.Length > 0 && zone != localZone)
+                return local + " " + localZone + " time, Mon-Fri (" + hours + " " + zone + ")";
             if (hours.Length == 0 && R.ContainsKey("trade_hours_ny")) return S(G(R, "trade_hours_ny")) + " New York time";
             if (hours.Length == 0) return "at any hour";
-            string zone = S(G(R, "trade_zone")), days = S(G(R, "trade_days"));
             return hours + (zone.Length > 0 ? " " + zone + " time" : "") + (days.Length > 0 ? ", " + days : "");
         }
     }

@@ -1896,10 +1896,15 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                   outTicket);
    }
    else
+   {
       PrintFormat("UnifiedTrader_EA: order failed. retcode=%d desc=%s",
                   trade.ResultRetcode(), trade.ResultRetcodeDescription());
+      outOrderType = "REJECTED";
+   }
 
-   return(true);
+   // false on a broker rejection: the signal log (and the dashboard) must
+   // never show "copied" for an order that does not exist.
+   return(ok);
 }
 
 //+------------------------------------------------------------------+
@@ -2327,9 +2332,17 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    double outLots       = 0.0;
    bool   placed = PlaceCopiedOrder(isBuy, lowerBound, upperBound,
                                      outOrderType, outOrderPrice, outTicket, outRetcode, outLots);
+   string notPlaced = "";
+   if(!placed)
+   {
+      if(outOrderType == "STALE_SKIPPED")      notPlaced = "price already beyond the zone (stale)";
+      else if(outOrderType == "REJECTED")      notPlaced = StringFormat("order rejected by broker (retcode %d)", outRetcode);
+      else if(outOrderType == "NO_TICK_VALUE") notPlaced = "tick value not available yet";
+      else                                     notPlaced = "no price available";
+   }
 
    LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
-                true, "", placed, outOrderType, outOrderPrice, outLots, InpDryRun,
+                true, notPlaced, placed, outOrderType, outOrderPrice, outLots, InpDryRun,
                 outTicket, outRetcode, rawText);
 }
 
