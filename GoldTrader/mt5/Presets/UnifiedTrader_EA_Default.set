@@ -64,6 +64,7 @@ InpTradeXAUUSDOnly=true
 InpMaxTradesPerDay=0
 InpMaxDailyLossPct=10.0
 InpMaxSpreadPoints=50
+InpMarginGuard=true
 InpPendingExpiryMin=240
 InpMaxEntryDeviationPips=200.0
 InpControlChatId=0

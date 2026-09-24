@@ -23,6 +23,9 @@ files here.
    Relay bridge below).
 7. Windows: **Settings -> System -> Power -> Sleep = Never**.
 
+Starting with a small account (about $1,000)? Read **Small accounts** in
+`docs/REFERENCE.md` first - at that size the Claude API bill decides the result.
+
 ## Step 1 - Install
 
 Close MetaEditor (MT5 may stay open) -> double-click **`setup.bat`** -> wait

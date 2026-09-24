@@ -557,24 +557,10 @@ def mechanical_verdict(features: dict):
     """
     from claude_advisor import ConfluenceLeg, ConfluenceVerdict
 
-    ind = features["primary_indicators"]
-    trend_bias = features["trend_bias"]
-
-    trend_up = trend_bias["close"] > trend_bias["ema200"] and ind["ema20"] > ind["ema50"]
-    trend_down = trend_bias["close"] < trend_bias["ema200"] and ind["ema20"] < ind["ema50"]
-    trend_confirmed = abs(ind["ema20"] - ind["ema50"]) >= 0.25 * ind["atr14"]
-    trend_dir = "buy" if trend_up else "sell" if trend_down else "neutral"
-
-    momentum_up = ind["macd_line"] > ind["macd_signal"] and 50 <= ind["rsi14"] <= 70
-    momentum_down = ind["macd_line"] < ind["macd_signal"] and 30 <= ind["rsi14"] <= 50
-    momentum_confirmed = ((ind["macd_hist"] > ind["macd_hist_prev"] and ind["rsi14"] >= 55) or
-                          (ind["macd_hist"] < ind["macd_hist_prev"] and ind["rsi14"] <= 45))
-    momentum_dir = "buy" if momentum_up else "sell" if momentum_down else "neutral"
-
-    strength_up = ind["adx14"] >= 22 and ind["plus_di"] > ind["minus_di"]
-    strength_down = ind["adx14"] >= 22 and ind["minus_di"] > ind["plus_di"]
-    strength_confirmed = ind["adx14"] >= 28 and abs(ind["plus_di"] - ind["minus_di"]) >= 8
-    strength_dir = "buy" if strength_up else "sell" if strength_down else "neutral"
+    legs3 = tactics.vote_legs(features)
+    trend_dir, trend_confirmed = legs3["trend"]
+    momentum_dir, momentum_confirmed = legs3["momentum"]
+    strength_dir, strength_confirmed = legs3["strength"]
 
     legs = {"buy": 0, "sell": 0}
     confirmed = {"buy": 0, "sell": 0}
@@ -710,8 +696,16 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
 
         xtr_a = _xtr_reading(primary_gw, shared_cfg) if xtr_on else None
         features["xtr"] = xtr_logic.snapshot_context(xtr_a, shared_cfg.xtr_gate)
-        verdict = mechanical_verdict(features) if mechanical else claude_advisor.get_verdict(
-            client, shared_cfg, features)
+        if mechanical:
+            verdict = mechanical_verdict(features)
+        elif executor.verdict_independent_block(primary_gw, shared_cfg, 0):
+            # Outside the trading hours / news blackout: live makes no call either.
+            verdict = claude_advisor.neutral_verdict(executor.verdict_independent_block(primary_gw, shared_cfg, 0))
+        elif tactics.prescreen_block(shared_cfg, features):
+            # Same saving as live: no Claude call when no trade is possible.
+            verdict = claude_advisor.neutral_verdict(tactics.prescreen_block(shared_cfg, features))
+        else:
+            verdict = claude_advisor.get_verdict(client, shared_cfg, features)
         evaluated += 1
 
         for s in styles:

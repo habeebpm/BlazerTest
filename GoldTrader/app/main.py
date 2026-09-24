@@ -125,6 +125,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.min_confluence_count = args.min_confluence
     if args.allow_partial_conviction:
         cfg.require_full_conviction = False
+    if args.no_prescreen:
+        cfg.claude_prescreen = False
     if args.trade_hours is not None:
         cfg.trade_windows_ny = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
             else args.trade_hours
@@ -514,7 +516,7 @@ def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> 
         skip_cycle(cfg, skip_reason)
         return
     features = market_intel.build_feature_snapshot(gw, cfg)
-    skip_reason = tactics.regime_block(cfg, features)
+    skip_reason = tactics.regime_block(cfg, features) or tactics.prescreen_block(cfg, features)
     if skip_reason:
         skip_cycle(cfg, skip_reason)
         return
@@ -832,6 +834,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "the Claude call, so a flat market costs nothing")
     parser.add_argument("--min-confluence", type=int, dest="min_confluence",
                         help="minimum agreeing confluences out of 3 (default 2)")
+    parser.add_argument("--no-prescreen", action="store_true", dest="no_prescreen",
+                        help="ask Claude on every bar in the trading hours, even when fewer than 2 legs "
+                             "agree (default: skip those calls - no trade is possible on them)")
     parser.add_argument("--allow-partial-conviction", action="store_true",
                         help="execute on 'partial' conviction too, not just 'full' (not recommended)")
     parser.add_argument("--poll-seconds", type=int, dest="poll_seconds",

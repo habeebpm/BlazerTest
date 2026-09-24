@@ -212,7 +212,8 @@ class AdvisorConfig:
     #     UnifiedTrader_EA.mq5 already owns exit management, so this
     #     never closes anything itself, only executor.gate() refusing new
     #     signals. Set to 0 to disable the check entirely.
-    max_daily_loss_pct: float = 10.0       # stop new entries once the account is down this many pct on the UTC day
+    max_daily_loss_pct: float = 10.0       # stop new entries once the account is down this many pct on the trading day
+    margin_guard: bool = True              # refuse an entry whose worst case (all stops hit) the free margin can't cover
     use_daily_target: bool = False         # also stop new entries once daily_target_pct is reached
     daily_target_pct: float = 2.0
 
@@ -347,6 +348,7 @@ class AdvisorConfig:
     # --- Confluence gate (mirrors the existing 3-confluence framework:
     #     Trend / Momentum / Strength - see python/market_intel.py) ---
     min_confluence_count: int = 2        # at least 2 of 3 must agree
+    claude_prescreen: bool = True        # skip the paid Claude call when the legs can't reach that minimum
     require_full_conviction: bool = True  # AND Claude's own conviction must be "full"
 
     # --- Timeframes the feature snapshot is built from ---

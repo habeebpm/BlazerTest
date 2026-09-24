@@ -3711,6 +3711,8 @@ def test_ea_preset_python_consistency() -> bool:
            if num(ea[k]) != v or (k in ea_set and num(ea_set[k]) != v)}
     ok &= check("lot/SL/TP1/trail/cap/risk/daily cap/magic/spread limit: EA default = preset = Python",
                 not bad, bad)
+    ok &= check("margin guard on in both the EA/preset and Python",
+                ea["InpMarginGuard"] == "true" and ea_set.get("InpMarginGuard") == "true" and cfg.margin_guard)
     files = {"InpLastVerdictFilename": cfg.last_verdict_filename,
              "InpClaudePauseFilename": cfg.claude_pause_filename,
              "InpCalendarExportFile": cfg.econ_calendar_filename}
@@ -3848,6 +3850,71 @@ def test_scorecard() -> bool:
     return ok
 
 
+def test_margin_guard() -> bool:
+    print("\n=== 38. margin guard (small accounts on high leverage) ===")
+    ok = True
+    spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+                         volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+
+    class MarginGw(FakeGateway):
+        def __init__(self, need, free, **kw):
+            super().__init__(**kw)
+            self.need, self.free = need, free
+
+        def margin_status(self, spec, direction, lots):
+            return None if self.need is None else (self.need, self.free)
+    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=True)
+    pos = [{"direction": "buy", "volume": 0.03, "sl": 2344.0, "price_open": 2350.0, "ticket": 1, "magic": 1}] * 4
+    # 1:100 on a $1,000 account: 0.03 lot of gold needs ~$70; 4 open trades risk ~$18 each.
+    tight = MarginGw(70.0, 100.0, equity=1000.0, positions=pos)
+    d = executor.execute(tight, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("$30 of free margin left after the trade cannot cover ~$90 of stops -> refused, no order",
+                not d.executed and "margin guard" in d.reject_reason and tight.orders_sent == [], d.reject_reason)
+    roomy = MarginGw(14.0, 700.0, equity=1000.0, positions=pos)
+    d = executor.execute(roomy, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("1:500 leaves plenty -> the same entry goes through", d.executed, d.reject_reason)
+    unknown = MarginGw(None, 0.0, equity=1000.0, positions=pos)
+    d = executor.execute(unknown, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("margin unknown (MT5 silent / backtest) never blocks", d.executed, d.reject_reason)
+    off = MarginGw(70.0, 100.0, equity=1000.0, positions=pos)
+    d = executor.execute(off, AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
+                                            margin_guard=False), make_verdict("buy", 3, "full"), spec, 0)
+    ok &= check("margin_guard=False switches it off", d.executed, d.reject_reason)
+    return ok
+
+
+def test_claude_prescreen() -> bool:
+    print("\n=== 39. Claude pre-screen (no paid call when no trade is possible) ===")
+    ok = True
+
+    def feats(ema20, ema50, macd, sig, rsi, hist, hist_prev, adx, pdi, mdi, close=2400.0, ema200=2300.0):
+        return {"trend_bias": {"close": close, "ema200": ema200},
+                "primary_indicators": {"ema20": ema20, "ema50": ema50, "atr14": 4.0, "macd_line": macd,
+                                       "macd_signal": sig, "rsi14": rsi, "macd_hist": hist,
+                                       "macd_hist_prev": hist_prev, "adx14": adx, "plus_di": pdi,
+                                       "minus_di": mdi}}
+    strong = feats(2395, 2390, 1.0, 0.5, 60, 0.5, 0.3, 30, 30, 15)       # 3 buy legs, confirmed
+    weak = feats(2395, 2390, -1.0, 0.5, 45, -0.5, -0.3, 15, 20, 18)      # only the trend leg
+    unconfirmed = feats(2390.5, 2390, 1.0, 0.5, 52, 0.2, 0.3, 23, 22, 20)  # 3 legs, none confirmed
+    cfg = AdvisorConfig()
+    ok &= check("on by default; 3 confirmed legs -> Claude is asked", cfg.claude_prescreen
+                and tactics.prescreen_block(cfg, strong) == "")
+    ok &= check("1 agreeing leg -> no trade possible, no Claude call",
+                "pre-screen" in tactics.prescreen_block(cfg, weak))
+    ok &= check("legs agree but none confirmed -> no 'full' possible, no call; with partial conviction "
+                "allowed it is asked",
+                tactics.prescreen_block(cfg, unconfirmed) != ""
+                and tactics.prescreen_block(AdvisorConfig(require_full_conviction=False), unconfirmed) == "")
+    ok &= check("--no-prescreen / missing numbers never block",
+                tactics.prescreen_block(AdvisorConfig(claude_prescreen=False), weak) == ""
+                and tactics.prescreen_block(cfg, {"session": {}}) == "")
+    v = backtest.mechanical_verdict({**strong, "smc": {"liquidity_sweep": {"direction": None},
+                                                         "premium_discount": {"zone": "discount"}}})
+    ok &= check("the backtest stand-in votes with the same shared legs",
+                v.direction == "buy" and v.confluence_count == 3 and v.conviction == "full", v)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -3888,6 +3955,8 @@ def main() -> int:
         test_ea_preset_python_consistency(),
         test_broker_clock_and_trading_day(),
         test_scorecard(),
+        test_margin_guard(),
+        test_claude_prescreen(),
     ]
     print()
     if all(results):

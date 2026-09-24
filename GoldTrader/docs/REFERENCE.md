@@ -31,6 +31,7 @@ in the window cannot freeze it.
 | Trail | $3 behind price after TP1 |
 | Positions per direction | max 5, shared by both sources |
 | Daily loss cap | 10% of the day's starting equity - no new entries after it; each entry must also fit the remaining 10% budget including open risk. The day is the broker's server day (17:00 New York at most gold brokers) for both the EA and Python |
+| Margin guard | An entry is skipped if, after it, the free margin could not cover every open stop plus its own (both sources) - so a losing run reaches the stops, not the broker's margin call |
 
 Python (`app/config.py`) and the EA preset already carry the same numbers,
 magic numbers and shared file names (checked by `goldtrader.py test`).
@@ -42,7 +43,11 @@ magic numbers and shared file names (checked by `goldtrader.py test`).
    guard** (see Entry tactics below), news blackout (MT5 economic calendar,
    15 min around high-impact USD events), daily trade limit (off by
    default), the XTR pre-check (M15 and H1 clearly against each other =
-   nothing to trade) and, if switched on, the ADX trend filter.
+   nothing to trade), the ADX trend filter if switched on, and the
+   **pre-screen**: the three legs below are computed from the same numbers
+   Claude gets; if fewer than 2 agree or none is confirmed, no trade is
+   possible under the rules, so Claude is not asked (about half the calls
+   saved; `--no-prescreen` to ask anyway).
 2. **Snapshot:** M15/H4/D1/W1 indicators, smart-money structure (order
    blocks, fair-value gaps, liquidity sweeps, premium/discount), key levels,
    session, calendar, the XTR M5/M15/H1 alignment read, recent performance
@@ -121,6 +126,41 @@ instead of restarting.
 | `relay/tg_relay_bridge.session` | The relay's Telegram login |
 
 Disk: about 400 MB of Python packages in total (170 MB of it for ML).
+
+## Small accounts ($1,000)
+
+Same rules, same code - the numbers below are what they mean at $1,000
+(one-year mechanical backtest, gold ~$4,300, 25-point spread).
+
+| Item | At $1,000 |
+|---|---|
+| Lot per trade | 0.03 (risks $18 = 1.8%); 0.02 below $900, 0.01 below $600; under $300 even 0.01 is more than 2% |
+| Spread cost per trade | about $0.75 (4% of the risk) - keep the spread at 25-30 points or less |
+| Margin per 0.03 lot | 1:500 about $26 - 1:100 about $129 - **1:20 about $645** (retail limit for gold in Australia, EU, UK) |
+| Backtest, up to 5 per direction (leverage 1:100+) | +58% in the year, worst drawdown 24%, 230 trades |
+| Backtest, one position at a time (what 1:20 allows) | +46%, worst drawdown 14%, 155 trades (about 3 a week) |
+| Claude calls | about 96 a week with the pre-screen (205 without) |
+| Claude cost (Opus 5, estimate) | about $8 a week with the pre-screen, $17 without; the log shows the real tokens per call (`Claude call: ... tokens`) |
+
+**The API bill is what decides a $1,000 account.** The backtest's average
+gain is about $11 a week at this size, so Opus 5 costs roughly 75% of it
+with the pre-screen and more than all of it without. A year simulated 4,000
+times (backtest trades resampled, real lot steps, API cost taken weekly):
+
+| Setup | Median after a year | Chance of ending below $1,000 |
+|---|---|---|
+| No API cost (reference) | $1,636 | 12% |
+| Opus 5, pre-screen on (default) | $1,045 | 47% |
+| Opus 5, pre-screen off | $399 | 85% |
+| Sonnet 5, pre-screen on (`--model claude-sonnet-5`, untested judgment) | $1,405 | 23% |
+| Opus 5, pre-screen on, if the real edge is half the backtest's | $730 | 73% |
+
+Options, safest first: run only the Telegram-signal side (no API cost) and
+keep Claude paused (`PauseClaudeHab`) until the account is about $3,000+;
+or run Claude on demo with the same $1,000 balance for 2-4 weeks and read
+the real cost from the log and the scorecard; or try a cheaper model with
+`--model`. The margin guard keeps a small high-risk account from a margin
+call; with 1:20 it simply allows one gold position at a time.
 
 ## Weekly scorecard (is it working?)
 

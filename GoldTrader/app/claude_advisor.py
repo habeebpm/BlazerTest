@@ -393,6 +393,11 @@ def get_verdict(client, cfg: AdvisorConfig, features: dict) -> ConfluenceVerdict
         )
     except Exception as exc:
         raise _wrap_api_error(exc) from exc
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        # Real cost per call - compare with docs/REFERENCE.md "Small accounts".
+        log.info("Claude call: %s input + %s output tokens", getattr(usage, "input_tokens", "?"),
+                 getattr(usage, "output_tokens", "?"))
     stop = getattr(response, "stop_reason", None)
     parsed = getattr(response, "parsed_output", None)
     if stop == "refusal" or parsed is None:

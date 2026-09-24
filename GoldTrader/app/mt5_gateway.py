@@ -404,6 +404,23 @@ def _filling_mode(m, symbol: str):
     return m.ORDER_FILLING_RETURN
 
 
+def margin_status(spec: SymbolSpec, direction: str, lots: float):
+    """(margin this order needs, free margin now) in account money, or None
+    when MT5 cannot say (then the margin guard is skipped, never blocking)."""
+    m = mt5()
+    try:
+        tick = get_tick(spec.name)
+        price = tick.ask if direction == "buy" else tick.bid
+        order_type = m.ORDER_TYPE_BUY if direction == "buy" else m.ORDER_TYPE_SELL
+        need = m.order_calc_margin(order_type, spec.name, lots, price)
+        info = m.account_info()
+    except Exception:
+        return None
+    if need is None or info is None:
+        return None
+    return float(need), float(info.margin_free)
+
+
 def place_market_order(spec: SymbolSpec, direction: str, lots: float, sl_price: float,
                         tp_price: float, magic: int, comment: str, deviation_points: int,
                         dry_run: bool):

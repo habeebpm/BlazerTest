@@ -159,6 +159,7 @@ input bool    InpTradeXAUUSDOnly   = true;         // Require chart symbol to co
 input int     InpMaxTradesPerDay   = 0;            // 0 = unlimited (Telegram-sourced trades only)
 input double  InpMaxDailyLossPct   = 10.0;         // 0 = disabled; stop new Telegram-sourced entries after this % equity drawdown on the day
 input int     InpMaxSpreadPoints   = 50;           // Skip a Telegram entry while the spread is above this many points (0 = off)
+input bool    InpMarginGuard       = true;         // Skip a Telegram entry if free margin after it could not cover every open stop + its own
 input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending order after N minutes (0 = never)
 
 input group "=== Telegram Signal Sanity (pips; 1 pip = 10 broker points) ==="
@@ -258,6 +259,7 @@ double   DollarsToPrice(double dollars, double volume);
 double   PositionSizeLots();
 double   OpenRiskMoney();
 string   DailyRiskBudgetReason(double newLots);
+string   MarginGuardReason(bool isBuy, double newLots);
 int      CountSameDirection(int direction);
 void     ExpirePendingOrders();
 int      ClosePositionsByMagic(long magic, const string &label);
@@ -1099,6 +1101,34 @@ string DailyRiskBudgetReason(double newLots)
    if(committed > budget + 0.000000001)
       return(StringFormat("daily loss budget: drawdown + open risk + this trade = %.2f, over the "
                           "%.2f%% cap (%.2f)", committed, InpMaxDailyLossPct, budget));
+   return("");
+}
+
+//+------------------------------------------------------------------+
+//| Small accounts on high leverage: "" if, after this entry, the free |
+//| margin still covers what every open stop plus this one could lose, |
+//| else the reason to skip - so a run of losses reaches the stops, not |
+//| the broker's margin call / stop-out. Mirrors app/executor.py's      |
+//| margin_guard_reason(). Unknown margin never blocks.                 |
+//+------------------------------------------------------------------+
+string MarginGuardReason(bool isBuy, double newLots)
+{
+   if(!InpMarginGuard || newLots <= 0.0)
+      return("");
+   double price = SymbolInfoDouble(_Symbol, isBuy ? SYMBOL_ASK : SYMBOL_BID);
+   double need = 0.0;
+   if(price <= 0.0 || !OrderCalcMargin(isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, newLots, price, need))
+      return("");
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double slDist    = DollarsToPrice(InpSlDollars, InpReferenceLot);
+   if(tickValue <= 0.0 || tickSize <= 0.0 || slDist <= 0.0)
+      return("");
+   double worst = OpenRiskMoney() + slDist / tickSize * tickValue * newLots;
+   double freeAfter = AccountInfoDouble(ACCOUNT_MARGIN_FREE) - need;
+   if(freeAfter < worst)
+      return(StringFormat("margin guard: free margin after this trade %.2f would not cover %.2f if every "
+                          "open stop and this one were hit", freeAfter, worst));
    return("");
 }
 
@@ -2121,6 +2151,14 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
       LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   string marginReason = MarginGuardReason(msg.direction == DIR_BUY, PositionSizeLots());
+   if(marginReason != "")
+   {
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", marginReason);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
+                   true, marginReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    int sameDir = CountSameDirection(msg.direction);

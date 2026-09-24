@@ -115,6 +115,51 @@ def regime_block(cfg, features: dict) -> str:
     return ""
 
 
+def vote_legs(features: dict) -> dict:
+    """The three confluence legs exactly as claude_advisor.SYSTEM_PROMPT defines
+    them, on the snapshot's own numbers: {"trend"|"momentum"|"strength":
+    (direction "buy"/"sell"/"neutral", confirmed)}. Shared by the Claude
+    pre-screen and backtest.mechanical_verdict, so the two never drift."""
+    ind = features["primary_indicators"]
+    trend_bias = features["trend_bias"]
+    trend_up = trend_bias["close"] > trend_bias["ema200"] and ind["ema20"] > ind["ema50"]
+    trend_down = trend_bias["close"] < trend_bias["ema200"] and ind["ema20"] < ind["ema50"]
+    trend_confirmed = abs(ind["ema20"] - ind["ema50"]) >= 0.25 * ind["atr14"]
+    momentum_up = ind["macd_line"] > ind["macd_signal"] and 50 <= ind["rsi14"] <= 70
+    momentum_down = ind["macd_line"] < ind["macd_signal"] and 30 <= ind["rsi14"] <= 50
+    momentum_confirmed = ((ind["macd_hist"] > ind["macd_hist_prev"] and ind["rsi14"] >= 55) or
+                          (ind["macd_hist"] < ind["macd_hist_prev"] and ind["rsi14"] <= 45))
+    strength_up = ind["adx14"] >= 22 and ind["plus_di"] > ind["minus_di"]
+    strength_down = ind["adx14"] >= 22 and ind["minus_di"] > ind["plus_di"]
+    strength_confirmed = ind["adx14"] >= 28 and abs(ind["plus_di"] - ind["minus_di"]) >= 8
+
+    def side(up, down):
+        return "buy" if up else "sell" if down else "neutral"
+    return {"trend": (side(trend_up, trend_down), trend_confirmed),
+            "momentum": (side(momentum_up, momentum_down), momentum_confirmed),
+            "strength": (side(strength_up, strength_down), strength_confirmed)}
+
+
+def prescreen_block(cfg, features: dict) -> str:
+    """Before the paid Claude call: "" if the legs could still reach the
+    minimum an entry needs (cfg.min_confluence_count legs agreeing, one of
+    them confirmed when full conviction is required), else why not - the
+    rules forbid a trade then whatever Claude answers, so the call is saved."""
+    if not getattr(cfg, "claude_prescreen", False):
+        return ""
+    try:
+        legs = vote_legs(features).values()
+    except (KeyError, TypeError):
+        return ""          # numbers missing - never block on that, let Claude judge
+    need_confirmed = 1 if cfg.require_full_conviction else 0
+    for d in ("buy", "sell"):
+        agree = [c for side, c in legs if side == d]
+        if len(agree) >= cfg.min_confluence_count and sum(agree) >= need_confirmed:
+            return ""
+    return (f"pre-screen: fewer than {cfg.min_confluence_count} agreeing legs"
+            + (" with one confirmed" if need_confirmed else "") + " - no trade possible, Claude not asked")
+
+
 def validate(cfg) -> None:
     """Raises ValueError on a malformed time setting."""
     parse_windows(cfg.trade_windows_ny)

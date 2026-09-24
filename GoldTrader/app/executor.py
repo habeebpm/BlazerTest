@@ -333,6 +333,29 @@ def daily_risk_budget_reason(gateway, cfg: AdvisorConfig, spec, day_start_equity
     return ""
 
 
+def margin_guard_reason(gateway, cfg: AdvisorConfig, spec, direction: str, lots: float,
+                        new_trade_risk: float) -> str:
+    """Small accounts on high leverage: refuse an entry if, after it, the free
+    margin would not cover what every open stop plus this trade's stop could
+    lose - otherwise a run of losses could reach the broker's margin call /
+    stop-out (which closes positions at market, ignoring the stops) before
+    the stops do their job. Entry filter only; "" when it fits or MT5 cannot
+    report margin (the backtest has no margin model)."""
+    if not cfg.margin_guard:
+        return ""
+    status_fn = getattr(gateway, "margin_status", None)
+    status = status_fn(spec, direction, lots) if status_fn else None
+    if not status:
+        return ""
+    need, free = status
+    worst = open_risk_dollars(gateway, cfg, spec) + new_trade_risk
+    if free - need < worst:
+        return (f"margin guard: free margin after this trade {free - need:.2f} would not cover "
+                f"{worst:.2f} if every open stop and this one were hit - use higher leverage or "
+                f"fewer open trades")
+    return ""
+
+
 def atr_sl_distance(gateway, cfg: AdvisorConfig, spec) -> float | None:
     """ATR-based entry stop-loss price distance for sl_mode="atr" - see
     config.py's own comment for why this is entry-SL only. Returns None
@@ -432,7 +455,9 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
 
     plan = build_plan(gateway, cfg, spec, verdict.direction)
     if spec.tick_size > 0:
-        budget_reason = daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, plan.risk_money)
+        budget_reason = (daily_risk_budget_reason(gateway, cfg, spec, day_start_equity, plan.risk_money)
+                         or margin_guard_reason(gateway, cfg, spec, verdict.direction, plan.lots,
+                                                plan.risk_money))
         if budget_reason:
             return _reject(cfg, verdict, budget_reason, plan=plan)
 
