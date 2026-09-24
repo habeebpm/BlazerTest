@@ -346,6 +346,10 @@ def _wrap_api_error(exc: Exception) -> ClaudeUnavailableError:
         return ClaudeUnavailableError(
             f"Could not reach the Claude API (network issue) - will retry next poll: {exc}",
             retryable=True)
+    if "Could not resolve authentication method" in str(exc):
+        return ClaudeUnavailableError(
+            "no Anthropic API key - put ANTHROPIC_API_KEY in keys.txt (or run settings.bat)",
+            retryable=False)
     return ClaudeUnavailableError(f"Claude API call failed unexpectedly: {exc}", retryable=False)
 
 

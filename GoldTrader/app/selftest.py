@@ -939,6 +939,8 @@ def test_claude_error_classification() -> bool:
         (status_error(529, "overloaded_error", "overloaded"), True, "service issue"),
         (anthropic.APIConnectionError(message="network down", request=req), True, "reach"),
         (ValueError("something unrelated broke"), False, "unexpectedly"),
+        (TypeError("Could not resolve authentication method. Expected one of api_key, ..."), False,
+         "put ANTHROPIC_API_KEY in keys.txt"),
     ]
     for exc, expect_retryable, must_contain in cases:
         wrapped = claude_advisor._wrap_api_error(exc)
