@@ -1,6 +1,7 @@
 # GoldTrader - reference
 
-The setup steps are in [`../README.md`](../README.md). This page explains
+The setup steps are in [`../README.md`](../README.md) (step by step with
+checks: [`DEPLOYMENT.md`](DEPLOYMENT.md)). This page explains
 what runs, how it decides, every safety limit, where files are, and what to
 do when something goes wrong.
 
@@ -299,4 +300,5 @@ without the tactics. Results on a year of real prices:
 
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
-once | start | backtest | scorecard | xtr-export | test`.
+once | start | backtest | scorecard | xtr-export | dashboard-password |
+test`.

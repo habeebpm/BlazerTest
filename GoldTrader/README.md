@@ -2,6 +2,9 @@
 
 Everything is in this folder. You only double-click the `.bat` files.
 
+Deploying for the first time? Follow [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md):
+the same steps with what to check after each one, plus updating and going live.
+
 | File | What it does |
 |---|---|
 | `setup.bat` | Installs everything and puts the EAs into MT5 |
@@ -119,5 +122,6 @@ signals and the scorecard, refreshed every minute. Read-only.
 **Trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->
 **Load** `TelegramSMC_TradeLogger_Unified.set`.
 
+Step by step with checks: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 Details, options and troubleshooting: [`docs/REFERENCE.md`](docs/REFERENCE.md).
 Backtest: [`docs/BACKTEST_REPORT.md`](docs/BACKTEST_REPORT.md).
