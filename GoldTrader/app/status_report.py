@@ -158,7 +158,9 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
         "rules": {"risk_percent": cfg.risk_percent, "sl_dollars": cfg.sl_dollars,
                   "tp1_dollars": cfg.tp1_dollars, "trail_dollars": cfg.trail_dollars,
                   "max_per_direction": cfg.max_open_positions_per_direction,
-                  "max_daily_loss_pct": cfg.max_daily_loss_pct},
+                  "max_daily_loss_pct": cfg.max_daily_loss_pct,
+                  "telegram_signal_sl": cfg.telegram_use_signal_sl,
+                  "signal_sl_min": cfg.signal_sl_min_distance, "signal_sl_max": cfg.signal_sl_max_distance},
     }
 
     def part(key, fn):
@@ -191,7 +193,7 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
     part("decisions", lambda: tail_csv(os.path.join(cfg.log_dir, "decisions.csv"), MAX_DECISIONS))
     part("signals", lambda: [
         {k: r.get(k, "") for k in ("time_utc", "action", "direction", "accepted", "sanity_reason",
-                                  "smc_reason", "order_type", "order_price", "lots", "dry_run", "raw_text")}
+                                  "smc_reason", "order_type", "order_price", "lots", "sl", "dry_run", "raw_text")}
         for r in tail_csv(_signals_path(gateway), MAX_SIGNALS)])
     report["claude_problem"] = _state["claude_problem"]
     report["problems"] = problems

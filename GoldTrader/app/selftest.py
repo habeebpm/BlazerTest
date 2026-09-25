@@ -3819,6 +3819,16 @@ def test_ea_preset_python_consistency() -> bool:
                 and ea["InpTradeWeekdaysOnly"] == ea_set.get("InpTradeWeekdaysOnly") == "true"
                 and cfg.telegram_weekdays_only,
                 (ea.get("InpTradeHours"), ea.get("InpTradeUtcOffsetHours"), cfg.telegram_trade_windows))
+    ok &= check("Telegram stop: EA default = preset = Python mirror (the signal's stop within $3-$20, "
+                "else the fixed stop)",
+                ea["InpTelegramUseSignalSl"] == ea_set.get("InpTelegramUseSignalSl") == "true"
+                and cfg.telegram_use_signal_sl
+                and num(ea["InpSignalSlMinDistance"]) == num(ea_set["InpSignalSlMinDistance"])
+                == cfg.signal_sl_min_distance == 3.0
+                and num(ea["InpSignalSlMaxDistance"]) == num(ea_set["InpSignalSlMaxDistance"])
+                == cfg.signal_sl_max_distance == 20.0,
+                (ea.get("InpTelegramUseSignalSl"), ea.get("InpSignalSlMinDistance"),
+                 ea.get("InpSignalSlMaxDistance")))
     ok &= check("Claude window: the tested New York hours (not the Oman window)",
                 cfg.trade_windows == "08:00-16:45,18:15-20:00" and cfg.trade_timezone == "America/New_York")
     with open(os.path.join(mt5, "Experts", "UnifiedTrader_EA.mq5"), encoding="utf-8") as f:
@@ -3828,6 +3838,20 @@ def test_ea_preset_python_consistency() -> bool:
     ok &= check("EA: a Telegram order the broker refuses is never logged as copied (PlaceCopiedOrder "
                 "returns the broker's answer)",
                 body.rstrip().endswith("return(ok);") and "return(true);" in body.split("if(InpDryRun)")[1][:600])
+    proc = ea_src[ea_src.index("void ProcessSignal(const SignalMsg &msg"):]
+    proc = proc[:proc.index("\n}\n")]
+    order = [proc.find(x) for x in ("TelegramStopDistance(msg, isBuy, orderPrice", "PositionSizeLots(slDist)",
+                                    "DailyRiskBudgetReason(lots, slDist)",
+                                    "MarginGuardReason(isBuy, lots, slDist)", "PlaceCopiedOrder(isBuy, orderPrice")]
+    ok &= check("EA: a Telegram trade's lot is sized from its real stop, and the daily budget and margin "
+                "guard check that same stop and lot before the order",
+                all(i >= 0 for i in order) and order == sorted(order)
+                and "DailyRiskBudgetReason(PositionSizeLots())" not in proc, order)
+    sl_fn = ea_src[ea_src.index("int FindSlLabel(const string &text"):]
+    sl_fn = sl_fn[:sl_fn.index("\n}\n")]
+    ok &= check("EA: a bare 'Stop: 4342' is read as the stop, never the order type in 'SELL STOP 2350'",
+                'FindWholeWord(text, "STOP", pos)' in sl_fn and 'PrecededByWord(text, idx, "SELL")' in sl_fn
+                and 'PrecededByWord(text, idx, "BUY")' in sl_fn)
     ok &= check("margin guard on in both the EA/preset and Python",
                 ea["InpMarginGuard"] == "true" and ea_set.get("InpMarginGuard") == "true" and cfg.margin_guard)
     files = {"InpLastVerdictFilename": cfg.last_verdict_filename,
@@ -4399,6 +4423,32 @@ def test_trade_journal() -> bool:
     ok &= check("times in UTC and Oman (UTC+4), minutes open",
                 r1["open_time_utc"] == "2026-09-25 09:00:00" and r1["open_time_local"] == "2026-09-25 13:00:00"
                 and r1["minutes_open"] == 60, r1)
+
+    # A Telegram trade opened with the signal's own $14 stop: 1R is $14, not $6.
+    sig = [{"ticket": 301, "magic": 20260922, "direction": "sell", "volume": 0.71, "open_time": None,
+            "close_time": None, "entry_price": 4328.3, "exit_price": 4342.3, "initial_sl": 4342.3,
+            "exit_reason": "stop loss", "profit": -994.0, "swap": 0.0, "commission": 0.0, "net": -994.0},
+           {"ticket": 302, "magic": 20260922, "direction": "sell", "volume": 0.71, "open_time": None,
+            "close_time": None, "entry_price": 4328.3, "exit_price": 4322.3, "initial_sl": 4342.3,
+            "exit_reason": "stop loss", "profit": 426.0, "swap": 0.0, "commission": 0.0, "net": 426.0}]
+    srow = {r["ticket"]: r for r in TJ.trade_rows(sig, names, 6.0, "Asia/Muscat", 6.0)}
+    ok &= check("a signal-stop trade: R against its own $14 stop (-1R at the stop, +0.43R at the $6 lock), "
+                "never flagged as moved by hand",
+                srow[301]["result_r"] == -1.0 and srow[301]["stop_distance"] == 14.0 and srow[301]["note"] == ""
+                and srow[302]["result_r"] == 0.43 and srow[302]["note"] == "", srow)
+    import scorecard as SC
+    s14 = SC.summarize([{"pnl_dollars": -994.0, "volume": 0.71, "risk_distance": 14.0},
+                        {"pnl_dollars": -600.0, "volume": 1.0}], 100.0, 6.0)
+    ok &= check("scorecard: a trade with its own stop distance is -1R at that stop; without, the $6 stop",
+                abs(s14["avg_r"] - (-1.0)) < 0.01, s14)
+    gw._mt5, old_clock = fake, gw._CLOCK["fixed_offset"]
+    gw._CLOCK["fixed_offset"] = 0
+    try:
+        ct = {t["ticket"]: t for t in gw.closed_trades("XAUUSD", [20260921, 20260922])}
+    finally:
+        gw._mt5, gw._CLOCK["fixed_offset"] = None, old_clock
+    ok &= check("closed_trades carries each trade's first-stop distance for the scorecard",
+                abs(ct[203]["risk_distance"] - 6.0) < 1e-9 and abs(ct[202]["risk_distance"] - 6.0) < 1e-9, ct)
 
     class FakeGateway:
         def __init__(self, positions):

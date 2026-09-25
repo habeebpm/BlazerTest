@@ -357,18 +357,34 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
     return positions + pending
 
 
+def _first_stops(m, date_from, date_to, position_ids) -> dict:
+    """{position id: the stop its opening order was sent with} - the trade's
+    real 1R (the signal's own stop for many Telegram trades, $6 otherwise).
+    Empty when the terminal gives no order history."""
+    orders = m.history_orders_get(date_from, date_to) if hasattr(m, "history_orders_get") else None
+    first = {}
+    for o in sorted(orders or [], key=lambda o: o.time_setup):
+        pid = getattr(o, "position_id", 0)
+        if pid in position_ids and pid not in first and float(getattr(o, "sl", 0.0) or 0.0) > 0:
+            first[pid] = float(o.sl)
+    return first
+
+
 def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
     """Closed trades under any of `magics`, oldest first, from MT5's own deal
     history (real broker fills, whoever closed them). One row per POSITION:
     its DEAL_ENTRY_OUT deals (several when it was closed in parts) summed -
     net P&L = profit+swap+commission, volume = the closed volume, time = the
-    last close in true UTC - so a partial close never counts as two trades."""
+    last close in true UTC - so a partial close never counts as two trades.
+    risk_distance: the price distance from the entry to the stop the trade
+    was opened with (0 when not in the history window) - its 1R."""
     m = mt5()
     now = datetime.now(timezone.utc)
     # The terminal reads these bounds on its SERVER clock (up to 14h ahead of
     # UTC): ending the window at UTC "now" would miss the last few hours of
     # closed trades, so the window runs a day past now.
-    deals = m.history_deals_get(now - timedelta(days=lookback_days + 1), now + timedelta(days=1))
+    start, end = now - timedelta(days=lookback_days + 1), now + timedelta(days=1)
+    deals = m.history_deals_get(start, end)
     if deals is None:
         return []
     wanted = {int(x) for x in magics}
@@ -398,7 +414,15 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
             "pnl_dollars": pnl,
             "volume": volume,
             "ticket": d.position_id,
+            "risk_distance": 0.0,
         }
+    entries = {}
+    for d in deals:
+        if d.symbol == symbol and d.entry == m.DEAL_ENTRY_IN and d.position_id in by_position:
+            entries.setdefault(d.position_id, float(getattr(d, "price", 0.0) or 0.0))
+    for pid, stop in _first_stops(m, start, end, set(by_position)).items():
+        if entries.get(pid):
+            by_position[pid]["risk_distance"] = abs(entries[pid] - stop)
     return sorted(by_position.values(), key=lambda r: r["time"])
 
 
@@ -429,12 +453,7 @@ def journal_positions(symbol: str, magics, lookback_days: int = 3650) -> list[di
     if not rows:
         return []
     times = server_to_utc([d.time for d in rows])
-    first_sl = {}
-    orders = m.history_orders_get(start, end) if hasattr(m, "history_orders_get") else None
-    for o in sorted(orders or [], key=lambda o: o.time_setup):
-        pid = getattr(o, "position_id", 0)
-        if pid in closed_ids and pid not in first_sl and float(getattr(o, "sl", 0.0)) > 0:
-            first_sl[pid] = float(o.sl)
+    first_sl = _first_stops(m, start, end, closed_ids)
 
     by_position = {}
     for d, t in zip(rows, times):

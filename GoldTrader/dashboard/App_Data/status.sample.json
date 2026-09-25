@@ -21,7 +21,10 @@
   "tp1_dollars": 6.0,
   "trail_dollars": 3.0,
   "max_per_direction": 5,
-  "max_daily_loss_pct": 10.0
+  "max_daily_loss_pct": 10.0,
+  "telegram_signal_sl": true,
+  "signal_sl_min": 3.0,
+  "signal_sl_max": 20.0
  },
  "account": {
   "balance": 10388.4,
@@ -32,7 +35,7 @@
   "leverage": 500
  },
  "day": {
-  "date": "2026-09-24",
+  "date": "2026-09-25",
   "start_equity": 10366.2,
   "claude_trades": 1,
   "daily_loss_hit": false,
@@ -646,6 +649,7 @@
    "order_type": "",
    "order_price": "",
    "lots": "",
+   "sl": "",
    "dry_run": "0",
    "raw_text": "Gold sell 3762 – SL 3768 TP 3752"
   },
@@ -659,6 +663,7 @@
    "order_type": "",
    "order_price": "",
    "lots": "",
+   "sl": "",
    "dry_run": "0",
    "raw_text": "Move SL to entry on gold sells"
   },
@@ -672,6 +677,7 @@
    "order_type": "",
    "order_price": "",
    "lots": "",
+   "sl": "",
    "dry_run": "0",
    "raw_text": "SELL GOLD NOW 3769 <b>sl 3776</b>"
   },
@@ -680,11 +686,12 @@
    "action": "OPEN",
    "direction": "SELL",
    "accepted": "1",
-   "sanity_reason": "",
+   "sanity_reason": "stop: signal stop 3772.00 ($8.00 from the entry)",
    "smc_reason": "",
    "order_type": "LIMIT",
    "order_price": "",
-   "lots": "0.03",
+   "lots": "0.02",
+   "sl": "",
    "dry_run": "0",
    "raw_text": "XAUUSD SELL 3764-3766 SL 3772 TP1 3758 TP2 3750"
   },
@@ -698,6 +705,7 @@
    "order_type": "",
    "order_price": "",
    "lots": "",
+   "sl": "",
    "dry_run": "0",
    "raw_text": "GOLD BUY 3745-3743\nSL 3738\nTP 3755 / 3765"
   }

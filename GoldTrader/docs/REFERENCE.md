@@ -27,7 +27,8 @@ in the window cannot freeze it.
 | Rule | Value |
 |---|---|
 | Risk per trade | 2% of equity (lot sized from it) |
-| Stop loss | $6 at the 0.01 reference lot (a fixed price distance) |
+| Stop loss | $6 at the 0.01 reference lot (a fixed price distance). **Telegram trades:** the signal's own stop when it is on the right side and $3-$20 from the entry (EA `InpTelegramUseSignalSl`, `InpSignalSlMinDistance`, `InpSignalSlMaxDistance`); otherwise, or with no stop in the signal, the $6 stop |
+| Lot | sized so the stop risks 2% of equity - a wider signal stop gives a smaller lot (e.g. $14 stop: 0.71 lot at $50,000 instead of 1.66), so every trade still risks 2% |
 | TP1 | at +$6 the SL is locked there (no broker TP) |
 | Trail | $3 behind price after TP1 |
 | Positions per direction | max 5, shared by both sources |
@@ -72,6 +73,15 @@ magic numbers and shared file names (checked by `goldtrader.py test`).
 Telegram signals (EA side) are copied when they parse as a trade and no
 clear M15/H1 is against them (`InpXtrHtfFilter`), inside the same position
 cap, daily cap, news filter and spread limit (`InpMaxSpreadPoints`, 50).
+Their stop is the signal's own (`SL`, `Stop loss`, `Stop:`) when it is on
+the right side and $3-$20 from the entry, with the lot sized from it so
+the trade still risks 2%; the daily budget and the margin guard check that
+real stop and lot. Otherwise the $6 stop. The lock (+$6) and trail ($3)
+are the same for every trade; the signal's targets are logged only. With
+a wide signal stop the $6 lock is less than 1R (a $14 stop: +0.43R), so
+those trades need a higher win rate - the scorecard and the journal
+measure each trade against its own stop. `InpTelegramUseSignalSl=false`
+goes back to the $6 stop for every trade.
 Greetings, mood posts, long commentary, videos, audio and stickers are
 ignored. Telegram's trading hours: a signal posted outside 06:00-23:00
 Oman time or at the weekend is logged "outside trading hours" and not
@@ -187,7 +197,7 @@ call; with 1:20 it simply allows one gold position at a time.
 Every 7 days (and any time with `python goldtrader.py scorecard`) the real
 closed trades of the last 120 days are read from MT5 - Claude's, the
 Telegram signals' and both together - and sent to your Telegram: trades,
-win %, net, average result in **R** (1R = the $6 stop), profit factor,
+win %, net, average result in **R** (1R = the stop the trade was opened with: $6, or a Telegram signal's own stop), profit factor,
 worst drawdown and the chance that there is no real edge. The verdict uses
 rules fixed before any demo trade:
 
@@ -216,7 +226,7 @@ file that changed is rewritten.
 
 | File | One row per | Columns |
 |---|---|---|
-| `GoldTrader_trades.csv` | closed trade, Claude and Telegram, rebuilt from MT5's own history | ticket, source, direction, lots, open/close time (UTC and Oman), minutes open, entry, exit, first stop, exit reason (stop loss / closed by the EA / closed by you (PC, phone, web) / stop out), move in $, result in R, profit, swap, commission, net, note |
+| `GoldTrader_trades.csv` | closed trade, Claude and Telegram, rebuilt from MT5's own history | ticket, source, direction, lots, open/close time (UTC and Oman), minutes open, entry, exit, first stop and its distance (1R), exit reason (stop loss / closed by the EA / closed by you (PC, phone, web) / stop out), move in $, result in R, profit, swap, commission, net, note |
 | `GoldTrader_claude_decisions.csv` | Claude evaluation | a copy of `logs/decisions.csv` |
 | `GoldTrader_telegram_signals.csv` | Telegram message the EA received | a copy of the EA's signal log: action, direction, copied or why not |
 

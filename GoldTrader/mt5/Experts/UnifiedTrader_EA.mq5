@@ -8,9 +8,12 @@
 //| Bot API (WebRequest) for up to three channels (InpChannelId1..3),  |
 //| reads TRADE messages only (TsmcClassifyMessage - greetings, mood    |
 //| posts, long messages, media and notices are omitted) and executes a|
-//| parsed signal under InpTelegramMagicNumber. The message is used for|
-//| direction and entry zone only - never its own SL/TP: every position|
-//| gets the same fixed risk below. Still checked: chat allow-list,    |
+//| parsed signal under InpTelegramMagicNumber. The message gives the  |
+//| direction, the entry zone and - with InpTelegramUseSignalSl - the  |
+//| stop: the signal's own SL when it is InpSignalSlMinDistance to     |
+//| InpSignalSlMaxDistance from the entry, else the fixed InpSlDollars |
+//| stop; the lot is sized from that stop so every trade still risks   |
+//| InpRiskPercent. Its TPs are logged only. Still checked: allow-list,|
 //| signal age, price run-away from the zone, the XTR M15/H1 filter,   |
 //| the news blackout, the position cap and the daily caps. CLOSE /    |
 //| CANCEL messages act on this EA's own Telegram positions only.      |
@@ -75,7 +78,7 @@
 #property link      ""
 #property version   "1.00"
 #property strict
-#property description "One EA, two trade sources sharing one risk model: unvalidated Telegram signal execution (fixed $6/$6/$3 SL/lock/trail, no SMC filter, no message-SL sanity check) and/or exit management for GoldTrader's Claude-decided positions (app/main.py). Toggle either or both. Educational use - demo-test with InpDryRun=true before risking real capital."
+#property description "One EA, two trade sources sharing one risk model: unvalidated Telegram signal execution (the signal's own stop within InpSignalSlMin/MaxDistance or a fixed $6 one, $6 lock, $3 trail, no SMC filter) and/or exit management for GoldTrader's Claude-decided positions (app/main.py). Toggle either or both. Educational use - demo-test with InpDryRun=true before risking real capital."
 
 #include <Trade\Trade.mqh>
 #include <TelegramSMC_Common.mqh>
@@ -167,6 +170,9 @@ input int     InpPendingExpiryMin  = 240;          // Cancel an unfilled pending
 
 input group "=== Telegram Signal Sanity (pips; 1 pip = 10 broker points) ==="
 input double  InpMaxEntryDeviationPips = 200.0;    // Reject if current price is this far outside the signaled zone
+input bool    InpTelegramUseSignalSl  = true;      // Telegram entries: use the signal's own stop, lot resized to still risk InpRiskPercent (false = fixed InpSlDollars)
+input double  InpSignalSlMinDistance  = 3.0;       // Signal stop used only if at least this far from the entry (price, gold $)...
+input double  InpSignalSlMaxDistance  = 20.0;      // ...and at most this far - otherwise, or with no stop in the signal, the fixed InpSlDollars stop
 
 input group "=== Remote control (optional) - see file header's REMOTE CONTROL section ==="
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
@@ -207,7 +213,7 @@ struct SignalMsg
    double entryA;
    double entryB;
    bool   hasSl;
-   double sl;          // parsed for the log row only - NEVER used to size an order, see file header
+   double sl;          // the signal's stop - used only via TelegramStopDistance() (InpTelegramUseSignalSl)
    double tps[6];       // parsed for the log row only - never used
    int    tpCount;
 };
@@ -259,10 +265,11 @@ bool     ExtractNumberAt(const string &text, int fromPos, int limitPos, int maxS
 bool     MentionsGold(const string &upperText);
 void     ParseSignalText(const string &rawText, SignalMsg &msg);
 double   DollarsToPrice(double dollars, double volume);
-double   PositionSizeLots();
+double   FixedSlDistance();
+double   PositionSizeLots(double slDist = 0.0);
 double   OpenRiskMoney();
-string   DailyRiskBudgetReason(double newLots);
-string   MarginGuardReason(bool isBuy, double newLots);
+string   DailyRiskBudgetReason(double newLots, double slDist = 0.0);
+string   MarginGuardReason(bool isBuy, double newLots, double slDist = 0.0);
 bool     ParseHHMM(string s, int &minutes);
 bool     ParseTradeHours(const string spec);
 string   TradeHoursReason();
@@ -282,9 +289,12 @@ string   StatsLine(const string label, const ClosedStatsT &st);
 string   BuildStatsText();
 void     FlushNotifyQueue();
 void     ProcessControlCommand(const string &rawText);
-bool     PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
-                           string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode,
-                           double &outLots);
+bool     PrecededByWord(const string &text, int idx, const string word);
+bool     PlanCopiedOrder(bool isBuy, double lowerBound, double upperBound,
+                          double &orderPrice, bool &isPending, string &failType);
+double   TelegramStopDistance(const SignalMsg &msg, bool isBuy, double orderPrice, string &note);
+bool     PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDist, double lots,
+                           string &outOrderType, long &outTicket, int &outRetcode);
 void     ManagePositionExit(ulong ticket, long magic);
 void     ManageAllPositions();
 void     ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText);
@@ -297,7 +307,7 @@ void     LogSignalRow(long chatId, const string &action, const string &direction
                        double entryLow, double entryHigh, const string &tpsJoined,
                        bool sanityPass, const string &sanityReason, bool accepted,
                        const string &orderType, double orderPrice, double lots, bool dryRun,
-                       long orderTicket, int retcode, const string &rawText);
+                       long orderTicket, int retcode, const string &rawText, double slUsed = 0.0);
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                             |
@@ -311,6 +321,11 @@ int OnInit()
             "under InpTelegramMagicNumber/InpClaudeMagicNumber from before - see ManageAllPositions, "
             "which is never gated by these flags), but if that's not what you intended, enable at "
             "least one.");
+   if(InpTelegramUseSignalSl && (InpSignalSlMinDistance <= 0.0 || InpSignalSlMaxDistance < InpSignalSlMinDistance))
+   {
+      Print("UnifiedTrader_EA: InpSignalSlMinDistance must be > 0 and InpSignalSlMaxDistance at least as large.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
    if(InpNewsBlockBeforeMin < 0 || InpNewsBlockAfterMin < 0 || InpCalendarRefreshMin < 1)
    {
       Print("UnifiedTrader_EA: InpNewsBlockBeforeMin/InpNewsBlockAfterMin must be >= 0 and "
@@ -495,6 +510,10 @@ int OnInit()
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       if(equity > 0.0 && InpMaxDailyLossPct > 0.0)
       {
+         if(InpEnableTelegramSignals && InpTelegramUseSignalSl)
+            PrintFormat("UnifiedTrader_EA: Telegram entries use the signal's own stop when it is $%.2f-$%.2f "
+                        "from the entry (lot resized to keep %.2f%% risk), else the fixed $%.2f stop.",
+                        InpSignalSlMinDistance, InpSignalSlMaxDistance, InpRiskPercent, InpSlDollars);
          double auditLots = PositionSizeLots();
          double slDistAudit = DollarsToPrice(InpSlDollars, InpReferenceLot);
          double riskMoney = auditLots * (slDistAudit / tickSize) * tickValue;
@@ -831,8 +850,9 @@ int FindTpLabel(const string &text, int fromPos, int &labelEnd)
 }
 
 //+------------------------------------------------------------------+
-//| "STOPLOSS" / "STOP LOSS" / "STOP-LOSS" / "S/L" / whole-word "SL"  |
-//| (parsed for the log row only - never used to size an order)       |
+//| "STOPLOSS" / "STOP LOSS" / "STOP-LOSS" / "S/L" / whole-word "SL", |
+//| else a bare "STOP" label ("Stop: 2350") - never the order type in |
+//| "BUY STOP 2350" / "SELL STOP 2350".                               |
 //+------------------------------------------------------------------+
 int FindSlLabel(const string &text, int fromPos, int &labelEnd)
 {
@@ -846,7 +866,39 @@ int FindSlLabel(const string &text, int fromPos, int &labelEnd)
    if(idx >= 0) { labelEnd = idx + 3; return(idx); }
    idx = FindWholeWord(text, "SL", fromPos);
    if(idx >= 0) { labelEnd = idx + 2; return(idx); }
+   int pos = fromPos;
+   while(true)
+   {
+      idx = FindWholeWord(text, "STOP", pos);
+      if(idx < 0) return(-1);
+      if(!PrecededByWord(text, idx, "BUY") && !PrecededByWord(text, idx, "SELL"))
+      {
+         labelEnd = idx + 4;
+         return(idx);
+      }
+      pos = idx + 4;
+   }
    return(-1);
+}
+
+//+------------------------------------------------------------------+
+//| True when `word` is the word right before idx on the same line    |
+//| (only spaces or '-' between) - "SELL STOP", "BUY-STOP".            |
+//+------------------------------------------------------------------+
+bool PrecededByWord(const string &text, int idx, const string word)
+{
+   int j = idx - 1;
+   while(j >= 0)
+   {
+      ushort ch = StringGetCharacter(text, j);
+      if(ch != ' ' && ch != '-') break;
+      j--;
+   }
+   int wlen  = StringLen(word);
+   int start = j - wlen + 1;
+   if(start < 0 || StringSubstr(text, start, wlen) != word)
+      return(false);
+   return(start == 0 || !IsWordCh(StringGetCharacter(text, start - 1)));
 }
 
 //+------------------------------------------------------------------+
@@ -891,8 +943,8 @@ bool MentionsGold(const string &upperText)
 }
 
 //+------------------------------------------------------------------+
-//| Best-effort parse. hasSl/sl/tps are logged only - never used to   |
-//| size or place an order (fixed risk - see file header).            |
+//| Best-effort parse. tps are logged only; sl is the signal's stop,  |
+//| used by TelegramStopDistance() when InpTelegramUseSignalSl.       |
 //+------------------------------------------------------------------+
 void ParseSignalText(const string &rawText, SignalMsg &msg)
 {
@@ -998,13 +1050,19 @@ double DollarsToPrice(double dollars, double volume)
 //| clamped to [SYMBOL_VOLUME_MIN, SYMBOL_VOLUME_MAX, InpMaxLotSize]    |
 //| and rounded down to the broker's own volume step.                   |
 //+------------------------------------------------------------------+
-double PositionSizeLots()
+double FixedSlDistance() { return(DollarsToPrice(InpSlDollars, InpReferenceLot)); }
+
+// slDist: the trade's stop distance in price (0 = the fixed InpSlDollars
+// stop) - a wider stop gets a smaller lot, so the trade still risks
+// InpRiskPercent of equity.
+double PositionSizeLots(double slDist = 0.0)
 {
    if(!InpUseRiskPercent)
       return(InpFixedLot);
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double slDist = DollarsToPrice(InpSlDollars, InpReferenceLot);
+   if(slDist <= 0.0)
+      slDist = FixedSlDistance();
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(equity <= 0.0 || slDist <= 0.0 || tickValue <= 0.0 || tickSize <= 0.0)
@@ -1097,13 +1155,14 @@ double OpenRiskMoney()
 //| entry's own risk fits within InpMaxDailyLossPct of the day's      |
 //| starting equity, else the reason to skip the signal.              |
 //+------------------------------------------------------------------+
-string DailyRiskBudgetReason(double newLots)
+string DailyRiskBudgetReason(double newLots, double slDist = 0.0)
 {
    if(InpMaxDailyLossPct <= 0.0 || g_dayStartEquity <= 0.0)
       return("");
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double slDist    = DollarsToPrice(InpSlDollars, InpReferenceLot);
+   if(slDist <= 0.0)
+      slDist = FixedSlDistance();
    if(tickValue <= 0.0 || tickSize <= 0.0 || slDist <= 0.0)
       return("");
 
@@ -1124,7 +1183,7 @@ string DailyRiskBudgetReason(double newLots)
 //| the broker's margin call / stop-out. Mirrors app/executor.py's      |
 //| margin_guard_reason(). Unknown margin never blocks.                 |
 //+------------------------------------------------------------------+
-string MarginGuardReason(bool isBuy, double newLots)
+string MarginGuardReason(bool isBuy, double newLots, double slDist = 0.0)
 {
    if(!InpMarginGuard || newLots <= 0.0)
       return("");
@@ -1134,7 +1193,8 @@ string MarginGuardReason(bool isBuy, double newLots)
       return("");
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double slDist    = DollarsToPrice(InpSlDollars, InpReferenceLot);
+   if(slDist <= 0.0)
+      slDist = FixedSlDistance();
    if(tickValue <= 0.0 || tickSize <= 0.0 || slDist <= 0.0)
       return("");
    double worst = OpenRiskMoney() + slDist / tickSize * tickValue * newLots;
@@ -1785,38 +1845,27 @@ void ProcessControlCommand(const string &rawText)
 }
 
 //+------------------------------------------------------------------+
-//| Places a Telegram-sourced order: LIMIT if price hasn't reached    |
-//| the zone, MARKET if already inside it, skipped if already through |
-//| it. SL is the                                                      |
-//| FIXED InpSlDollars distance, never the message's own SL. No       |
-//| broker TP (tp=0.0, sl_to_tp1 exit design - see file header).      |
+//| Where a Telegram-sourced order goes: LIMIT at the zone edge if     |
+//| price hasn't reached the zone, MARKET if already inside it; false  |
+//| (failType STALE_SKIPPED / NO_TICK) if price is already through it. |
 //+------------------------------------------------------------------+
-bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
-                       string &outOrderType, double &outOrderPrice, long &outTicket, int &outRetcode,
-                       double &outLots)
+bool PlanCopiedOrder(bool isBuy, double lowerBound, double upperBound,
+                      double &orderPrice, bool &isPending, string &failType)
 {
-   outOrderType  = "";
-   outOrderPrice = 0.0;
-   outTicket     = 0;
-   outRetcode    = 0;
-   outLots       = PositionSizeLots();
-
+   failType   = "";
+   orderPrice = 0.0;
+   isPending  = false;
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick))
    {
       Print("UnifiedTrader_EA: no tick available, cannot place order.");
-      outOrderType = "NO_TICK";
+      failType = "NO_TICK";
       return(false);
    }
-
    double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    int    digits    = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double buffer    = 3.0 * point;
    double zoneEntry = isBuy ? upperBound : lowerBound;
-   string comment   = UNIFIED_TELEGRAM_SOURCE;
-
-   double orderPrice;
-   bool   isPending;
 
    if(isBuy)
    {
@@ -1825,10 +1874,10 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
       {
          PrintFormat("UnifiedTrader_EA: BUY zone %.2f-%.2f already breached (ask=%.2f) - stale, skipping.",
                      lowerBound, upperBound, tick.ask);
-         outOrderType = "STALE_SKIPPED";
+         failType = "STALE_SKIPPED";
          return(false);
       }
-      else { orderPrice = tick.ask; isPending = false; }
+      else orderPrice = tick.ask;
    }
    else
    {
@@ -1837,14 +1886,62 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
       {
          PrintFormat("UnifiedTrader_EA: SELL zone %.2f-%.2f already breached (bid=%.2f) - stale, skipping.",
                      lowerBound, upperBound, tick.bid);
-         outOrderType = "STALE_SKIPPED";
+         failType = "STALE_SKIPPED";
          return(false);
       }
-      else { orderPrice = tick.bid; isPending = false; }
+      else orderPrice = tick.bid;
    }
-
    orderPrice = NormalizeDouble(orderPrice, digits);
-   double slDist = DollarsToPrice(InpSlDollars, InpReferenceLot);
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| The Telegram trade's stop distance (price): the signal's own stop  |
+//| when InpTelegramUseSignalSl and it is on the right side, between   |
+//| InpSignalSlMinDistance and InpSignalSlMaxDistance from orderPrice; |
+//| otherwise the fixed InpSlDollars stop. `note` says which and why.  |
+//+------------------------------------------------------------------+
+double TelegramStopDistance(const SignalMsg &msg, bool isBuy, double orderPrice, string &note)
+{
+   double fixedDist = FixedSlDistance();
+   note = "";
+   if(!InpTelegramUseSignalSl)
+      return(fixedDist);
+   if(!msg.hasSl || msg.sl <= 0.0)
+   {
+      note = StringFormat("no stop in the signal - fixed $%.2f stop", fixedDist);
+      return(fixedDist);
+   }
+   double dist = isBuy ? orderPrice - msg.sl : msg.sl - orderPrice;
+   if(dist <= 0.0)
+   {
+      note = StringFormat("signal stop %.2f is on the wrong side of the entry %.2f - fixed $%.2f stop",
+                          msg.sl, orderPrice, fixedDist);
+      return(fixedDist);
+   }
+   if(dist < InpSignalSlMinDistance || dist > InpSignalSlMaxDistance)
+   {
+      note = StringFormat("signal stop %.2f is $%.2f from the entry (allowed $%.2f-$%.2f) - fixed $%.2f stop",
+                          msg.sl, dist, InpSignalSlMinDistance, InpSignalSlMaxDistance, fixedDist);
+      return(fixedDist);
+   }
+   note = StringFormat("signal stop %.2f ($%.2f from the entry)", msg.sl, dist);
+   return(dist);
+}
+
+//+------------------------------------------------------------------+
+//| Sends the planned Telegram order: stop slDist from orderPrice, the |
+//| lot already sized from that stop (PositionSizeLots(slDist)). No    |
+//| broker TP (tp=0.0, lock-then-trail exit design - see file header). |
+//+------------------------------------------------------------------+
+bool PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDist, double lots,
+                       string &outOrderType, long &outTicket, int &outRetcode)
+{
+   outOrderType = "";
+   outTicket    = 0;
+   outRetcode   = 0;
+   int    digits  = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   string comment = UNIFIED_TELEGRAM_SOURCE;
    if(slDist <= 0.0)
    {
       // DollarsToPrice() returns 0.0 if the broker isn't fully quoting tick
@@ -1854,23 +1951,21 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
       // fixed-risk design this whole EA depends on. Refuse instead, exactly
       // like ManagePositionExit() already refuses to touch a position under
       // the same condition.
-      Print("UnifiedTrader_EA: DollarsToPrice() returned 0 (tick value/size not available yet) - "
+      Print("UnifiedTrader_EA: stop distance is 0 (tick value/size not available yet) - "
             "refusing to place an order with an undefined stop-loss distance.");
       outOrderType = "NO_TICK_VALUE";
       return(false);
    }
-   double sl = isBuy ? orderPrice - slDist : orderPrice + slDist;
-   sl = NormalizeDouble(sl, digits);
+   double sl = NormalizeDouble(isBuy ? orderPrice - slDist : orderPrice + slDist, digits);
    double tp = 0.0;   // no broker TP - see file header's shared exit design
 
-   outOrderType  = isPending ? "LIMIT" : "MARKET";
-   outOrderPrice = orderPrice;
+   outOrderType = isPending ? "LIMIT" : "MARKET";
 
    if(InpDryRun)
    {
       PrintFormat("UnifiedTrader_EA: [DRY-RUN] would place %s %s %.2f lots @ %.2f sl=%.2f "
                   "(no broker TP - locks at $%.2f via SL)",
-                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", outLots, orderPrice, sl,
+                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", lots, orderPrice, sl,
                   InpTp1Dollars);
       return(true);
    }
@@ -1878,11 +1973,11 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
    trade.SetExpertMagicNumber(InpTelegramMagicNumber);
    bool ok;
    if(isPending)
-      ok = isBuy ? trade.BuyLimit(outLots, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)
-                 : trade.SellLimit(outLots, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
+      ok = isBuy ? trade.BuyLimit(lots, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)
+                 : trade.SellLimit(lots, orderPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
    else
-      ok = isBuy ? trade.Buy(outLots, _Symbol, orderPrice, sl, tp, comment)
-                 : trade.Sell(outLots, _Symbol, orderPrice, sl, tp, comment);
+      ok = isBuy ? trade.Buy(lots, _Symbol, orderPrice, sl, tp, comment)
+                 : trade.Sell(lots, _Symbol, orderPrice, sl, tp, comment);
 
    outRetcode = (int)trade.ResultRetcode();
    outTicket  = (long)trade.ResultOrder();
@@ -1892,7 +1987,7 @@ bool PlaceCopiedOrder(bool isBuy, double lowerBound, double upperBound,
       g_tradesToday++;
       SaveDayState();
       PrintFormat("UnifiedTrader_EA: %s %s placed - %.2f lots @ %.2f sl=%.2f ticket=%I64u",
-                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", outLots, orderPrice, sl,
+                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", lots, orderPrice, sl,
                   outTicket);
    }
    else
@@ -2083,7 +2178,7 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
                    double entryLow, double entryHigh, const string &tpsJoined,
                    bool sanityPass, const string &sanityReason, bool accepted,
                    const string &orderType, double orderPrice, double lots, bool dryRun,
-                   long orderTicket, int retcode, const string &rawText)
+                   long orderTicket, int retcode, const string &rawText, double slUsed = 0.0)
 {
    int handle = TsmcOpenCsvForAppend(TSMC_SIGNALS_FILE, TSMC_SIGNALS_HEADER, false);
    if(handle == INVALID_HANDLE) return;
@@ -2096,7 +2191,7 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
                  (symbolOk ? "1" : "0") + "," +
                  DoubleToString(entryLow, 2) + "," +
                  DoubleToString(entryHigh, 2) + "," +
-                 DoubleToString(0.0, 2) + "," +                        // sl - not applicable, see header
+                 DoubleToString(slUsed, 2) + "," +                     // the stop the order was sent with (0 = none sent)
                  TsmcCsvField(tpsJoined) + "," +
                  "0" + "," +                                           // smc_used - never true here
                  "0" + "," +                                           // smc_pass - not applicable
@@ -2121,8 +2216,10 @@ void LogSignalRow(long chatId, const string &action, const string &direction, bo
 //| Dispatch a parsed signal. OPEN signals: allow-list, staleness      |
 //| (checked in TelegramPoll), symbol, direction, daily cap, the       |
 //| SHARED position cap, entry price, and price-deviation-from-zone    |
-//| - then straight to PlaceCopiedOrder. NO SMC check, NO message-SL   |
-//| check (see file header for why). CLOSE/CANCEL still supported;     |
+//| - then the order plan, its stop (TelegramStopDistance), the lot    |
+//| sized from that stop, the daily budget and the margin guard with   |
+//| that stop and lot, and PlaceCopiedOrder. NO SMC check. CLOSE/CANCEL|
+//| still supported;                                                   |
 //| a breakeven ("move SL to breakeven") message is deliberately NOT   |
 //| recognized here - see file header's "OUT OF SCOPE".                |
 //+------------------------------------------------------------------+
@@ -2237,14 +2334,6 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
                    true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
-   string budgetReason = DailyRiskBudgetReason(PositionSizeLots());
-   if(budgetReason != "")
-   {
-      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", budgetReason);
-      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
-                   true, budgetReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
-      return;
-   }
    string newsDesc;
    if(InpNewsFilter && EconNewsBlock(InpNewsCurrencies, (int)InpNewsMinImportance,
                                      InpNewsBlockBeforeMin, InpNewsBlockAfterMin, newsDesc))
@@ -2262,14 +2351,6 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       PrintFormat("UnifiedTrader_EA: %s - skipping signal.", r);
       LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
                    true, r, false, "", 0, 0, InpDryRun, 0, 0, rawText);
-      return;
-   }
-   string marginReason = MarginGuardReason(msg.direction == DIR_BUY, PositionSizeLots());
-   if(marginReason != "")
-   {
-      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", marginReason);
-      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, msg.entryA, msg.entryB, tpList,
-                   true, marginReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
       return;
    }
    int sameDir = CountSameDirection(msg.direction);
@@ -2318,32 +2399,66 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       return;
    }
 
-   PrintFormat("UnifiedTrader_EA: executing %s XAUUSD %.2f-%.2f from chat %I64d - NO SMC validation, "
-               "fixed $%.2f SL/$%.2f lock/$%.2f trail (signal's own SL/TPs logged only, not used: "
-               "sl=%s tps=%s)",
-               isBuy ? "BUY" : "SELL", lowerBound, upperBound, chatId, InpSlDollars, InpTp1Dollars,
-               InpTrailDollars, msg.hasSl ? DoubleToString(msg.sl, 2) : "none",
-               msg.tpCount > 0 ? tpList : "none");
-
-   string outOrderType  = "";
-   double outOrderPrice = 0.0;
-   long   outTicket     = 0;
-   int    outRetcode    = 0;
-   double outLots       = 0.0;
-   bool   placed = PlaceCopiedOrder(isBuy, lowerBound, upperBound,
-                                     outOrderType, outOrderPrice, outTicket, outRetcode, outLots);
-   string notPlaced = "";
-   if(!placed)
+   // Where the order goes, its stop (the signal's or the fixed one) and the
+   // lot sized from that stop - then the daily budget and the margin guard
+   // are checked with exactly that stop and lot.
+   double orderPrice;
+   bool   isPending;
+   string planFail;
+   if(!PlanCopiedOrder(isBuy, lowerBound, upperBound, orderPrice, isPending, planFail))
    {
-      if(outOrderType == "STALE_SKIPPED")      notPlaced = "price already beyond the zone (stale)";
-      else if(outOrderType == "REJECTED")      notPlaced = StringFormat("order rejected by broker (retcode %d)", outRetcode);
-      else if(outOrderType == "NO_TICK_VALUE") notPlaced = "tick value not available yet";
-      else                                     notPlaced = "no price available";
+      string r = (planFail == "STALE_SKIPPED") ? "price already beyond the zone (stale)" : "no price available";
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
+                   true, r, false, planFail, 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   string stopNote;
+   double slDist = TelegramStopDistance(msg, isBuy, orderPrice, stopNote);
+   double lots   = PositionSizeLots(slDist);
+
+   string budgetReason = DailyRiskBudgetReason(lots, slDist);
+   if(budgetReason != "")
+   {
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", budgetReason);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
+                   true, budgetReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
+   }
+   string marginReason = MarginGuardReason(isBuy, lots, slDist);
+   if(marginReason != "")
+   {
+      PrintFormat("UnifiedTrader_EA: %s - skipping signal.", marginReason);
+      LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
+                   true, marginReason, false, "", 0, 0, InpDryRun, 0, 0, rawText);
+      return;
    }
 
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double slUsed = NormalizeDouble(isBuy ? orderPrice - slDist : orderPrice + slDist, digits);
+   PrintFormat("UnifiedTrader_EA: executing %s XAUUSD %.2f-%.2f from chat %I64d - NO SMC validation, "
+               "stop %.2f (%s), %.2f lots, $%.2f lock/$%.2f trail (signal TPs logged only: %s)",
+               isBuy ? "BUY" : "SELL", lowerBound, upperBound, chatId, slUsed,
+               stopNote != "" ? stopNote : StringFormat("fixed $%.2f", slDist), lots,
+               InpTp1Dollars, InpTrailDollars, msg.tpCount > 0 ? tpList : "none");
+
+   string outOrderType  = "";
+   long   outTicket     = 0;
+   int    outRetcode    = 0;
+   bool   placed = PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lots,
+                                     outOrderType, outTicket, outRetcode);
+   string reason = "";
+   if(!placed)
+   {
+      if(outOrderType == "REJECTED")           reason = StringFormat("order rejected by broker (retcode %d)", outRetcode);
+      else if(outOrderType == "NO_TICK_VALUE") reason = "tick value not available yet";
+      else                                     reason = "no price available";
+   }
+   else
+      reason = "stop: " + (stopNote != "" ? stopNote : StringFormat("fixed $%.2f", slDist));
+
    LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
-                true, notPlaced, placed, outOrderType, outOrderPrice, outLots, InpDryRun,
-                outTicket, outRetcode, rawText);
+                true, reason, placed, outOrderType, orderPrice, placed ? lots : 0.0, InpDryRun,
+                outTicket, outRetcode, rawText, placed ? slUsed : 0.0);
 }
 
 //+------------------------------------------------------------------+

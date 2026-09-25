@@ -16,6 +16,7 @@ and troubleshooting are in [`REFERENCE.md`](REFERENCE.md).
 | Claude trades when | 2 of 3 checks agree (1 confirmed) **and** Claude says `full` | `app/config.py` |
 | Risk per trade | 2% of equity | EA + `app/config.py` |
 | Stop / lock / trail | $6 SL, locked at +$6, then trailed $3 (at the 0.01 reference lot) | EA + `app/config.py` |
+| Telegram stop | the signal's own stop when $3-$20 from the entry (lot resized to keep 2% risk), else $6 | EA `InpTelegramUseSignalSl=true`, `InpSignalSlMinDistance=3.0`, `InpSignalSlMaxDistance=20.0` |
 | Positions | max 5 per direction, both sources together | EA + `app/config.py` |
 | Daily loss cap | 10% of the day's starting equity | EA + `app/config.py` |
 | Magic numbers | Claude 20260921, Telegram 20260922 | EA + `start.bat` |
@@ -76,6 +77,7 @@ use for `InpChannelId1` (the relay group, e.g. `-1001234567890`). Run
 4. Fill in `InpBotToken`, `InpControlChatId` (your chat id) and `InpChannelId1` (the relay group id).
 5. Check the preset loaded:
    - `InpTradeHours=06:00-23:00`, `InpTradeUtcOffsetHours=4.0`, `InpTradeWeekdaysOnly=true`
+   - `InpTelegramUseSignalSl=true`, `InpSignalSlMinDistance=3.0`, `InpSignalSlMaxDistance=20.0`
    - `InpRiskPercent=2.0`, `InpSlDollars=6.0`, `InpTp1Dollars=6.0`, `InpTrailDollars=3.0`, `InpMaxPositionsPerDirection=5`, `InpMaxDailyLossPct=10.0`
    - `InpTelegramMagicNumber=20260922`, `InpClaudeMagicNumber=20260921`
 6. **Common** tab -> tick **Allow DLL imports** -> **OK**.

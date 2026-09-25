@@ -2,6 +2,9 @@
 ; Chart > EA Inputs > Load. Then fill in InpBotToken, InpControlChatId and
 ; InpChannelId1 (2/3) - see GoldTrader/README.md.
 ;
+; Telegram entries: the signal's own stop when it is $3-$20 from the entry (lot
+; resized to keep the 2% risk), else the fixed $6 stop (InpTelegramUseSignalSl).
+;
 ; Ships with BOTH sources on (Telegram signals + managing Claude's trades)
 ; and InpDryRun=true (nothing is sent until you set it false). Everything
 ; here already matches GoldTrader/app/config.py: magic numbers, $6 SL /
@@ -70,6 +73,9 @@ InpTradeUtcOffsetHours=4.0
 InpTradeWeekdaysOnly=true
 InpPendingExpiryMin=240
 InpMaxEntryDeviationPips=200.0
+InpTelegramUseSignalSl=true
+InpSignalSlMinDistance=3.0
+InpSignalSlMaxDistance=20.0
 InpControlChatId=0
 InpLastVerdictFilename=claudesmc_last_verdict.txt
 InpClaudePauseFilename=claudesmc_pause.txt

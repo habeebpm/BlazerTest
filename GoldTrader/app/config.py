@@ -138,6 +138,14 @@ class AdvisorConfig:
     telegram_trade_windows: str = "06:00-23:00"
     telegram_utc_offset_hours: float = 4.0            # Oman, no daylight saving
     telegram_weekdays_only: bool = True
+    # Telegram entries' stop (EA InpTelegramUseSignalSl / InpSignalSlMinDistance /
+    # InpSignalSlMaxDistance - mirrored here for the dashboard and the self-test;
+    # the EA enforces it): the signal's own stop when it is $3-$20 (price) from the
+    # entry, the lot resized so the trade still risks risk_percent; otherwise the
+    # fixed sl_dollars stop. Claude's entries always use the fixed stop.
+    telegram_use_signal_sl: bool = True
+    signal_sl_min_distance: float = 3.0
+    signal_sl_max_distance: float = 20.0
     display_timezone: str = "Asia/Muscat"             # the owner's clock, for the dashboard (Oman)
     # Trade journal (trade_journal.py): every closed trade of both sources, Claude's
     # decisions and the Telegram signal log as CSV files, copied into this folder

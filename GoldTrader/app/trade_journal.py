@@ -35,14 +35,15 @@ EVERY_SECONDS = 300
 TRADES_FILE = "GoldTrader_trades.csv"
 DECISIONS_FILE = "GoldTrader_claude_decisions.csv"
 SIGNALS_FILE = "GoldTrader_telegram_signals.csv"
-# An exit on the stop between these R values can't be the EA's own stop: it
-# opens at -1R and only ever moves it to +1R (the lock) or beyond. Slippage
-# on either is allowed for.
-HAND_MOVED_R = (-0.8, 0.7)
+# An exit on the stop between these points can't be the EA's own stop: it
+# opens at -1R (the first stop) and only ever moves it to the +$6 lock or
+# beyond. As fractions of the first stop's and the lock's distance, so
+# slippage on either is allowed for.
+HAND_MOVED = (0.8, 0.7)
 
 COLUMNS = ["ticket", "source", "direction", "lots", "open_time_utc", "close_time_utc",
            "open_time_local", "close_time_local", "minutes_open", "entry_price", "exit_price",
-           "initial_sl", "exit_reason", "move", "result_r", "profit", "swap", "commission",
+           "initial_sl", "stop_distance", "exit_reason", "move", "result_r", "profit", "swap", "commission",
            "net_pnl", "note"]
 
 _state = {"last": 0.0, "warned": set()}
@@ -54,17 +55,24 @@ def _warn_once(key: str, text: str, *args) -> None:
         log.warning(text, *args)
 
 
-def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str) -> list:
-    """journal_positions() output -> CSV rows. `sl_distance` is the price
-    distance of the fixed stop ($6 at the reference lot) - 1R."""
+def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str,
+               lock_distance: float = 0.0) -> list:
+    """journal_positions() output -> CSV rows. 1R is each trade's own first
+    stop (a Telegram signal's stop, or the fixed one); `sl_distance` - the
+    fixed stop's price distance - when the first stop isn't known.
+    `lock_distance`: the +$6 lock's price distance (default: sl_distance)."""
     zone = ZoneInfo(local_zone)
+    lock = lock_distance or sl_distance
     out = []
     for p in positions:
         sign = 1.0 if p["direction"] == "buy" else -1.0
         move = sign * (p["exit_price"] - p["entry_price"]) if p["entry_price"] and p["exit_price"] else 0.0
-        r = move / sl_distance if sl_distance > 0 else 0.0
+        risk = abs(p["entry_price"] - p["initial_sl"]) if p.get("initial_sl") and p["entry_price"] else 0.0
+        risk = risk or sl_distance
+        r = move / risk if risk > 0 else 0.0
         note = ""
-        if p["exit_reason"] == "stop loss" and HAND_MOVED_R[0] < r < HAND_MOVED_R[1]:
+        if (p["exit_reason"] == "stop loss" and risk > 0
+                and -HAND_MOVED[0] * risk < move < HAND_MOVED[1] * lock):
             note = "stop moved by hand"
         opened, closed = p.get("open_time"), p.get("close_time")
         out.append({
@@ -80,6 +88,7 @@ def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str
             "entry_price": round(p["entry_price"], 2),
             "exit_price": round(p["exit_price"], 2),
             "initial_sl": round(p["initial_sl"], 2) if p.get("initial_sl") else "",
+            "stop_distance": round(risk, 2),
             "exit_reason": p["exit_reason"],
             "move": round(move, 2),
             "result_r": round(r, 2),
@@ -147,10 +156,12 @@ def build(gateway, cfg, spec) -> dict:
     names = status_report.source_magics(cfg)
     try:
         sl_distance = gateway.price_distance_for_dollars(spec, cfg.sl_dollars, cfg.reference_lot)
+        lock_distance = gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.reference_lot)
     except Exception:
-        sl_distance = 0.0
+        sl_distance = lock_distance = 0.0
     positions = gateway.journal_positions(cfg.symbol, list(names))
-    files[TRADES_FILE] = to_csv(trade_rows(positions, names, sl_distance, cfg.display_timezone), COLUMNS)
+    files[TRADES_FILE] = to_csv(trade_rows(positions, names, sl_distance, cfg.display_timezone,
+                                           lock_distance), COLUMNS)
     decisions = status_report.read_text(os.path.join(cfg.log_dir, "decisions.csv"))
     if decisions:
         files[DECISIONS_FILE] = decisions.replace("\r\n", "\n")

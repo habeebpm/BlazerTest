@@ -8,8 +8,9 @@ advance, so a good or bad week is never over-read.
     Telegram trades  magic 20260922
     Combined
 
-For each: trades, win %, net P&L, average result in R (1R = the $6 stop at
-the 0.01 reference lot, i.e. the risk of the trade), profit factor, worst
+For each: trades, win %, net P&L, average result in R (1R = the risk of the
+trade: the stop it was opened with - the $6 stop, or a Telegram signal's own
+stop), profit factor, worst
 drawdown in R, and the bootstrap chance that the true average trade is zero
 or worse. Verdict rules (decided before any demo trade, never tuned on it):
 
@@ -41,12 +42,14 @@ log = logging.getLogger("scorecard")
 def summarize(trades: list, per_price: float, sl_dist: float, seed: int = 7) -> dict:
     """trades: dicts with pnl_dollars and volume, oldest first. per_price =
     account money per 1.0 price move per lot (tick_value / tick_size);
-    sl_dist = the stop's price distance (sl_dollars at the reference lot)."""
+    sl_dist = the fixed stop's price distance (sl_dollars at the reference
+    lot) - 1R for a trade without its own risk_distance (a Telegram trade
+    opened with the signal's stop is measured against that stop)."""
     n = len(trades)
     if n == 0:
         return {"trades": 0}
-    r = [t["pnl_dollars"] / (t["volume"] * per_price * sl_dist) if t["volume"] > 0 else 0.0
-         for t in trades]
+    r = [t["pnl_dollars"] / (t["volume"] * per_price * (t.get("risk_distance") or sl_dist))
+         if t["volume"] > 0 else 0.0 for t in trades]
     wins = [x for x in trades if x["pnl_dollars"] > 0]
     gross_win = sum(x["pnl_dollars"] for x in wins)
     gross_loss = -sum(x["pnl_dollars"] for x in trades if x["pnl_dollars"] <= 0)
