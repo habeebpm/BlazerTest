@@ -1,4 +1,4 @@
-﻿<%@ Page Language="vb" AutoEventWireup="false" CodeBehind="SmartDDRDashboard.aspx.vb" Inherits="SmarTagsASP.SmartDDRDashboard" %>
+﻿<%@ Page Language="vb" AutoEventWireup="false" CodeBehind="SmartDDRDashboard.aspx.vb" Inherits="SmarTagsASP.SmartDDRDashboard" EnableSessionState="false" EnableViewState="false" %>
 
 <!DOCTYPE html>
 <html lang="en">
@@ -448,11 +448,14 @@
         function groupBy(arr, f) { var m = new Map(); arr.forEach(function (r) { var k = f(r); if (k == null || k === '') k = '(Blank)'; if (!m.has(k)) m.set(k, []); m.get(k).push(r); }); return m; }
         function median(a) { if (!a.length) return null; var s = a.slice().sort(function (x, y) { return x - y; }); var h = s.length >> 1; return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2; }
         function avg(a) { return a.length ? a.reduce(function (x, y) { return x + y; }, 0) / a.length : null; }
+        // One shared collator: localeCompare(…, options) builds a new collator per call and was the
+        // bottleneck when sorting ~50k document numbers.
+        var COLL = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
         function discSort(a, b) {
             var na = parseInt(a, 10), nb = parseInt(b, 10);
             if (!isNaN(na) && !isNaN(nb) && na !== nb) return na - nb;
             if (!isNaN(na) && isNaN(nb)) return -1; if (isNaN(na) && !isNaN(nb)) return 1;
-            return String(a).localeCompare(String(b), undefined, { numeric: true });
+            return COLL.compare(String(a), String(b));
         }
         function store(k, v) { try { if (v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); } catch (e) { return null; } return null; }
         function statusOf(level, text) { return '<span class="status ' + level + '"><i></i>' + esc(text) + '</span>'; }
@@ -695,7 +698,7 @@
             rows.forEach(function (r) { var v = FIELDS[key].get(r); v = (v == null || v === '') ? '' : String(v); counts.set(v, (counts.get(v) || 0) + 1); });
             var cur = S.filters[key];
             if (cur && cur.vals) cur.vals.forEach(function (v) { if (!counts.has(v)) counts.set(v, 0); });
-            var values = Array.from(counts.keys()).sort(key === 'disc' ? discSort : function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
+            var values = Array.from(counts.keys()).sort(key === 'disc' ? discSort : function (a, b) { return COLL.compare(a, b); });
             popState = { key: key, values: values, counts: counts, sel: new Set(cur && cur.vals ? cur.vals : values), search: '', dir: 1 };
             var p = $('pop');
             p.innerHTML =
@@ -1628,7 +1631,7 @@
                 var x = c.v(a), y = c.v(b);
                 if (x == null || x === '') return (y == null || y === '') ? 0 : 1;
                 if (y == null || y === '') return -1;
-                return (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true })) * dir;
+                return (typeof x === 'number' && typeof y === 'number' ? x - y : COLL.compare(String(x), String(y))) * dir;
             });
         }
         function regCell(c, r) { var v = c.v(r); if (v == null) return ''; if (c.day) return fmtDay(v); if (c.dec) return fmt1(v); return v; }
