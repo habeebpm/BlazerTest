@@ -220,7 +220,8 @@ clock (Python and the EA alike), so keep Windows time synced (Settings -> Time -
 ## Trade journal in Google Drive
 
 Every 5 minutes the trading program writes three CSV files into
-`logs\journal` and copies them to `G:\MyDrive\MyMQChartDrive\GoldTrader`
+`logs\journal` and copies them to `MyMQChartDrive\GoldTrader` in your Google Drive
+(found by itself: `G:\My Drive\...` or `G:\MyDrive\...`, any drive letter)
 (created if `MyMQChartDrive` exists; Drive for Desktop uploads them). Only a
 file that changed is rewritten.
 

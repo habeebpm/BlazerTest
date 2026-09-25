@@ -4489,6 +4489,22 @@ def test_trade_journal() -> bool:
                     and sig == "time_utc,action\n2026-09-25,OPEN\n", sig)
         ok &= check("unchanged content is not rewritten (Drive uploads only real changes)",
                     TJ.write_all(g, cfg, None) == [])
+        auto_base = os.path.join(d, "G", "My Drive", "MyMQChartDrive")
+        os.makedirs(auto_base)
+        real_candidates = TJ.drive_candidates
+        TJ.drive_candidates = lambda: [os.path.join(d, "G", "MyDrive", "MyMQChartDrive"), auto_base]
+        TJ._state.pop("found", None)
+        TJ._state["next_scan"] = 0.0
+        try:
+            cfg.journal_folder = "auto"
+            TJ.write_all(g, cfg, None)
+        finally:
+            TJ.drive_candidates = real_candidates
+            TJ._state.pop("found", None)
+            TJ._state["next_scan"] = 0.0
+        ok &= check("'auto' finds MyMQChartDrive under 'My Drive' (with a space) and writes to its "
+                    "GoldTrader subfolder",
+                    os.path.exists(os.path.join(auto_base, "GoldTrader", TJ.TRADES_FILE)))
         cfg.journal_folder = os.path.join(d, "no-such-drive", "GoldTrader")
         TJ._state["warned"].clear()
         TJ.write_all(g, cfg, None)

@@ -1,7 +1,7 @@
 """
 Trade journal for analysis: CSV files written by main.py's loop every few
 minutes and copied into config.journal_folder, a Google Drive for Desktop
-folder (default G:\\MyDrive\\MyMQChartDrive\\GoldTrader), so they can be read
+folder (default "auto": MyMQChartDrive\\GoldTrader wherever Drive shows it), so they can be read
 straight from Drive instead of being uploaded by hand:
 
     GoldTrader_trades.csv            every closed trade, both sources, from MT5's
@@ -32,6 +32,7 @@ import tactics
 log = logging.getLogger("journal")
 
 EVERY_SECONDS = 300
+RESCAN_SECONDS = 1800        # "auto": look for the Drive folder again at most this often
 TRADES_FILE = "GoldTrader_trades.csv"
 DECISIONS_FILE = "GoldTrader_claude_decisions.csv"
 SIGNALS_FILE = "GoldTrader_telegram_signals.csv"
@@ -132,11 +133,54 @@ def write_if_changed(path: str, text: str) -> bool:
     return True
 
 
+DRIVE_FOLDER = "MyMQChartDrive"      # the Drive folder the EA's price files already go to
+SUBFOLDER = "GoldTrader"
+
+
+def drive_candidates() -> list:
+    """Where Google Drive for Desktop shows MyMQChartDrive on Windows:
+    <letter>:\\My Drive\\MyMQChartDrive (Google's own name, with a space) or
+    <letter>:\\MyDrive\\MyMQChartDrive, G: first."""
+    if os.name != "nt":
+        return []
+    letters = "GHIJKLMNOPQRSTUVWXYZDEF"
+    listdrives = getattr(os, "listdrives", None)          # Python 3.12+ on Windows
+    if listdrives is not None:
+        try:
+            present = {d[0].upper() for d in listdrives()}
+            letters = [x for x in letters if x in present]
+        except OSError:
+            pass
+    return [f"{letter}:\\{root}\\{DRIVE_FOLDER}" for letter in letters for root in ("My Drive", "MyDrive")]
+
+
 def target_folder(cfg) -> str:
-    """The Drive folder to copy into, created when its parent exists; "" when
-    off or not reachable (said once in the log)."""
+    """The Drive folder to copy into; "" when off or not reachable (said
+    once in the log). "auto": the GoldTrader subfolder of MyMQChartDrive,
+    wherever Drive for Desktop shows it; otherwise the given path, created
+    when its parent exists."""
     folder = (cfg.journal_folder or "").strip()
     if not folder:
+        return ""
+    if folder.lower() == "auto":
+        known = _state.get("found")
+        if known and os.path.isdir(known):
+            return known
+        if time.time() < _state.get("next_scan", 0.0):      # not found lately: look again later
+            return ""
+        _state["next_scan"] = time.time() + RESCAN_SECONDS
+        for base in drive_candidates():
+            if os.path.isdir(base):
+                found = os.path.join(base, SUBFOLDER)
+                os.makedirs(found, exist_ok=True)
+                if _state.get("found") != found:
+                    _state["found"] = found
+                    log.info("Trade journal: Google Drive folder found - %s", found)
+                return found
+        _warn_once("auto", "Trade journal: no Google Drive folder %s found (looked for "
+                   "G:\\My Drive\\%s and other drive letters) - is Google Drive for Desktop running? "
+                   "The journal stays in the logs folder; or set the folder with "
+                   "--journal-folder \"X:\\path\" in start.bat.", DRIVE_FOLDER, DRIVE_FOLDER)
         return ""
     if os.path.isdir(folder):
         return folder
@@ -213,5 +257,6 @@ def describe(cfg) -> str:
     """One line for the start-up log."""
     folder = (cfg.journal_folder or "").strip()
     zone = tactics.ZONE_LABELS.get(cfg.display_timezone, cfg.display_timezone)
-    return (f"Trade journal every {EVERY_SECONDS // 60} min -> "
-            f"{folder or 'logs only'} (local times: {zone})")
+    where = ("Google Drive " + DRIVE_FOLDER + "\\" + SUBFOLDER + " (found automatically)"
+             if folder.lower() == "auto" else folder or "logs only")
+    return f"Trade journal every {EVERY_SECONDS // 60} min -> {where} (local times: {zone})"

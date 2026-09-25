@@ -109,7 +109,7 @@ real account, keep the same settings, start small.
 itself): answer **n** to the relay in Step 2, then set `InpChannelId1` to the
 channel's id (the EA's **Experts** tab shows it as `message from chat <id>`).
 
-**Price files to Google Drive:** already copied to `G:\MyDrive\MyMQChartDrive`.
+**Price files to Google Drive:** already copied to `G:\My Drive\MyMQChartDrive`.
 If your Drive folder path is different, change `InpXtrExportCopyTo`; to turn
 it off, leave it empty.
 
@@ -120,7 +120,7 @@ Equity, open trades, results per source, Claude's decisions, Telegram
 signals and the scorecard, refreshed every minute. Read-only.
 
 **Trade journal in Google Drive:** automatic. Every few minutes
-`start.bat` writes three CSV files into `G:\MyDrive\MyMQChartDrive\GoldTrader`
+`start.bat` writes three CSV files into `G:\My Drive\MyMQChartDrive\GoldTrader`
 (your Drive folder): every closed trade of both sources, Claude's decisions
 and the Telegram signal log. Ask Claude to analyse them straight from Drive -
 no uploading. Different Drive path: `--journal-folder "X:\path"` in

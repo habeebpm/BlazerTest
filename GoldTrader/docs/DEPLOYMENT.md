@@ -202,7 +202,7 @@ one good week.
 | What | Check |
 |---|---|
 | Telegram trades use the signal's own stop ($3-$20 away), lot resized to keep 2% risk | EA inputs `InpTelegramUseSignalSl=true`, `InpSignalSlMinDistance=3.0`, `InpSignalSlMaxDistance=20.0`; Experts tab at start: "Telegram entries use the signal's own stop ..." |
-| Trade journal in Google Drive | `start.bat` log: `Trade journal every 5 min -> G:\MyDrive\MyMQChartDrive\GoldTrader`; the folder appears in Drive within minutes |
+| Trade journal in Google Drive | `start.bat` log: `Trade journal every 5 min -> Google Drive MyMQChartDrive\GoldTrader (found automatically)`, then `Trade journal: Google Drive folder found - G:\My Drive\MyMQChartDrive\GoldTrader`; the folder appears in Drive within minutes |
 | Dashboard shows the stop used on each copied signal | Signals tab: "stop: signal stop ..." or "stop: fixed $6.00" |
 
 ## 12. What stays on your PC only

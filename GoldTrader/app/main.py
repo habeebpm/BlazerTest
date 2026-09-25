@@ -848,9 +848,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="no new entry on Friday from this New York time (e.g. 16:00; "
                              "'off' = none)")
     parser.add_argument("--journal-folder", dest="journal_folder",
-                        help="copy the trade journal CSVs into this folder every few minutes (default: "
-                             "config.py's journal_folder, the Google Drive folder "
-                             "G:\\MyDrive\\MyMQChartDrive\\GoldTrader; 'off' = keep them in logs only)")
+                        help="copy the trade journal CSVs into this folder every few minutes (default "
+                             "'auto': Google Drive's MyMQChartDrive\\GoldTrader, found by itself; "
+                             "'off' = keep them in logs only)")
     parser.add_argument("--max-spread", type=int, dest="max_spread",
                         help="no entry while the spread is above this many points (0 = off)")
     parser.add_argument("--min-adx", type=float, dest="min_adx",
@@ -926,14 +926,12 @@ def main(argv: list | None = None) -> int:
         log.error("Setting not understood: %s - fix it in start.bat (GT_ARGS) and start again.", exc)
         return SETTINGS_ERROR
     if cfg.shared_cap_magic_numbers:
-        log.warning(
-            "shared_cap_magic_numbers=%s is set - this only folds those magics' positions into THIS "
-            "process's own count_same_direction() check. The other side (UnifiedTrader_EA.mq5's own "
-            "InpMaxPositionsPerDirection) is a SEPARATE number in a separate file - it must be set to "
-            "the SAME value as --max-positions/max_open_positions_per_direction (%d) or the 'shared' "
-            "cap silently becomes asymmetric (whichever side has the lower number stops first, the "
-            "other keeps opening past it). Nothing here can verify that for you - check it by hand.",
-            cfg.shared_cap_magic_numbers, cfg.max_open_positions_per_direction)
+        # The EA counts the same cap with its own InpMaxPositionsPerDirection -
+        # the preset carries the same number (checked by goldtrader.py test);
+        # only a hand-edited EA input can make the two differ.
+        log.info("Shared position cap: %d per direction, Claude + Telegram (magic %s) together - EA input "
+                 "InpMaxPositionsPerDirection must also be %d.", cfg.max_open_positions_per_direction,
+                 ", ".join(str(m) for m in cfg.shared_cap_magic_numbers), cfg.max_open_positions_per_direction)
 
     if args.test_feeds:
         return report_feeds(cfg)
