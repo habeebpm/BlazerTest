@@ -14,6 +14,7 @@ GoldTrader launcher - everything runs from this folder.
     python goldtrader.py once           one evaluation cycle (dry-run)
     python goldtrader.py start [options]      the trading program (+ settings.ini companions)
     python goldtrader.py backtest [options]
+    python goldtrader.py replay-signals [--months 3]   your signal provider's past messages, replayed
     python goldtrader.py scorecard      real demo/live results of both sources + verdict
     python goldtrader.py xtr-export [options] e.g. --check (VPS Drive upload test)
     python goldtrader.py dashboard-password   set the web dashboard's password (dashboard/)
@@ -264,6 +265,7 @@ def run_forever(cwd: str, script: str, args, sleep=None, max_runs=None) -> int:
 
 
 PASSTHROUGH = {"start": (APP_DIR, "main.py"), "backtest": (APP_DIR, "backtest.py"),
+               "replay-signals": (APP_DIR, "signal_replay.py"),
                "scorecard": (APP_DIR, "scorecard.py"), "xtr-export": (DRIVE_DIR, "xtr_export.py")}
 
 
@@ -292,7 +294,7 @@ def main(argv=None) -> int:
         sub.add_parser(name)
     p = sub.add_parser("test-news")
     p.add_argument("direction", choices=["buy", "sell"])
-    for name in ("start", "backtest", "scorecard", "xtr-export"):
+    for name in ("start", "backtest", "replay-signals", "scorecard", "xtr-export"):
         p = sub.add_parser(name)
         p.add_argument("rest", nargs=argparse.REMAINDER)
     args = ap.parse_args(argv)

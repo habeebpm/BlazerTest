@@ -4523,6 +4523,97 @@ def test_trade_journal() -> bool:
     return ok
 
 
+def test_signal_replay() -> bool:
+    print("\n=== 45. signal-history replay (the EA's parser and rules on past messages) ===")
+    import ea_signal_parser as EP
+    import signal_replay as SR
+    ok = True
+    cases = {
+        "Gold Short Zone:4328.3-4338.3\n\nStop: 4342.3\n\nTarget 1: 4324.3\nTarget 2: 4320": ("sell", 4328.3, 4338.3, 4342.3),
+        "XAUUSD SELL STOP 2350 SL 2360 TP 2340": ("sell", 2350.0, 0.0, 2360.0),
+        "Gold sell stop 4330\nStop: 4340": ("sell", 4330.0, 0.0, 4340.0),
+        "Gold buy-stop 4300 stop loss 4290": ("buy", 4300.0, 0.0, 4290.0),
+        "Gold buy - stop hunt done 4300-4295, target 4310": ("buy", 4300.0, 4295.0, 0.0),
+        "Gold sell 4330-4335 don't stop believing, stop at 4341": ("sell", 4330.0, 4335.0, 4341.0),
+        "XAUUSD BUY 2350-2345 SL 2340 TP1 2360 TP2 2370": ("buy", 2350.0, 2345.0, 2340.0),
+    }
+    got = {m: (x.direction, x.entry_a, x.entry_b, x.sl) for m, x in ((m, EP.parse(m)) for m in cases)}
+    ok &= check("the Python parser reads messages exactly like the EA (zone, 'Stop:', never 'SELL STOP' as the stop)",
+                got == cases, {m[:30]: (got[m], cases[m]) for m in cases if got[m] != cases[m]})
+    ok &= check("CLOSE / CANCEL messages and TP list",
+                EP.parse("Close all gold trades now").action == EP.CLOSE
+                and EP.parse("cancel the gold buy limit").action == EP.CANCEL
+                and EP.parse("XAUUSD BUY 2350-2345 SL 2340 TP1 2360 TP2 2370").tps == [2360.0, 2370.0])
+
+    def bars_from(start, path):
+        rows, prev = [], path[0]
+        for i, c in enumerate(path):
+            rows.append({"time": start + timedelta(minutes=i), "open": prev, "high": max(prev, c),
+                         "low": min(prev, c), "close": c})
+            prev = c
+        return pd.DataFrame(rows)
+
+    def lin(a, b, n):
+        return [a + (b - a) * (i + 1) / n for i in range(n)]
+
+    t0 = datetime(2026, 9, 22, 6, 0, tzinfo=timezone.utc)             # Tuesday 10:00 Oman
+    st = SR.Settings(start_equity=10000, spread=0.30, htf_filter=False)
+    path = [4330.0] * 121 + lin(4330, 4318, 10) + lin(4318, 4330, 10) + [4330.0] * 5
+    msg = {"time": t0 + timedelta(minutes=120, seconds=30), "media": "",
+           "text": "Gold Short Zone:4328.3-4338.3\n\nStop: 4342.3\n\nTarget 1: 4324.3\nTarget 2: 4320"}
+    res = SR.run([msg], SR.Prices(bars_from(t0, path), htf=False), st)
+    a = {v: r.trades[0] for v, r in res.items() if r.trades}
+    ok &= check("your zone sell: market at 4330; fixed $6 stop locks +$6 and trails out at 4321.30 = +1.45R",
+                a["fixed"]["entry"] == 4330.0 and a["fixed"]["stop"] == 4336.0 and a["fixed"]["lots"] == 0.33
+                and a["fixed"]["exit"] == 4321.3 and a["fixed"]["exit_reason"] == "trail"
+                and a["fixed"]["result_r"] == 1.45, a.get("fixed"))
+    ok &= check("same trade with the signal's stop (4342.30, $12.30 away): 0.16 lot (still 2%), +0.71R",
+                a["signal"]["stop"] == 4342.3 and a["signal"]["stop_from"] == "signal"
+                and a["signal"]["lots"] == 0.16 and a["signal"]["result_r"] == 0.71, a.get("signal"))
+    ok &= check("provider reference: its stop and 'Target 1: 4324.3' -> +0.46R",
+                a["provider"]["exit"] == 4324.3 and a["provider"]["exit_reason"] == "target"
+                and a["provider"]["result_r"] == 0.46, a.get("provider"))
+    t1 = t0 + timedelta(days=1)
+    path = [4350.0] * 121 + lin(4350, 4336, 3) + lin(4336, 4352, 8) + lin(4352, 4340, 6) + [4340.0] * 3
+    msg = {"time": t1 + timedelta(minutes=120, seconds=10), "media": "", "text": "XAUUSD BUY 4340-4345 SL 4335 TP 4360"}
+    res = SR.run([msg], SR.Prices(bars_from(t1, path), htf=False), st)
+    b = {v: r.trades[0] for v, r in res.items() if r.trades}
+    ok &= check("buy limit at 4345: the $6 stop is hit in the dip (-1R); the signal's $10 stop survives and "
+                "locks +$6 (+0.6R)",
+                b["fixed"]["order"] == "LIMIT" and b["fixed"]["result_r"] == -1.0
+                and b["signal"]["result_r"] == 0.6 and b["signal"]["exit"] == 4351.0, b)
+    t2 = t0 + timedelta(days=2)
+    msgs = [(100, "Gold sell now 4330-4333 SL 4340"), (150, "Close all gold trades now"),
+            (160, "Gold sell 4320-4325 SL 4332"), (170, "Gold buy 4200-4205 SL 4190"), (180, "Good morning traders!")]
+    res = SR.run([{"time": t2 + timedelta(minutes=m, seconds=5), "media": "", "text": x} for m, x in msgs],
+                 SR.Prices(bars_from(t2, [4330.0] * 200), htf=False), st)
+    r = res["fixed"]
+    ok &= check("CLOSE message closes the trade; stale zone, too far from price and chat are not traded",
+                [x["exit_reason"] for x in r.trades] == ["close message"]
+                and r.skips["price already beyond the zone (stale)"] == 1
+                and r.skips["price more than $20 from the zone"] == 1 and r.skips["not a trade message"] == 1,
+                dict(r.skips))
+    ok &= check("Telegram hours: Saturday and 23:30 Oman out, 22:30 Oman in",
+                SR.hours_reason(datetime(2026, 9, 26, 8, 0, tzinfo=timezone.utc), st) != ""
+                and SR.hours_reason(datetime(2026, 9, 22, 19, 30, tzinfo=timezone.utc), st) != ""
+                and SR.hours_reason(datetime(2026, 9, 22, 18, 30, tzinfo=timezone.utc), st) == "")
+    t3 = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)
+    up = [4000 + i * 0.01 for i in range(7 * 24 * 60)]
+    mt = t3 + timedelta(days=6, hours=6, seconds=30)
+    px = 4000 + ((mt - t3).total_seconds() // 60) * 0.01
+    pr = SR.Prices(bars_from(t3, up), htf=True)
+    st2 = SR.Settings(start_equity=10000, spread=0.30, htf_filter=True)
+    sell = SR.run([{"time": mt, "media": "", "text": f"Gold sell {px - 1:.1f}-{px + 2:.1f} SL {px + 8:.1f}"}], pr, st2)
+    buy = SR.run([{"time": mt, "media": "", "text": f"Gold buy {px - 2:.1f}-{px + 1:.1f} SL {px - 8:.1f}"}], pr, st2)
+    ok &= check("M15/H1 filter: a sell into a clear uptrend is skipped, the buy is taken",
+                sell["fixed"].skips.get("XTR HTF filter: M15 is clearly bullish") == 1
+                and len(buy["fixed"].trades) == 1, (dict(sell["fixed"].skips), len(buy["fixed"].trades)))
+    text = SR.summary_text(res, st, [{}] * 5, "test", "test chat")
+    ok &= check("summary names every version and the reasons for not trading",
+                all(f"== {v}:" in text for v in SR.VARIANTS) and "not traded:" in text)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -4570,6 +4661,7 @@ def main() -> int:
         test_status_report(),
         test_dashboard_password(),
         test_trade_journal(),
+        test_signal_replay(),
     ]
     print()
     if all(results):

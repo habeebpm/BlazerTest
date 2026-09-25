@@ -149,6 +149,7 @@ instead of restarting.
 | `logs/ml_retrain.log`, `logs/calibration_report.log`, `logs/scorecard.log` | Output of the automatic jobs |
 | `logs/day_state.json`, `logs/xtr_state.json`, `logs/services_state.json` | State kept across restarts |
 | `logs/status.json` | The dashboard's data, rewritten once a minute |
+| `logs/replay/` (and Drive `GoldTrader_replay_*`) | Signal-history replay: summary, simulated trades, messages, M1 prices |
 | `logs/journal/` and Drive `MyMQChartDrive\GoldTrader\` | Trade journal: `GoldTrader_trades.csv`, `GoldTrader_claude_decisions.csv`, `GoldTrader_telegram_signals.csv` |
 | `dashboard/App_Data/password.txt` | The dashboard password's salted hash (never uploaded) |
 | MT5 `MQL5\Files\TelegramSMC_Signals.csv` / `..._Results.csv` | EA signal log / trade journal |
@@ -238,6 +239,33 @@ way to the lock was a stop you moved. R is measured against each trade's
 own first stop (`stop_distance`). To analyse, ask Claude to read the files from your
 Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 (`off` = logs only). Trading never waits on it or fails because of it.
+
+## Signal-history replay (test a provider in hours)
+
+`replay_signals.bat` (or `python goldtrader.py replay-signals --months 3`):
+
+1. Reads the signal channel's past messages with your own Telegram login
+   (`relay\tg_relay_bridge.session`; asks for phone + code once if there is
+   none). The chat: `--chat @name` (or id), else `TELEGRAM_SOURCE_CHANNELS`
+   in `keys.txt`, else a numbered list to pick from (`--pick` always shows it).
+2. Loads XAUUSD M1 prices for the period from MT5 (MT5 must be open).
+3. Replays every message the way UnifiedTrader_EA reads it - same message
+   filter and parser, Oman hours, M15/H1 filter, $20 zone check, limit /
+   market / stale, 240-min pending expiry, 5 per direction, 10% daily cap
+   and budget, 2% lot sizing, $6 lock and $3 trail, CLOSE / CANCEL messages.
+4. Three versions: `fixed` ($6 stop), `signal` (the signal's stop when
+   $3-$20 away - the EA as shipped) and `provider` (reference only: the
+   signal's own stop and first target, no lock/trail).
+5. Writes `logs\replay\` and copies it to Drive as `GoldTrader_replay_summary.txt`,
+   `_trades.csv`, `_messages.csv`, `_prices_M1.csv`.
+
+Options: `--months 6`, `--equity 50000`, `--spread 0.30`, `--no-htf`,
+`--messages-file` / `--prices-file` (replay saved files, no Telegram/MT5).
+Not modelled: news blackout, slippage beyond the spread, margin guard,
+edited messages; on M1 bars a bar that touches both the stop and the
+lock/target counts as the stop (pessimistic). If MT5 returns fewer M1
+bars than the period, it says so: Tools -> Options -> Charts -> Max bars in
+chart = Unlimited, restart MT5, scroll an M1 chart back, run again.
 
 ## Price files for XTR (Drive)
 
@@ -333,5 +361,5 @@ without the tactics. Results on a year of real prices:
 
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
-once | start | backtest | scorecard | xtr-export | dashboard-password |
+once | start | backtest | replay-signals | scorecard | xtr-export | dashboard-password |
 test`.
