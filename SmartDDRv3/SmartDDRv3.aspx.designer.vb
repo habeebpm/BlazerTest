@@ -41,6 +41,8 @@ Partial Public Class SmartDDRv3
     Protected WithEvents Push As Global.System.Web.UI.WebControls.LinkButton
     Protected WithEvents lblUser As Global.System.Web.UI.WebControls.Label
     Protected WithEvents lnkAdmin As Global.System.Web.UI.WebControls.HyperLink
+    Protected WithEvents lnkDashboard As Global.System.Web.UI.WebControls.HyperLink
+    Protected WithEvents lnkDashboardTop As Global.System.Web.UI.WebControls.HyperLink
 
     ' Header + toolbar
     Protected WithEvents lblSection As Global.System.Web.UI.WebControls.Label

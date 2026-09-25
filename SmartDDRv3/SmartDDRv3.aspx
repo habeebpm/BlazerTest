@@ -702,6 +702,7 @@
                 <details class="nav-group" data-group="progress">
                     <summary title="Earned progress and issue status of the selected project"><span class="g-ic">📈</span><span class="g-title">Progress &amp; Status</span><span class="g-count"></span><span class="g-chev" aria-hidden="true"></span></summary>
                     <div class="g-body">
+                        <asp:HyperLink ID="lnkDashboard" runat="server" CssClass="nav-item" NavigateUrl="SmartDDRDashboard.aspx" ToolTip="Interactive DDR + EPR / M75 dashboard" data-loading="true"><span class="ic">📊</span><span>DDR Dashboard</span></asp:HyperLink>
                         <asp:LinkButton ID="DDR_EPR" runat="server" CssClass="nav-item" CommandArgument="DDR_EPR" data-loading="true"><span class="ic">📈</span><span>DDR + EPR</span></asp:LinkButton>
                         <asp:LinkButton ID="EPR" runat="server" CssClass="nav-item" CommandArgument="EPR" data-loading="true"><span class="ic">📊</span><span>EPR</span></asp:LinkButton>
                         <asp:LinkButton ID="M75_AFC" runat="server" CssClass="nav-item" CommandArgument="M75" data-loading="true"><span class="ic">🚩</span><span>M75 AFC Status</span></asp:LinkButton>
@@ -761,6 +762,7 @@
                         Text="What's new (v3): reports grouped by purpose · find a report from the sidebar · Excel (.xlsx) export · click a header to sort · click an M75 count for its documents" />
                     <button type="button" class="wn-close" title="Dismiss" aria-label="Dismiss">×</button>
                 </div>
+                <asp:HyperLink ID="lnkDashboardTop" runat="server" CssClass="btn btn-on-dark" NavigateUrl="SmartDDRDashboard.aspx" ToolTip="Open the DDR dashboard for this project">📊 Dashboard</asp:HyperLink>
                 <a href="Index.aspx" class="btn btn-on-dark">🏠 Home</a>
             </header>
 

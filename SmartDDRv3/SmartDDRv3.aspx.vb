@@ -257,6 +257,10 @@ Public Class SmartDDRv3
         If Views.TryGetValue(CurrentView, def) Then Page.Title = "SmartDDR · " & def.Title
 
         lnkDeepLink.NavigateUrl = BuildDeepLink()
+        Dim dashUrl As String = "SmartDDRDashboard.aspx?group=" & HttpUtility.UrlEncode(ddlProjectGroup.SelectedValue) &
+                                If(SelectedProject.Length > 0, "&project=" & HttpUtility.UrlEncode(SelectedProject), "")
+        lnkDashboard.NavigateUrl = dashUrl
+        lnkDashboardTop.NavigateUrl = dashUrl
         Push.Visible = SelectedProject.Length > 0
     End Sub
 
