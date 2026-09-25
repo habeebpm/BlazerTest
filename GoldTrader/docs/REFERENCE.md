@@ -230,9 +230,11 @@ file that changed is rewritten.
 | `GoldTrader_claude_decisions.csv` | Claude evaluation | a copy of `logs/decisions.csv` |
 | `GoldTrader_telegram_signals.csv` | Telegram message the EA received | a copy of the EA's signal log: action, direction, copied or why not |
 
-The note `stop moved by hand` marks an exit on a stop the EA never sets
-(between -0.8R and +0.7R): the EA opens at -1R and only moves the stop to the
-+1R lock or beyond. To analyse, ask Claude to read the files from your
+The note `stop moved by hand` marks an exit on a stop the EA never sets:
+the EA opens at the first stop (-1R) and only moves it to the +$6 lock or
+beyond, so an exit between 80% of the way to the first stop and 70% of the
+way to the lock was a stop you moved. R is measured against each trade's
+own first stop (`stop_distance`). To analyse, ask Claude to read the files from your
 Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 (`off` = logs only). Trading never waits on it or fails because of it.
 

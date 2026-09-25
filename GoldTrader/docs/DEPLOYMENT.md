@@ -189,9 +189,21 @@ one good week.
    - `relay\*.session` (the relay's Telegram login)
    - `dashboard\App_Data\password.txt`
    - your changes in `start.bat` / `settings.ini`, if any
-3. Close MetaEditor, run `setup.bat` (tests + EA compile) -> `ALL SELF-TESTS PASSED`.
-4. In MT5, re-open the EA's inputs and check your values are still there.
+3. Close MetaEditor, run `setup.bat` (tests + EA compile) -> `ALL SELF-TESTS PASSED`
+   and `0 error(s)`.
+4. In MT5, re-open the EA's inputs and check your values are still there
+   (`InpBotToken`, `InpControlChatId`, `InpChannelId1` = the relay group id,
+   `InpChannelId2`/`3` = 0, `InpDryRun`). New inputs of an update start at the
+   preset's values - compare with step 4 above.
 5. Start `start.bat`.
+
+**The September 2026 update adds** (check after updating):
+
+| What | Check |
+|---|---|
+| Telegram trades use the signal's own stop ($3-$20 away), lot resized to keep 2% risk | EA inputs `InpTelegramUseSignalSl=true`, `InpSignalSlMinDistance=3.0`, `InpSignalSlMaxDistance=20.0`; Experts tab at start: "Telegram entries use the signal's own stop ..." |
+| Trade journal in Google Drive | `start.bat` log: `Trade journal every 5 min -> G:\MyDrive\MyMQChartDrive\GoldTrader`; the folder appears in Drive within minutes |
+| Dashboard shows the stop used on each copied signal | Signals tab: "stop: signal stop ..." or "stop: fixed $6.00" |
 
 ## 12. What stays on your PC only
 

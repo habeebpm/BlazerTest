@@ -851,8 +851,8 @@ int FindTpLabel(const string &text, int fromPos, int &labelEnd)
 
 //+------------------------------------------------------------------+
 //| "STOPLOSS" / "STOP LOSS" / "STOP-LOSS" / "S/L" / whole-word "SL", |
-//| else a bare "STOP" label ("Stop: 2350") - never the order type in |
-//| "BUY STOP 2350" / "SELL STOP 2350".                               |
+//| else a bare "STOP" followed by a price ("Stop: 2350") - never the |
+//| order type in "BUY STOP 2350" / "SELL STOP 2350".                 |
 //+------------------------------------------------------------------+
 int FindSlLabel(const string &text, int fromPos, int &labelEnd)
 {
@@ -871,7 +871,12 @@ int FindSlLabel(const string &text, int fromPos, int &labelEnd)
    {
       idx = FindWholeWord(text, "STOP", pos);
       if(idx < 0) return(-1);
-      if(!PrecededByWord(text, idx, "BUY") && !PrecededByWord(text, idx, "SELL"))
+      // A label only when a price follows ("Stop: 4342.3", "stop at 4340") -
+      // "stop hunt done", "don't stop" in commentary are not.
+      double v;
+      int    vEnd;
+      if(!PrecededByWord(text, idx, "BUY") && !PrecededByWord(text, idx, "SELL")
+         && ExtractNumberAt(text, idx + 4, StringLen(text), 10, v, vEnd) && v >= 100.0)
       {
          labelEnd = idx + 4;
          return(idx);
