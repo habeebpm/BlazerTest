@@ -494,12 +494,15 @@
             });
         }
 
+        var loadSeq = 0;
         function loadData() {
+            var seq = ++loadSeq;   // a slower, older response must not overwrite a newer selection
             var first = !S.data;
             if (first) { $('loading').hidden = false; } else { $('view').classList.add('stale'); }
             var params = S.scope.project ? { api: 'data', project: S.scope.project } : { api: 'data', group: S.scope.group };
             $('loadingText').textContent = S.scope.project ? 'Loading ' + S.scope.project + '…' : 'Loading all projects in the group…';
             return api(params).then(function (d) {
+                if (seq !== loadSeq) return;
                 S.data = d;
                 normalise(d);
                 restoreFilters();
@@ -511,7 +514,7 @@
                 history.replaceState(null, '', '?group=' + encodeURIComponent(S.scope.group) + (S.scope.project ? '&project=' + encodeURIComponent(S.scope.project) : '') + '#' + S.tab);
             }).catch(function (e) {
                 $('view').innerHTML = '<div class="banner">Could not load data: ' + esc(e.message) + '</div>';
-            }).then(function () { $('loading').hidden = true; $('view').classList.remove('stale'); });
+            }).then(function () { if (seq === loadSeq) { $('loading').hidden = true; $('view').classList.remove('stale'); } });
         }
 
         function normalise(d) {
@@ -553,10 +556,13 @@
             for (var k3 in w) w[k3] = w[k3] / tot;
             S.weights = w;
 
+            S.hasEarned = S.all.some(function (o) { return o.earned > 0; });
+            S.hasPln = S.all.some(function (o) { return o.plnPct != null; });
+
             // Duplicate document numbers (within a project) for the data-quality page.
             var seen = new Map();
             S.all.forEach(function (o) { var k = (o.proj || '') + '|' + up(o.doc); seen.set(k, (seen.get(k) || 0) + 1); });
-            S.all.forEach(function (o) { o.dup = seen.get((o.proj || '') + '|' + up(o.doc)) > 1; });
+            S.all.forEach(function (o) { o.dup = !!o.doc && seen.get((o.proj || '') + '|' + up(o.doc)) > 1; });
 
             // M75 (aggregated by discipline in the database view).
             var mi = {}; (d.m75cols || []).forEach(function (c, i) { mi[c] = i; });
@@ -585,7 +591,7 @@
                         if (o.ms[i].p != null) { o.next = i; o.nextDue = o.ms[i].p; o.nextLabel = STAGES[i].key; break; }
                         if (!STAGES[i].optional && o.next == null && o.nextLabelFallback == null) o.nextLabelFallback = STAGES[i].key;
                     }
-                    if (o.next == null && o.nextLabelFallback) o.nextLabel = 'Unplanned';
+                    if (o.next == null && o.nextLabelFallback) o.nextLabel = o.nextLabelFallback + ' (unplanned)';
                 }
                 o.nextGroup = o.next != null ? STAGES[o.next].group : null;
                 o.overdue = !o.complete && o.nextDue != null && o.nextDue < S.asOf;
@@ -626,7 +632,7 @@
             var v = FIELDS[key].get(r); v = (v == null || v === '') ? '' : String(v);
             if (f.vals && !f.vals.has(v)) return false;
             if (f.q) {
-                var a = v.toLowerCase(), q = f.q.toLowerCase();
+                var a = v.trim().toLowerCase(), q = f.q.trim().toLowerCase();
                 switch (f.op) {
                     case 'eq': if (a !== q) return false; break;
                     case 'ne': if (a === q) return false; break;
@@ -778,7 +784,7 @@
             }
         });
         $('pop').addEventListener('input', function (e) { if (e.target.id === 'popSearch') { popState.search = e.target.value; drawPopList(); } });
-        $('pop').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); commitPop(); } });
+        $('pop').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.target.closest('button')) { e.preventDefault(); commitPop(); } });
 
         /* =================================================================
            Tooltip
@@ -965,7 +971,7 @@
             series.forEach(function (sr) {
                 var dPath = '', started = false, last = null;
                 sr.values.forEach(function (v, i) { if (v == null) { started = false; return; } dPath += (started ? 'L' : 'M') + X(xs[i]).toFixed(1) + ',' + Y(v).toFixed(1); started = true; last = i; });
-                if (sr.area) node('path', { d: dPath + 'V' + Y(0) + 'H' + X(xs[sr.values.findIndex(function (v) { return v != null; })]) + 'Z', style: 'fill:' + sr.color + ';fill-opacity:.10;stroke:none' }, s);
+                if (sr.area && last != null) node('path', { d: dPath + 'V' + Y(0) + 'H' + X(xs[sr.values.findIndex(function (v) { return v != null; })]) + 'Z', style: 'fill:' + sr.color + ';fill-opacity:.10;stroke:none' }, s);
                 node('path', { d: dPath, style: 'fill:none;stroke:' + sr.color + ';stroke-width:2;stroke-linejoin:round;stroke-linecap:round' }, s);
                 if (last != null) { node('circle', { cx: X(xs[last]), cy: Y(sr.values[last]), r: 4, 'class': 'dot', style: 'fill:' + sr.color }, s); ends.push({ y: Y(sr.values[last]), x: X(xs[last]), t: (o.yFmt || fmtInt)(sr.values[last]) }); }
             });
@@ -1063,8 +1069,8 @@
                 }).join('') + '</tbody>' + (d.foot ? '<tfoot><tr>' + d.foot.map(function (v, i) { return '<td' + (d.num && d.num[i] ? ' class="num"' : '') + '>' + esc(v) + '</td>'; }).join('') + '</tr></tfoot>' : '') + '</table></div>';
         }
         function csvOf(d) {
-            function q(v) { v = String(v == null ? '' : v).replace(/<[^>]+>/g, ''); if (/^[=+\-@\t\r]/.test(v) && isNaN(v)) v = "'" + v; return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
-            return [d.head.map(q).join(',')].concat(d.rows.map(function (r) { return r.map(q).join(','); })).join('\r\n');
+            function q(v, i) { v = String(v == null ? '' : v); if (d.html && d.html[i]) v = v.replace(/<[^>]+>/g, ''); if (/^[=+\-@\t\r]/.test(v) && isNaN(v)) v = "'" + v; return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+            return [d.head.map(function (h) { return q(h, -1); }).join(',')].concat(d.rows.map(function (r) { return r.map(q).join(','); })).join('\r\n');
         }
         function download(name, text) {
             var blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
@@ -1085,17 +1091,18 @@
            Shared analytics
            ================================================================= */
         function hoursWeight(rows) { var h = sum(rows, function (r) { return r.hrs; }); return h > 0 ? function (r) { return r.hrs; } : function () { return 1; }; }
+        // The EPR's own figures (Used Hours, PLN%) describe *today*; for a past data date, or when the
+        // EPR columns are empty for the whole data set, both sides use the rules-of-credit path instead,
+        // over the same rows, so SPI always compares like with like.
+        function useEpr(rows) { return S.asOf >= todayDay() && sum(rows, function (r) { return r.hrs; }) > 0; }
         function earnedPct(rows) {
-            var h = sum(rows, function (r) { return r.hrs; }), e = sum(rows, function (r) { return r.earned; });
-            if (h > 0 && e > 0) return e / h * 100;
             var wf = hoursWeight(rows), tw = sum(rows, wf); if (!tw) return null;
+            if (useEpr(rows) && S.hasEarned) return sum(rows, function (r) { return r.earned; }) / tw * 100;
             return sum(rows, function (r) { return wf(r) * creditAt(r, S.asOf, 'a'); }) / tw * 100;
         }
         function plannedPct(rows) {
-            var withPln = rows.filter(function (r) { return r.plnPct != null; });
-            var h = sum(withPln, function (r) { return r.hrs; });
-            if (withPln.length && h > 0) return sum(withPln, function (r) { return r.hrs * r.plnPct; }) / h;
             var wf = hoursWeight(rows), tw = sum(rows, wf); if (!tw) return null;
+            if (useEpr(rows) && S.hasPln) return sum(rows, function (r) { return r.hrs * (r.plnPct != null ? r.plnPct : creditAt(r, S.asOf, 'p') * 100); }) / tw;
             return sum(rows, function (r) { return wf(r) * creditAt(r, S.asOf, 'p'); }) / tw * 100;
         }
         var WKEY = ['IDC', 'IFR', 'RCC', null, null, 'APP', 'AFC'];   // stage index -> rules-of-credit bucket
@@ -1103,7 +1110,7 @@
             // Cumulative credit: reaching a stage also credits every earlier stage.
             var reach = -1;
             r.ms.forEach(function (m, i) { var d = m[which]; if (d != null && d <= day) reach = i; });
-            if (which === 'a' && r.complete && reach < 6 && r.ms[6].a == null && FINAL_STATUSES.indexOf(up(r.status)) >= 0) reach = 6;
+            if (which === 'a' && r.complete && reach < 6 && r.ms[6].x == null && FINAL_STATUSES.indexOf(up(r.status)) >= 0) reach = 6;
             var c = 0; for (var i = 0; i <= reach; i++) if (WKEY[i]) c += S.weights[WKEY[i]];
             return Math.min(1, c);
         }
@@ -1124,7 +1131,7 @@
                     var w = wf(r); if (!w) return;
                     var prevC = 0, reach = -1;
                     var pts = [];
-                    r.ms.forEach(function (m, i) { if (m[which] != null) pts.push({ d: m[which], i: i }); });
+                    r.ms.forEach(function (m, i) { var d = m[which]; if (d != null && (which === 'p' || d <= S.asOf)) pts.push({ d: d, i: i }); });
                     pts.sort(function (a, b) { return a.d - b.d || a.i - b.i; });
                     pts.forEach(function (p) {
                         if (p.i <= reach) return; reach = p.i;
@@ -1133,7 +1140,11 @@
                     });
                 });
                 var keys = Array.from(ev.keys()).sort(function (a, b) { return a - b; }), k = 0, acc = 0;
-                return xs.map(function (x) { while (k < keys.length && keys[k] <= x) { acc += ev.get(keys[k]); k++; } return acc / tw * 100; });
+                return xs.map(function (x, xi) {
+                    var last = xi === xs.length - 1;   // outliers beyond the trimmed range still count at the end
+                    while (k < keys.length && (last || keys[k] <= x)) { acc += ev.get(keys[k]); k++; }
+                    return acc / tw * 100;
+                });
             }
             var planned = curve('p'), actual = curve('a');
             var actualCut = actual.map(function (v, i) { return xs[i] <= S.asOf + stepDays ? v : null; });
@@ -1148,7 +1159,7 @@
                 var r = g.rows, docs = r.filter(function (x) { return !x.isAct; });
                 var done = docs.filter(function (x) { return x.complete; }).length;
                 var late = [], onTime = 0, closed = 0;
-                r.forEach(function (x) { x.ms.forEach(function (m) { if (m.a != null && m.p != null) { closed++; if (m.a <= m.p) onTime++; else late.push(m.a - m.p); } }); });
+                r.forEach(function (x) { x.ms.forEach(function (m) { if (m.x != null && m.p != null) { closed++; if (m.x <= m.p) onTime++; else late.push(m.x - m.p); } }); });
                 var pl = plannedPct(r), ea = earnedPct(r);
                 return {
                     disc: g.disc, docs: docs.length, done: done, donePct: pct(done, docs.length),
@@ -1165,6 +1176,7 @@
            ================================================================= */
         function render() {
             hideTip();
+            var bd = document.querySelector('.backdrop'); if (bd) bd.remove();
             renderFilterBar();
             renderTabs();
             var v = $('view'); v.innerHTML = ''; CARDS = [];
@@ -1265,7 +1277,7 @@
             card(grid, {
                 title: 'Discipline progress', sub: 'Earned % (bar) vs planned % (tick) · click to filter', span: 6,
                 legend: legend([{ name: 'Earned %', color: 'var(--s1)' }, { name: 'Planned %', kind: 'tick' }]),
-                draw: function (h) { barH(h, ds.map(function (d) { return { label: d.disc, value: d.actual || 0, marker: d.planned, valueLabel: fmtPct(d.actual), onClick: function () { setValueFilter('disc', d.disc === '(Blank)' ? '' : d.disc); } }; }), { max: 100, fmt: fmtPct, series: 'Earned %', markerName: 'Planned %', tickFmt: function (t) { return t + '%'; }, label: 'Discipline progress' }); },
+                draw: function (h) { barH(h, ds.map(function (d) { return { label: d.disc, value: d.actual || 0, marker: d.planned, valueLabel: fmtPct(d.actual), onClick: function () { setValueFilter('disc', d.disc === '(Blank)' ? '' : d.disc); } }; }), { max: Math.max(100, Math.max.apply(null, ds.map(function (d) { return Math.max(d.actual || 0, d.planned || 0); }))), fmt: fmtPct, series: 'Earned %', markerName: 'Planned %', tickFmt: function (t) { return t + '%'; }, label: 'Discipline progress' }); },
                 data: function () { return { head: ['Discipline', 'Planned %', 'Earned %', 'SPI'], num: [0, 1, 1, 1], rows: ds.map(function (d) { return [d.disc, fmt1(d.planned), fmt1(d.actual), d.spi == null ? '' : d.spi.toFixed(2)]; }) }; }
             });
         };
@@ -1361,7 +1373,7 @@
             kpiRow(grid,
                 tile({ label: 'Overdue documents', value: fmtInt(O.length), sub: fmtPct(pct(O.length, pend)) + ' of pending' }) +
                 tile({ label: 'Average days late', value: O.length ? fmt1(avg(O.map(function (r) { return r.daysLate; }))) : '–', sub: 'median ' + (O.length ? fmt1(median(O.map(function (r) { return r.daysLate; }))) : '–') }) +
-                tile({ label: 'Over 30 days', value: fmtInt(O.filter(function (r) { return r.daysLate > 30; }).length), sub: O.length ? statusOf('serious', 'escalate') : statusOf('good', 'None') }) +
+                tile({ label: 'Over 30 days', value: fmtInt(O.filter(function (r) { return r.daysLate > 30; }).length), sub: O.some(function (r) { return r.daysLate > 30; }) ? statusOf('serious', 'escalate') : statusOf('good', 'None') }) +
                 tile({ label: 'Over 90 days', value: fmtInt(O.filter(function (r) { return r.daysLate > 90; }).length), sub: O.filter(function (r) { return r.daysLate > 90; }).length ? statusOf('critical', 'critical') : statusOf('good', 'None') }) +
                 tile({ label: 'High criticality overdue', value: fmtInt(crit), sub: 'criticality High / A / 1' }) +
                 tile({ label: 'Oldest', value: O.length ? fmtInt(O[0].daysLate) + ' d' : '–', sub: O.length ? esc(O[0].doc) : '' }));
@@ -1378,7 +1390,8 @@
             });
 
             var dl = discRows(O).map(function (d) { return d.disc; });
-            var matrix = dl.map(function (d) { return STAGE_GROUPS.map(function (g) { return O.filter(function (r) { return (r.disc || '(Blank)') === d && r.nextGroup === g; }).length; }); });
+            var odN = new Map(); O.forEach(function (r) { var k = (r.disc || '(Blank)') + '\u0001' + r.nextGroup; odN.set(k, (odN.get(k) || 0) + 1); });
+            var matrix = dl.map(function (d) { return STAGE_GROUPS.map(function (g) { return odN.get(d + '\u0001' + g) || 0; }); });
             card(grid, {
                 title: 'Overdue heatmap – discipline × milestone', sub: 'Count of overdue documents by the milestone that is late · click a cell to filter', span: 7,
                 draw: function (h) { heatmap(h, dl, STAGE_GROUPS, matrix, { onClick: function (d) { setValueFilter('disc', d === '(Blank)' ? '' : d); } }); },
@@ -1387,7 +1400,7 @@
 
             // Slippage on achieved milestones.
             var slip = STAGES.map(function (s, i) {
-                var late = [], n = 0; R.forEach(function (r) { var m = r.ms[i]; if (m.a != null && m.p != null) { n++; if (m.a > m.p) late.push(m.a - m.p); } });
+                var late = [], n = 0; R.forEach(function (r) { var m = r.ms[i]; if (m.x != null && m.p != null) { n++; if (m.x > m.p) late.push(m.x - m.p); } });
                 return { key: s.key, n: n, late: late.length, avg: avg(late) };
             }).filter(function (x) { return x.n; });
             card(grid, {
@@ -1453,16 +1466,23 @@
             });
 
             // Cumulative count curve + monthly throughput for the chosen milestone.
-            var days = []; R.forEach(function (r) { if (r.ms[si].p != null) days.push(r.ms[si].p); if (r.ms[si].a != null) days.push(r.ms[si].a); });
+            var days = []; R.forEach(function (r) { if (r.ms[si].p != null) days.push(r.ms[si].p); if (r.ms[si].x != null) days.push(r.ms[si].x); });
             days.sort(function (a, b) { return a - b; });
-            var mk = [], pm = [], am = [];
+            var mk = [], pm = [], am = [], baseP = 0, baseA = 0;
             if (days.length) {
-                var m0 = monthKey(days[0]), m1 = monthKey(days[days.length - 1]);
-                if (m1 - m0 > 47) m0 = m1 - 47;
+                // At most 48 months shown, never more than 36 months past the data date (guards against a
+                // stray 2099 date); anything earlier still counts as the cumulative starting point.
+                var m1 = Math.min(monthKey(days[days.length - 1]), monthKey(S.asOf) + 36);
+                var m0 = Math.max(monthKey(days[0]), m1 - 47);
+                if (m0 > m1) m0 = m1;
                 for (var k = m0; k <= m1; k++) { mk.push(k); pm.push(0); am.push(0); }
-                R.forEach(function (r) { var m = r.ms[si]; if (m.p != null) { var i = monthKey(m.p) - m0; if (i >= 0 && i < mk.length) pm[i]++; } if (m.a != null) { var j = monthKey(m.a) - m0; if (j >= 0 && j < mk.length) am[j]++; } });
+                R.forEach(function (r) {
+                    var m = r.ms[si];
+                    if (m.p != null) { var i = monthKey(m.p) - m0; if (i < 0) baseP++; else if (i < mk.length) pm[i]++; }
+                    if (m.x != null) { var j = monthKey(m.x) - m0; if (j < 0) baseA++; else if (j < mk.length) am[j]++; }
+                });
             }
-            var cumP = [], cumA = [], cp = 0, ca = 0, cutM = monthKey(S.asOf);
+            var cumP = [], cumA = [], cp = baseP, ca = baseA, cutM = monthKey(S.asOf);
             mk.forEach(function (k, i) { cp += pm[i]; ca += am[i]; cumP.push(cp); cumA.push(k <= cutM ? ca : null); });
             card(grid, {
                 title: STAGES[si].key + ' – cumulative documents', sub: 'Planned vs actual issues (count)', span: 6, controls: ctl,
@@ -1559,12 +1579,18 @@
                 tile({ label: 'Handover-ready', value: fmtInt(ready), sub: 'current status = required', meter: pct(ready, H.length) }) +
                 tile({ label: 'Readiness', value: fmtPct(pct(ready, H.length)) }) +
                 tile({ label: 'Not ready', value: fmtInt(H.length - ready), sub: H.length - ready ? statusOf('warning', 'action needed') : statusOf('good', 'All ready') }));
-            var reqs = Array.from(groupBy(H, function (r) { return up(r.reqd); }).keys()).sort();
-            var sts = Array.from(groupBy(H, function (r) { return up(r.status) || '(Blank)'; }).entries()).sort(function (a, b) { return b[1].length - a[1].length; }).slice(0, 10).map(function (e) { return e[0]; });
-            var mtx = reqs.map(function (q) { return sts.map(function (s) { return H.filter(function (r) { return up(r.reqd) === q && (up(r.status) || '(Blank)') === s; }).length; }); });
+            var cellN = new Map(), stN = new Map(), reqSet = new Set();
+            H.forEach(function (r) {
+                var q = up(r.reqd), st = up(r.status) || '(Blank)';
+                reqSet.add(q); stN.set(st, (stN.get(st) || 0) + 1);
+                cellN.set(q + '\u0001' + st, (cellN.get(q + '\u0001' + st) || 0) + 1);
+            });
+            var reqs = Array.from(reqSet).sort();
+            var sts = Array.from(stN.keys()).sort(function (a, b) { return stN.get(b) - stN.get(a); }).slice(0, 10);
+            var mtx = reqs.map(function (q) { return sts.map(function (st) { return cellN.get(q + '\u0001' + st) || 0; }); });
             card(grid, {
                 title: 'Required vs current status', sub: 'Rows = status required for handover, columns = current status (top 10)', span: 7,
-                draw: function (h) { heatmap(h, reqs, sts, mtx, { onClick: function (q) { setValueFilter('reqd', q); } }); },
+                draw: function (h) { heatmap(h, reqs, sts, mtx, { onClick: function (q) { S.filters.reqd = { q: q, op: 'eq' }; S.reg.page = 0; applyFilters(); render(); } }); },
                 data: function () { return { head: ['Required \\ Current'].concat(sts), num: [0].concat(sts.map(function () { return 1; })), rows: reqs.map(function (q, i) { return [q].concat(mtx[i]); }) }; }
             });
             var dl = discRows(H).map(function (d) { var rd = d.rows.filter(function (r) { return r.ready; }).length; return { disc: d.disc, n: d.rows.length, ready: rd, p: pct(rd, d.rows.length) }; });
@@ -1625,7 +1651,14 @@
             a.push({ k: 'a' + i, h: s.key + ' actual', v: function (r) { return r.ms[i].a; }, day: true });
             return a;
         }, []));
+        var regCache = { rows: null, key: '', list: null };
         function regRows() {
+            var ck = S.reg.sort + '|' + S.reg.dir;
+            if (regCache.rows === S.rows && regCache.key === ck) return regCache.list;
+            regCache.rows = S.rows; regCache.key = ck; regCache.list = regRowsSorted();
+            return regCache.list;
+        }
+        function regRowsSorted() {
             var c = REG_COLS.find(function (x) { return x.k === S.reg.sort; }) || REG_COLS[2], dir = S.reg.dir;
             return S.rows.slice().sort(function (a, b) {
                 var x = c.v(a), y = c.v(b);
@@ -1677,7 +1710,7 @@
             var body = $('drawerBody');
             body.innerHTML = '<dl class="kv">' + kv.map(function (p) { return '<dt>' + esc(p[0]) + '</dt><dd>' + esc(p[1] == null || p[1] === '' ? '–' : p[1]) + '</dd>'; }).join('') + '</dl>' +
                 '<h3 style="font-size:14px;margin-bottom:4px">Milestone timeline</h3>' + legend([{ name: 'Planned', color: 'var(--s1)' }, { name: 'Actual', color: 'var(--s2)' }]) + '<div id="tl"></div>' +
-                tableHtml({ head: ['Milestone', 'Planned', 'Actual', 'Variance (d)'], num: [0, 0, 0, 1], rows: STAGES.map(function (s, i) { var m = r.ms[i]; return [s.key, fmtDay(m.p), fmtDay(m.a), (m.p != null && m.a != null) ? m.a - m.p : (m.p != null && m.a == null && m.p < S.asOf && !r.complete ? 'overdue ' + (S.asOf - m.p) : '')]; }) });
+                tableHtml({ head: ['Milestone', 'Planned', 'Actual', 'Variance (d)'], num: [0, 0, 0, 1], rows: STAGES.map(function (s, i) { var m = r.ms[i]; return [s.key, fmtDay(m.p), fmtDay(m.x) + (m.a != null && m.x == null ? ' (after data date)' : ''), (m.p != null && m.x != null) ? m.x - m.p : ((m.p != null && m.x == null && m.p < S.asOf && !r.complete && i === r.next) ? 'overdue ' + (S.asOf - m.p) : '')]; }) });
             $('drawer').classList.add('open'); $('drawer').setAttribute('aria-hidden', 'false');
             timeline($('tl'), r);
         }
@@ -1709,6 +1742,7 @@
            ================================================================= */
         document.addEventListener('click', function (e) {
             var t = e.target, el;
+            if (popState && !t.closest('.pop')) closePop();
             if ((el = t.closest('.tab'))) { go(el.getAttribute('data-tab')); return; }
             if ((el = t.closest('.fbtn, .th-f'))) { e.stopPropagation(); openFilter(el.getAttribute('data-f'), el); return; }
             if ((el = t.closest('[data-clear]'))) {
@@ -1769,7 +1803,7 @@
         $('tglAct').addEventListener('change', function (e) { S.inclAct = e.target.checked; applyFilters(); render(); });
         $('tglCancel').addEventListener('change', function (e) { S.inclCancel = e.target.checked; applyFilters(); render(); });
         $('asOf').addEventListener('change', function (e) { var d = parseDay(e.target.value); S.asOf = d == null ? todayDay() : d; derive(); render(); });
-        $('selGroup').addEventListener('change', function (e) { S.scope.group = e.target.value; loadProjects(null).then(loadData); });
+        $('selGroup').addEventListener('change', function (e) { S.scope.group = e.target.value; loadProjects(null).then(loadData).catch(function (err) { $('view').innerHTML = '<div class="banner">Could not load projects: ' + esc(err.message) + '</div>'; }); });
         $('selProject').addEventListener('change', function (e) { S.scope.project = e.target.value === '*' ? '' : e.target.value; S.reg.page = 0; loadData(); });
         $('btnRefresh').addEventListener('click', loadData);
         $('btnExport').addEventListener('click', exportRegister);
@@ -1791,7 +1825,7 @@
            ================================================================= */
         (function init() {
             var theme = store('sddr.dash.theme'); if (theme) document.documentElement.setAttribute('data-theme', theme);
-            S.targetDays = store('sddr.dash.target') || 14;
+            S.targetDays = Math.max(1, Math.min(365, Math.round(+store('sddr.dash.target')) || 14));
             var qs = new URLSearchParams(location.search);
             var tab = (location.hash || '').slice(1) || store('sddr.dash.tab');
             if (TABS.some(function (t) { return t.id === tab; })) S.tab = tab;
