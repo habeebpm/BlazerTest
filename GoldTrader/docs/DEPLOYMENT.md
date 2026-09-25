@@ -128,6 +128,14 @@ and the EA's Experts tab logs it (copied, or why not). The dashboard's
 position with the right magic number (20260922 Telegram, 20260921 Claude),
 its SL set. Claude's entries also send a Telegram alert.
 
+## 7b. Trade journal in Google Drive
+
+Nothing to set up if Drive for Desktop is running with the `MyMQChartDrive`
+folder (the EA's price files already go there). A few minutes after
+`start.bat` starts, **You should see** `MyMQChartDrive\GoldTrader` in Drive
+with `GoldTrader_trades.csv`, `GoldTrader_claude_decisions.csv` and
+`GoldTrader_telegram_signals.csv`. Ask Claude to analyse them from Drive.
+
 ## 8. Every day
 
 - Keep **MT5** and the **`start.bat` window** open. It restarts the program by itself after an MT5 or internet drop.

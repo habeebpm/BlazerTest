@@ -5,6 +5,7 @@ rem The trading program + every companion switched on in settings.ini. Leave thi
 rem Remove --live for a dry-run (no real orders).
 rem Telegram signals 06:00-23:00 Oman, Mon-Fri (EA). Claude 08:00-16:45 + 18:15-20:00 New York. Options:
 rem   --trade-hours any   --friday-cutoff off   --max-spread 40   --min-adx 25
+rem   --journal-folder off  (trade journal CSVs only in logs\journal, not Google Drive)
 rem   --xtr-gate require_alignment  (fewer trades, smaller swings, no edge in the backtest)   see docs\REFERENCE.md
 set GT_ARGS=--live --shared-cap-magic 20260922
 python goldtrader.py start %GT_ARGS%

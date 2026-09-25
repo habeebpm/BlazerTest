@@ -139,6 +139,11 @@ class AdvisorConfig:
     telegram_utc_offset_hours: float = 4.0            # Oman, no daylight saving
     telegram_weekdays_only: bool = True
     display_timezone: str = "Asia/Muscat"             # the owner's clock, for the dashboard (Oman)
+    # Trade journal (trade_journal.py): every closed trade of both sources, Claude's
+    # decisions and the Telegram signal log as CSV files, copied into this folder
+    # every few minutes - a Google Drive for Desktop folder, so they can be read
+    # from Drive for analysis. Created if its parent exists; "" = logs\ only.
+    journal_folder: str = r"G:\MyDrive\MyMQChartDrive\GoldTrader"
     friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this New York time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
     min_adx: float = 0.0              # e.g. 25: no entry while M15 ADX14 is below this

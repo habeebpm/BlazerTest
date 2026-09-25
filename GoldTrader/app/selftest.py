@@ -4320,6 +4320,143 @@ def test_dashboard_password() -> bool:
     return ok
 
 
+class FakeMt5Journal:
+    """history_deals_get() + history_orders_get() for mt5_gateway.journal_positions()."""
+    DEAL_ENTRY_IN, DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY = 0, 1, 3
+    DEAL_TYPE_BUY, DEAL_TYPE_SELL = 0, 1
+
+    class Deal:
+        def __init__(self, pid, magic, entry, type_, time, price, volume, profit=0.0,
+                     commission=0.0, reason=3, symbol="XAUUSD"):
+            self.position_id, self.magic, self.entry, self.type = pid, magic, entry, type_
+            self.time, self.price, self.volume, self.profit = time, price, volume, profit
+            self.commission, self.swap, self.fee, self.reason = commission, 0.0, 0.0, reason
+            self.symbol, self.comment = symbol, "tg"
+
+    class Order:
+        def __init__(self, pid, time_setup, sl):
+            self.position_id, self.time_setup, self.sl = pid, time_setup, sl
+
+    def __init__(self, deals, orders):
+        self._deals, self._orders = deals, orders
+
+    def history_deals_get(self, date_from, date_to):
+        return self._deals
+
+    def history_orders_get(self, date_from, date_to):
+        return self._orders
+
+
+def test_trade_journal() -> bool:
+    print("\n=== 44. trade journal for Google Drive (every closed trade, decisions, signals) ===")
+    import trade_journal as TJ
+    ok = True
+    t0 = int(datetime(2026, 9, 25, 9, 0, tzinfo=timezone.utc).timestamp())
+    D, O, M = FakeMt5Journal.Deal, FakeMt5Journal.Order, FakeMt5Journal
+    fake = M([
+        # Telegram BUY: stop moved by hand to +$2.86, filled at 4295.00 (the real first trade).
+        D(201, 20260922, M.DEAL_ENTRY_IN, M.DEAL_TYPE_BUY, t0, 4293.14, 1.66, commission=-5.0),
+        D(201, 0, M.DEAL_ENTRY_OUT, M.DEAL_TYPE_SELL, t0 + 3600, 4295.00, 1.66, profit=308.76, reason=4),
+        # Claude SELL closed in two parts: EA close, then the locked stop (+1R less $0.40 slippage).
+        D(202, 20260921, M.DEAL_ENTRY_IN, M.DEAL_TYPE_SELL, t0 + 60, 4300.0, 1.0),
+        D(202, 20260921, M.DEAL_ENTRY_OUT, M.DEAL_TYPE_BUY, t0 + 600, 4296.0, 0.5, profit=200.0, reason=3),
+        D(202, 20260921, M.DEAL_ENTRY_OUT, M.DEAL_TYPE_BUY, t0 + 1200, 4294.4, 0.5, profit=280.0, reason=4),
+        # Telegram BUY stopped at the original -$6 stop.
+        D(203, 20260922, M.DEAL_ENTRY_IN, M.DEAL_TYPE_BUY, t0 + 90, 4280.0, 1.0),
+        D(203, 20260922, M.DEAL_ENTRY_OUT, M.DEAL_TYPE_SELL, t0 + 900, 4274.0, 1.0, profit=-600.0, reason=4),
+        # Still open, another symbol, another magic: all left out.
+        D(204, 20260922, M.DEAL_ENTRY_IN, M.DEAL_TYPE_BUY, t0 + 100, 4290.0, 1.0),
+        D(205, 20260922, M.DEAL_ENTRY_IN, M.DEAL_TYPE_BUY, t0, 1.1, 1.0, symbol="EURUSD"),
+        D(205, 20260922, M.DEAL_ENTRY_OUT, M.DEAL_TYPE_SELL, t0 + 50, 1.2, 1.0, symbol="EURUSD"),
+        D(206, 999, M.DEAL_ENTRY_IN, M.DEAL_TYPE_BUY, t0, 4290.0, 1.0),
+        D(206, 999, M.DEAL_ENTRY_OUT, M.DEAL_TYPE_SELL, t0 + 50, 4291.0, 1.0, reason=0),
+    ], [O(201, t0, 4287.14), O(202, t0 + 60, 4306.0), O(203, t0 + 90, 4274.0)])
+    gw._mt5, old_clock = fake, gw._CLOCK["fixed_offset"]
+    gw._CLOCK["fixed_offset"] = 0            # server clock = UTC here
+    try:
+        pos = gw.journal_positions("XAUUSD", [20260921, 20260922])
+    finally:
+        gw._mt5, gw._CLOCK["fixed_offset"] = None, old_clock
+    ok &= check("only closed positions of this symbol and both magics, oldest close first",
+                [p["ticket"] for p in pos] == [203, 202, 201], [p["ticket"] for p in pos])
+    by = {p["ticket"]: p for p in pos}
+    ok &= check("a position closed in two parts is one row: exit price volume-weighted, last reason",
+                abs(by[202]["exit_price"] - 4295.2) < 1e-9 and by[202]["volume"] == 1.0
+                and by[202]["exit_reason"] == "stop loss" and by[202]["direction"] == "sell")
+    ok &= check("money over all deals (entry commission too), first stop from the order",
+                abs(by[201]["net"] - 303.76) < 1e-9 and by[201]["initial_sl"] == 4287.14
+                and by[201]["magic"] == 20260922, by[201])
+
+    names = {20260921: "Claude", 20260922: "Telegram"}
+    rows = {r["ticket"]: r for r in TJ.trade_rows(pos, names, 6.0, "Asia/Muscat")}
+    r1 = rows[201]
+    ok &= check("the hand-moved stop is flagged; R = move / $6 stop",
+                r1["note"] == "stop moved by hand" and r1["result_r"] == 0.31 and r1["move"] == 1.86
+                and r1["source"] == "Telegram" and r1["exit_reason"] == "stop loss", r1)
+    ok &= check("the EA's own stops are not flagged (-1R, and the +1R lock with slippage)",
+                rows[203]["note"] == "" and rows[203]["result_r"] == -1.0
+                and rows[202]["note"] == "" and rows[202]["result_r"] == 0.8, (rows[203], rows[202]))
+    ok &= check("times in UTC and Oman (UTC+4), minutes open",
+                r1["open_time_utc"] == "2026-09-25 09:00:00" and r1["open_time_local"] == "2026-09-25 13:00:00"
+                and r1["minutes_open"] == 60, r1)
+
+    class FakeGateway:
+        def __init__(self, positions):
+            self.positions = positions
+
+        def journal_positions(self, symbol, magics):
+            return self.positions
+
+        def price_distance_for_dollars(self, spec, dollars, lots):
+            return 6.0
+
+        def terminal_files_dir(self):
+            return self.files_dir
+
+    with _tempfile.TemporaryDirectory() as d:
+        cfg = AdvisorConfig()
+        cfg.log_dir = os.path.join(d, "logs")
+        drive = os.path.join(d, "MyMQChartDrive")
+        os.makedirs(drive)
+        cfg.journal_folder = os.path.join(drive, "GoldTrader")
+        os.makedirs(cfg.log_dir)
+        with open(os.path.join(cfg.log_dir, "decisions.csv"), "w", encoding="utf-8") as f:
+            f.write("time,conviction\n2026-09-25,full\n")
+        g = FakeGateway(pos)
+        g.files_dir = os.path.join(d, "mt5files")
+        os.makedirs(g.files_dir)
+        with open(os.path.join(g.files_dir, "TelegramSMC_Signals.csv"), "w", encoding="utf-16") as f:
+            f.write("time_utc,action\r\n2026-09-25,OPEN\r\n")
+        changed = TJ.write_all(g, cfg, None)
+        in_drive = sorted(os.listdir(cfg.journal_folder))
+        ok &= check("the Drive subfolder is created and gets trades, Claude decisions and signals",
+                    in_drive == sorted([TJ.TRADES_FILE, TJ.DECISIONS_FILE, TJ.SIGNALS_FILE])
+                    and len(changed) == 6, (in_drive, changed))
+        text = open(os.path.join(cfg.journal_folder, TJ.TRADES_FILE), encoding="utf-8-sig").read()
+        sig = open(os.path.join(cfg.journal_folder, TJ.SIGNALS_FILE), encoding="utf-8-sig").read()
+        ok &= check("readable CSV: header + one row per trade; the EA's UTF-16 log becomes UTF-8",
+                    text.splitlines()[0] == ",".join(TJ.COLUMNS) and len(text.splitlines()) == 4
+                    and sig == "time_utc,action\n2026-09-25,OPEN\n", sig)
+        ok &= check("unchanged content is not rewritten (Drive uploads only real changes)",
+                    TJ.write_all(g, cfg, None) == [])
+        cfg.journal_folder = os.path.join(d, "no-such-drive", "GoldTrader")
+        TJ._state["warned"].clear()
+        TJ.write_all(g, cfg, None)
+        ok &= check("Drive missing: the journal stays in logs\\journal, no error",
+                    not os.path.exists(cfg.journal_folder)
+                    and os.path.exists(os.path.join(cfg.log_dir, "journal", TJ.TRADES_FILE)))
+
+        class Broken:
+            def journal_positions(self, symbol, magics):
+                raise RuntimeError("MT5 gone")
+
+        TJ._state["last"] = 0.0
+        ok &= check("a failure never reaches trading (maybe_write returns False, no exception)",
+                    TJ.maybe_write(Broken(), cfg, None) is False)
+        TJ._state["last"] = 0.0
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -4366,6 +4503,7 @@ def main() -> int:
         test_three_legs_to_claude_to_trade(),
         test_status_report(),
         test_dashboard_password(),
+        test_trade_journal(),
     ]
     print()
     if all(results):

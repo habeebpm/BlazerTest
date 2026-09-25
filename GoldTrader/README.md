@@ -119,7 +119,14 @@ home on the same Wi-Fi, or anywhere with Tailscale on the PC and the phone.
 Equity, open trades, results per source, Claude's decisions, Telegram
 signals and the scorecard, refreshed every minute. Read-only.
 
-**Trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->
+**Trade journal in Google Drive:** automatic. Every few minutes
+`start.bat` writes three CSV files into `G:\MyDrive\MyMQChartDrive\GoldTrader`
+(your Drive folder): every closed trade of both sources, Claude's decisions
+and the Telegram signal log. Ask Claude to analyse them straight from Drive -
+no uploading. Different Drive path: `--journal-folder "X:\path"` in
+`start.bat`.
+
+**MT5 trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->
 **Load** `TelegramSMC_TradeLogger_Unified.set`.
 
 Step by step with checks: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).

@@ -33,6 +33,7 @@ import news_check
 import relay_supervisor
 import services
 import status_report
+import trade_journal
 import tactics
 import telegram_alert
 import xtr_logic
@@ -135,6 +136,9 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
     if args.friday_cutoff is not None:
         cfg.friday_cutoff_ny = "" if args.friday_cutoff.strip().lower() in ("", "off") \
             else args.friday_cutoff
+    if args.journal_folder is not None:
+        cfg.journal_folder = "" if args.journal_folder.strip().lower() in ("", "off") \
+            else args.journal_folder
     if args.max_spread is not None:
         cfg.max_spread_points = args.max_spread
     if args.min_adx is not None:
@@ -843,6 +847,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--friday-cutoff", dest="friday_cutoff",
                         help="no new entry on Friday from this New York time (e.g. 16:00; "
                              "'off' = none)")
+    parser.add_argument("--journal-folder", dest="journal_folder",
+                        help="copy the trade journal CSVs into this folder every few minutes (default: "
+                             "config.py's journal_folder, the Google Drive folder "
+                             "G:\\MyDrive\\MyMQChartDrive\\GoldTrader; 'off' = keep them in logs only)")
     parser.add_argument("--max-spread", type=int, dest="max_spread",
                         help="no entry while the spread is above this many points (0 = off)")
     parser.add_argument("--min-adx", type=float, dest="min_adx",
@@ -974,6 +982,7 @@ def main(argv: list | None = None) -> int:
         log.info("XTR alignment gate: %s (entry filter only - lot, SL and TP unchanged)", cfg.xtr_gate)
         log.info("Entry tactics: %s (entry filters only - lot, SL and TP unchanged)",
                  tactics.describe(cfg))
+        log.info("%s", trade_journal.describe(cfg))
         log.info("Breaking-news check before each entry: %s",
                  "off" if not cfg.breaking_news_check else
                  f"{len(cfg.news_feeds)} free RSS feed(s)"
@@ -1009,6 +1018,7 @@ def main(argv: list | None = None) -> int:
     start_companions(cfg, args.preset, force_relay=args.relay)
     log.info("Entry filters: XTR gate %s; %s (lot, SL, TP and trail unchanged)",
              cfg.xtr_gate, tactics.describe(cfg))
+    log.info("%s", trade_journal.describe(cfg))
 
     log.info("Watching %s for a new closed %s candle every %ds - Ctrl+C to stop.",
               cfg.symbol, cfg.primary_timeframe, cfg.poll_seconds)
@@ -1083,6 +1093,9 @@ def main(argv: list | None = None) -> int:
         # The web dashboard's file (dashboard/, logs/status.json) - at most
         # once a minute, never raises, never touches trading.
         status_report.maybe_write(gw, cfg, spec, day)
+        # The trade journal for Google Drive (trade_journal.py) - every few
+        # minutes, only changed files, never raises.
+        trade_journal.maybe_write(gw, cfg, spec)
 
         if cfg.telegram_alert_bot_token and cfg.telegram_alert_chat_id:
             if heartbeat.due_heartbeat(cfg):
@@ -1112,6 +1125,7 @@ def main(argv: list | None = None) -> int:
             while time.time() < wake:
                 time.sleep(max(0.0, min(cfg.poll_seconds, wake - time.time())))
                 status_report.maybe_write(gw, cfg, spec, day)
+                trade_journal.maybe_write(gw, cfg, spec)
         except KeyboardInterrupt:     # Ctrl+C lands here most of the time - no traceback
             log.info("Stopped.")
             return 0

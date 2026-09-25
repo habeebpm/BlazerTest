@@ -402,6 +402,80 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
     return sorted(by_position.values(), key=lambda r: r["time"])
 
 
+# DEAL_REASON_* -> who or what closed a position (MetaTrader5's own values).
+DEAL_REASONS = {0: "closed by you (PC)", 1: "closed by you (phone)", 2: "closed by you (web)",
+                3: "closed by the EA", 4: "stop loss", 5: "take profit", 6: "stop out (margin)"}
+
+
+def journal_positions(symbol: str, magics, lookback_days: int = 3650) -> list[dict]:
+    """Every closed position under `magics`, oldest first, for the trade
+    journal (trade_journal.py): open/close time in true UTC, volume-weighted
+    entry and exit price, the stop it was opened with, and who or what closed
+    it. Money is summed over ALL of the position's deals (the entry deal's
+    commission too); a position closed in parts is one row."""
+    m = mt5()
+    now = datetime.now(timezone.utc)
+    start, end = now - timedelta(days=lookback_days + 1), now + timedelta(days=1)
+    deals = m.history_deals_get(start, end)
+    if deals is None:
+        return []
+    wanted = {int(x) for x in magics}
+    mine = [d for d in deals if d.symbol == symbol]
+    # The entry deal carries the magic; an SL/TP exit deal is not relied on to.
+    magic_of = {d.position_id: int(d.magic) for d in mine if d.entry == m.DEAL_ENTRY_IN}
+    closed_ids = {d.position_id for d in mine if d.entry in (m.DEAL_ENTRY_OUT, m.DEAL_ENTRY_OUT_BY)}
+    rows = [d for d in mine if d.position_id in closed_ids
+            and magic_of.get(d.position_id, int(d.magic)) in wanted]
+    if not rows:
+        return []
+    times = server_to_utc([d.time for d in rows])
+    first_sl = {}
+    orders = m.history_orders_get(start, end) if hasattr(m, "history_orders_get") else None
+    for o in sorted(orders or [], key=lambda o: o.time_setup):
+        pid = getattr(o, "position_id", 0)
+        if pid in closed_ids and pid not in first_sl and float(getattr(o, "sl", 0.0)) > 0:
+            first_sl[pid] = float(o.sl)
+
+    by_position = {}
+    for d, t in zip(rows, times):
+        p = by_position.setdefault(d.position_id, {
+            "ticket": d.position_id, "magic": magic_of.get(d.position_id, int(d.magic)),
+            "direction": "", "volume": 0.0, "open_time": None, "close_time": None,
+            "_in": [0.0, 0.0], "_out": [0.0, 0.0], "closed_volume": 0.0,
+            "profit": 0.0, "swap": 0.0, "commission": 0.0, "exit_reason": "",
+            "initial_sl": first_sl.get(d.position_id, 0.0), "comment": ""})
+        t = t.to_pydatetime()
+        vol, price = float(d.volume), float(d.price)
+        p["profit"] += float(d.profit)
+        p["swap"] += float(d.swap)
+        p["commission"] += float(d.commission) + float(getattr(d, "fee", 0.0))
+        if d.entry == m.DEAL_ENTRY_IN:
+            p["direction"] = "buy" if d.type == m.DEAL_TYPE_BUY else "sell"
+            p["volume"] += vol
+            p["_in"][0] += vol * price
+            p["_in"][1] += vol
+            p["open_time"] = t if p["open_time"] is None else min(p["open_time"], t)
+            p["comment"] = p["comment"] or str(getattr(d, "comment", "") or "")
+        else:
+            if not p["direction"]:
+                p["direction"] = "buy" if d.type == m.DEAL_TYPE_SELL else "sell"
+            p["_out"][0] += vol * price
+            p["_out"][1] += vol
+            p["closed_volume"] += vol
+            if p["close_time"] is None or t >= p["close_time"]:
+                p["close_time"] = t
+                p["exit_reason"] = DEAL_REASONS.get(int(getattr(d, "reason", -1)), "other")
+    out = []
+    for p in by_position.values():
+        p["entry_price"] = p["_in"][0] / p["_in"][1] if p["_in"][1] else 0.0
+        p["exit_price"] = p["_out"][0] / p["_out"][1] if p["_out"][1] else 0.0
+        p["volume"] = p["volume"] or p["closed_volume"]
+        p["net"] = p["profit"] + p["swap"] + p["commission"]
+        del p["_in"], p["_out"]
+        out.append(p)
+    return sorted(out, key=lambda r: r["close_time"])
+
+
 def recent_closed_trades(symbol: str, magic: int, count: int = 10,
                           lookback_days: int = 14) -> list[dict]:
     """This system's own closed trades (one magic number), newest first -

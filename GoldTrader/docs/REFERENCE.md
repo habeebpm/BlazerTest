@@ -139,6 +139,7 @@ instead of restarting.
 | `logs/ml_retrain.log`, `logs/calibration_report.log`, `logs/scorecard.log` | Output of the automatic jobs |
 | `logs/day_state.json`, `logs/xtr_state.json`, `logs/services_state.json` | State kept across restarts |
 | `logs/status.json` | The dashboard's data, rewritten once a minute |
+| `logs/journal/` and Drive `MyMQChartDrive\GoldTrader\` | Trade journal: `GoldTrader_trades.csv`, `GoldTrader_claude_decisions.csv`, `GoldTrader_telegram_signals.csv` |
 | `dashboard/App_Data/password.txt` | The dashboard password's salted hash (never uploaded) |
 | MT5 `MQL5\Files\TelegramSMC_Signals.csv` / `..._Results.csv` | EA signal log / trade journal |
 | MT5 `Common\Files\XTR_Data\` | Price files (and your Drive folder if set) |
@@ -205,6 +206,25 @@ broker clock (New York + 7 hours, i.e. UTC+2 in winter, UTC+3 in summer),
 and a live tick confirms it or switches to your broker's fixed offset (the
 log says `Broker server clock: ...`). The trading hours use your PC's UTC
 clock (Python and the EA alike), so keep Windows time synced (Settings -> Time -> Sync now).
+
+## Trade journal in Google Drive
+
+Every 5 minutes the trading program writes three CSV files into
+`logs\journal` and copies them to `G:\MyDrive\MyMQChartDrive\GoldTrader`
+(created if `MyMQChartDrive` exists; Drive for Desktop uploads them). Only a
+file that changed is rewritten.
+
+| File | One row per | Columns |
+|---|---|---|
+| `GoldTrader_trades.csv` | closed trade, Claude and Telegram, rebuilt from MT5's own history | ticket, source, direction, lots, open/close time (UTC and Oman), minutes open, entry, exit, first stop, exit reason (stop loss / closed by the EA / closed by you (PC, phone, web) / stop out), move in $, result in R, profit, swap, commission, net, note |
+| `GoldTrader_claude_decisions.csv` | Claude evaluation | a copy of `logs/decisions.csv` |
+| `GoldTrader_telegram_signals.csv` | Telegram message the EA received | a copy of the EA's signal log: action, direction, copied or why not |
+
+The note `stop moved by hand` marks an exit on a stop the EA never sets
+(between -0.8R and +0.7R): the EA opens at -1R and only moves the stop to the
++1R lock or beyond. To analyse, ask Claude to read the files from your
+Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
+(`off` = logs only). Trading never waits on it or fails because of it.
 
 ## Price files for XTR (Drive)
 
