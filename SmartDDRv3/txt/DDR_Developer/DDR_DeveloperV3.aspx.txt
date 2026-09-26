@@ -1,0 +1,1945 @@
+<%@ Page Language="vb" AutoEventWireup="false" CodeBehind="DDR_DeveloperV3.aspx.vb" Inherits="SmarTagsASP.DDR_DeveloperV3" %>
+<!DOCTYPE html>
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head runat="server">
+
+    <title>Worley SmartDDR</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <style>
+/* ==========================
+   DESIGN TOKENS
+========================== */
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+:root{
+    --primary:#0F766E;
+    --primary-light:#14B8A6;
+    --primary-dark:#0B5750;
+    --secondary:#0EA5E9;
+    --bg:#F8FAFC;
+    --card:#FFFFFF;
+    --border:#E2E8F0;
+    --text:#0F172A;
+    --text-light:#64748B;
+    --success:#16A34A;
+    --success-bg:#ECFDF5;
+    --danger:#DC2626;
+    --danger-bg:#FEF2F2;
+    --warning:#D97706;
+    --warning-bg:#FFFBEB;
+    --sidebar-width:260px;
+    --radius:14px;
+    --shadow:0 4px 12px rgba(15,23,42,.06);
+}
+
+@media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+        --bg:#0B1220;
+        --card:#111A2B;
+        --border:#22314A;
+        --text:#E2E8F0;
+        --text-light:#94A3B8;
+        --success-bg:#062A1D;
+        --danger-bg:#2A0E0E;
+        --warning-bg:#2A2008;
+    }
+}
+
+:root[data-theme="dark"]{
+    --bg:#0B1220;
+    --card:#111A2B;
+    --border:#22314A;
+    --text:#E2E8F0;
+    --text-light:#94A3B8;
+    --success-bg:#062A1D;
+    --danger-bg:#2A0E0E;
+    --warning-bg:#2A2008;
+}
+
+body{
+    font-family:"Segoe UI",Tahoma,Arial,sans-serif;
+    background:var(--bg);
+    color:var(--text);
+}
+
+a{ color:inherit; }
+
+/* ==========================
+   LAYOUT
+========================== */
+
+.container{
+    display:flex;
+    min-height:100vh;
+}
+
+.sidebar{
+    background:linear-gradient(180deg,#1C3737,var(--primary-light));
+    width:var(--sidebar-width);
+    color:white;
+    padding:16px 14px;
+    position:fixed;
+    top:0;
+    bottom:0;
+    left:0;
+    overflow-y:auto;
+    z-index:500;
+    transition:transform .25s ease;
+}
+
+.main{
+    margin-left:var(--sidebar-width);
+    padding:16px 20px 20px;
+    min-height:100vh;
+    width:calc(100% - var(--sidebar-width));
+}
+
+.mobile-topbar{
+    display:none;
+    align-items:center;
+    justify-content:space-between;
+    background:var(--card);
+    border-bottom:1px solid var(--border);
+    padding:12px 16px;
+    position:sticky;
+    top:0;
+    z-index:400;
+}
+
+.hamburger{
+    background:none;
+    border:1px solid var(--border);
+    border-radius:8px;
+    font-size:18px;
+    padding:6px 10px;
+    cursor:pointer;
+    color:var(--text);
+}
+
+@media (max-width:900px){
+    .sidebar{
+        transform:translateX(-100%);
+        width:280px;
+    }
+    .sidebar.open{
+        transform:translateX(0);
+        box-shadow:10px 0 30px rgba(0,0,0,.25);
+    }
+    .main{
+        margin-left:0;
+        width:100%;
+        padding:16px;
+    }
+    .mobile-topbar{
+        display:flex;
+    }
+    .drawer{
+        left:4vw !important;
+        width:92vw !important;
+        max-height:80vh;
+    }
+}
+
+/* ==========================
+   LOGO / SIDEBAR
+========================== */
+
+.logo{
+    text-align:center;
+    padding-bottom:12px;
+    margin-bottom:12px;
+    border-bottom:1px solid rgba(255,255,255,.15);
+}
+
+.logo h2{
+    color:white;
+    font-size:24px;
+    font-weight:700;
+}
+
+.logo small{
+    color:#CBD5E1;
+    display:block;
+    margin-top:4px;
+}
+
+.side-nav{
+    display:flex;
+    flex-direction:column;
+}
+
+.nav-section{
+    margin-bottom:14px;
+}
+
+.nav-section-label{
+    font-size:10px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+    color:rgba(255,255,255,.45);
+    padding:0 10px 6px;
+}
+
+.nav-item{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    width:100%;
+    padding:9px 10px;
+    margin-bottom:2px;
+    border-radius:8px;
+    background:none;
+    border:none;
+    color:rgba(255,255,255,.85);
+    font-size:13px;
+    font-weight:500;
+    font-family:inherit;
+    text-align:left;
+    text-decoration:none;
+    cursor:pointer;
+    transition:background .15s,color .15s;
+}
+
+.nav-item:hover{
+    background:rgba(255,255,255,.1);
+    color:white;
+}
+
+.nav-item[disabled]{
+    opacity:.5;
+    cursor:not-allowed;
+}
+
+.nav-icon{
+    flex:0 0 auto;
+    width:16px;
+    height:16px;
+    display:inline-flex;
+}
+
+.nav-icon svg{
+    width:16px;
+    height:16px;
+    stroke:currentColor;
+    stroke-width:2;
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+}
+
+.nav-upload-row{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    padding:2px 10px 6px;
+}
+
+.nav-file-input{
+    width:100%;
+    font-size:11px;
+    color:rgba(255,255,255,.85);
+    background:rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.15);
+    border-radius:8px;
+    padding:6px 8px;
+}
+
+.nav-file-input::file-selector-button{
+    background:rgba(255,255,255,.18);
+    color:white;
+    border:none;
+    border-radius:6px;
+    padding:4px 8px;
+    margin-right:8px;
+    font-size:11px;
+    cursor:pointer;
+}
+
+.nav-file-input::file-selector-button:hover{
+    background:rgba(255,255,255,.28);
+}
+
+.stat-card{
+    background:white;
+    color:#1E293B;
+    border-radius:12px;
+    padding:10px 12px;
+    border:1px solid rgba(0,0,0,.04);
+}
+
+.match-table{
+    width:100%;
+    font-size:12px;
+    border-collapse:collapse;
+}
+
+.match-table th,
+.match-table td{
+    padding:4px 6px;
+    text-align:center;
+}
+
+.match-table th{
+    color:#0F172A;
+    font-weight:700;
+    border-bottom:1px solid #E2E8F0;
+}
+
+/* ==========================
+   HEADER / CONTEXT BAR
+========================== */
+
+.context-bar{
+    background:var(--card);
+    border-radius:var(--radius);
+    padding:10px 16px;
+    margin-bottom:10px;
+    border:1px solid var(--border);
+    box-shadow:var(--shadow);
+    display:flex;
+    flex-wrap:wrap;
+    gap:18px;
+    align-items:center;
+}
+
+.context-item{
+    font-size:13px;
+}
+
+.context-item b{
+    display:block;
+    font-size:10px;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--text-light);
+}
+
+.context-nav{
+    margin-left:auto;
+    display:flex;
+    gap:8px;
+}
+
+/* ==========================
+   KPI SCORECARD
+========================== */
+
+.kpi-row{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:10px;
+    margin-bottom:12px;
+}
+
+.kpi-tile{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:12px 14px;
+    box-shadow:var(--shadow);
+}
+
+.kpi-label{
+    font-size:11px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    color:var(--text-light);
+    margin-bottom:4px;
+}
+
+.kpi-value{
+    font-size:22px;
+    font-weight:600;
+    color:var(--text);
+}
+
+.kpi-value.positive{ color:var(--success); }
+.kpi-value.negative{ color:var(--danger); }
+
+.match-flag{
+    font-size:15px;
+}
+
+/* ==========================
+   TOOLBAR / BUTTONS
+========================== */
+
+.toolbar{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+    align-items:center;
+}
+
+.btn{
+    background:linear-gradient(0deg,#1C3737,var(--primary-light));
+    border:none;
+    border-radius:9px;
+    padding:9px 16px;
+    font-weight:600;
+    font-size:13px;
+    cursor:pointer;
+    color:white;
+    transition:.15s;
+}
+
+.btn:hover{
+    filter:brightness(1.08);
+    transform:translateY(-1px);
+}
+
+.btn:focus-visible,
+.btn-primary:focus-visible,
+.circle-btn:focus-visible,
+.nav-item:focus-visible{
+    outline:3px solid var(--secondary);
+    outline-offset:2px;
+}
+
+.btn-primary{
+    background:linear-gradient(0deg,#1C3737,var(--primary-light));
+    border:none;
+    border-radius:9px;
+    padding:9px 18px;
+    font-weight:600;
+    font-size:13px;
+    color:white;
+    cursor:pointer;
+}
+
+.btn-secondary{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:9px;
+    padding:9px 16px;
+    font-weight:600;
+    font-size:13px;
+    color:var(--text);
+    cursor:pointer;
+}
+
+.btn-danger{
+    background:var(--danger);
+    color:white;
+    border:none;
+    border-radius:8px;
+    padding:6px 10px;
+    font-size:13px;
+    cursor:pointer;
+}
+
+.btn[disabled],
+.btn-primary[disabled]{
+    opacity:.55;
+    cursor:not-allowed;
+    transform:none;
+}
+
+.circle-btn{
+    width:34px;
+    height:34px;
+    border-radius:50%;
+    text-decoration:none;
+    border:1px solid var(--primary-light);
+    background:var(--card);
+    color:var(--primary-light);
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    transition:.2s;
+    cursor:pointer;
+}
+
+.circle-btn:hover{
+    background:var(--primary-light);
+    color:white;
+}
+
+.circle-btn svg{
+    width:18px;
+    height:18px;
+    stroke:currentColor;
+    stroke-width:3;
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+}
+
+/* ==========================
+   GRID
+========================== */
+
+.grid-container{
+    background:var(--card);
+    border-radius:var(--radius);
+    border:1px solid var(--border);
+    padding:10px;
+    box-shadow:var(--shadow);
+    overflow:auto;
+    margin-bottom:12px;
+}
+
+.gridview{
+    width:100%;
+    min-width:1500px;
+    background:var(--card);
+    border-collapse:collapse;
+    table-layout:auto;
+}
+
+.gridview th{
+    background:linear-gradient(135deg,var(--primary),var(--primary-light));
+    color:white;
+    font-size:12px;
+    font-weight:600;
+    padding:8px 6px;
+    text-align:center;
+    vertical-align:middle;
+    position:sticky;
+    top:0;
+    z-index:5;
+    border-right:1px solid rgba(255,255,255,.25);
+}
+
+.gridview td{
+    padding:8px 6px;
+    border-bottom:1px solid var(--border);
+    vertical-align:top;
+    white-space:normal;
+    word-break:break-word;
+    font-size:13px;
+}
+
+.gridview input[type=text],
+.gridview select{
+    width:100%;
+    min-width:80px;
+}
+
+.row-invalid{
+    outline:2px solid var(--danger);
+    outline-offset:-2px;
+    background:var(--danger-bg) !important;
+}
+
+.field-hint{
+    font-size:11px;
+    color:var(--text-light);
+}
+
+.empty-state{
+    text-align:center;
+    padding:26px 12px;
+    color:var(--text-light);
+    font-size:13px;
+}
+
+.badge{
+    display:inline-block;
+    padding:2px 8px;
+    border-radius:999px;
+    font-size:11px;
+    font-weight:700;
+}
+
+.badge-ok{ background:var(--success-bg); color:var(--success); }
+.badge-warn{ background:var(--warning-bg); color:var(--warning); }
+.badge-danger{ background:var(--danger-bg); color:var(--danger); }
+
+/* ==========================
+   STEP LABELS / DDR SECTIONS
+========================== */
+
+.step-label{
+    width:max-content;
+    background:linear-gradient(135deg,var(--primary-light),var(--primary));
+    color:white;
+    padding:6px 14px;
+    border-radius:20px;
+    font-size:11px;
+    font-weight:700;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    margin-bottom:10px;
+}
+
+.smart-card-ddr{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:12px 14px;
+    margin-bottom:10px;
+    box-shadow:var(--shadow);
+}
+
+/* ==========================
+   INPUTS / VALIDATION
+========================== */
+
+input[type=text],
+textarea,
+select{
+    padding:9px 10px;
+    border:1px solid var(--border);
+    border-radius:9px;
+    background:var(--card);
+    color:var(--text);
+    width:100%;
+    font-size:13px;
+}
+
+input[type=text]:focus,
+textarea:focus,
+select:focus{
+    outline:none;
+    border-color:var(--primary-light);
+    box-shadow:0 0 0 4px rgba(20,184,166,.15);
+}
+
+.validation-summary{
+    background:var(--danger-bg);
+    border:1px solid var(--danger);
+    color:var(--danger);
+    border-radius:10px;
+    padding:10px 14px;
+    margin-bottom:14px;
+    font-size:13px;
+}
+
+.validation-summary ul{
+    margin:6px 0 0 18px;
+}
+
+/* ==========================
+   LOADER
+========================== */
+
+.loader-overlay{
+    display:none;
+    position:fixed;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    background:rgba(15,23,42,.75);
+    z-index:99999;
+}
+
+.cmd-loader{
+    position:absolute;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    background:#111827;
+    color:var(--primary-light);
+    padding:26px 30px;
+    border-radius:16px;
+    font-family:Consolas,monospace;
+}
+
+.form-row{
+    margin-top:14px;
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:10px;
+}
+
+/* ==========================
+   TOASTS
+========================== */
+
+.toast-stack{
+    position:fixed;
+    top:16px;
+    right:16px;
+    z-index:100000;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    max-width:340px;
+}
+
+.toast{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-left:4px solid var(--primary-light);
+    border-radius:10px;
+    padding:12px 14px;
+    box-shadow:0 10px 25px rgba(0,0,0,.15);
+    font-size:13px;
+    animation:toast-in .2s ease;
+}
+
+.toast.success{ border-left-color:var(--success); }
+.toast.error{ border-left-color:var(--danger); }
+.toast.info{ border-left-color:var(--secondary); }
+
+@keyframes toast-in{
+    from{ opacity:0; transform:translateY(-8px); }
+    to{ opacity:1; transform:translateY(0); }
+}
+
+/* ==========================
+   CONFIRM MODAL
+========================== */
+
+dialog.confirm-dialog{
+    border:none;
+    border-radius:14px;
+    padding:0;
+    width:min(360px,90vw);
+    box-shadow:0 20px 50px rgba(0,0,0,.25);
+}
+
+dialog.confirm-dialog::backdrop{
+    background:rgba(15,23,42,.5);
+}
+
+.confirm-body{
+    padding:20px;
+}
+
+.confirm-actions{
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    padding:14px 20px;
+    border-top:1px solid var(--border);
+}
+
+/* ==========================
+   PLIP / CTD / MULTIPLIER DRAWER (anchored popover)
+========================== */
+
+/* Positioned via JS (positionDrawerNear) right under whichever button opened
+   it, rather than sliding in from the viewport edge - keeps the triggering
+   row/button in view alongside the drawer's own content. Falls back to a
+   fixed spot near the top of the main content when opened with no anchor
+   (e.g. the sidebar's global PLIP search). */
+.drawer{
+    position:fixed;
+    top:80px;
+    left:50%;
+    width:min(1000px,92vw);
+    max-height:min(72vh,640px);
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    box-shadow:0 20px 50px rgba(0,0,0,.25);
+    z-index:9999;
+    display:flex;
+    flex-direction:column;
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
+    transition:opacity .15s ease;
+    overflow:hidden;
+}
+
+.drawer.open{
+    opacity:1;
+    visibility:visible;
+    pointer-events:auto;
+}
+
+.drawer-overlay{
+    position:fixed;
+    inset:0;
+    background:transparent;
+    display:none;
+    z-index:9998;
+}
+
+.drawer-overlay.show{
+    display:block;
+}
+
+.drawer-header{
+    height:46px;
+    background:linear-gradient(135deg,var(--primary),var(--primary-light));
+    color:white;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 14px;
+    flex:0 0 auto;
+}
+
+.drawer-close{
+    cursor:pointer;
+    font-size:20px;
+    background:none;
+    border:none;
+    color:white;
+}
+
+.drawer-body{
+    padding:16px;
+    overflow-y:auto;
+    flex:1 1 auto;
+}
+
+.search-group{
+    margin-bottom:12px;
+}
+
+.search-group label{
+    display:block;
+    margin-bottom:4px;
+    font-size:12px;
+    font-weight:600;
+    color:var(--text-light);
+}
+
+.drawer-grid{
+    width:100%;
+    font-size:12px;
+    border-collapse:collapse;
+}
+
+.drawer-grid th{
+    background:var(--primary-light);
+    color:white;
+    padding:6px;
+    position:sticky;
+    top:0;
+}
+
+.drawer-grid td{
+    padding:6px;
+    border-bottom:1px solid var(--border);
+}
+
+.plip-link{
+    background:none;
+    border:none;
+    color:var(--primary-dark);
+    font-weight:700;
+    cursor:pointer;
+    text-decoration:underline;
+}
+
+.visually-hidden{
+    position:absolute !important;
+    width:1px;height:1px;
+    padding:0;margin:-1px;
+    overflow:hidden;
+    clip:rect(0,0,0,0);
+    white-space:nowrap;border:0;
+}
+
+/* ==========================
+   PLIP DETAIL FOOTER DRAWER
+========================== */
+
+.footer-drawer{
+    position:fixed;
+    left:0;
+    right:0;
+    bottom:0;
+    background:var(--card);
+    border-top:1px solid var(--border);
+    box-shadow:0 -10px 30px rgba(0,0,0,.15);
+    z-index:9990;
+    transform:translateY(100%);
+    transition:transform .2s ease;
+    max-height:220px;
+}
+
+.footer-drawer.open{
+    transform:translateY(0);
+}
+
+.footer-drawer-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:10px 16px;
+    background:linear-gradient(135deg,var(--primary),var(--primary-light));
+    color:white;
+}
+
+.footer-drawer-header h3{
+    font-size:14px;
+}
+
+.footer-drawer-body{
+    padding:12px 16px 16px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:24px;
+    overflow-y:auto;
+}
+
+.footer-detail{
+    min-width:140px;
+    font-size:13px;
+}
+
+.footer-detail b{
+    display:block;
+    font-size:10px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--text-light);
+    margin-bottom:2px;
+}
+/* ==========================
+   USER GUIDE DRAWER (left, half width)
+   Sits below the PLIP/CTD/Multiplier popovers (9999) and the PLIP footer
+   (9990) so those still work while the guide is open; no overlay, so the
+   page on the right stays usable for following the steps.
+========================== */
+
+.guide-drawer{
+    position:fixed;
+    top:0;
+    left:0;
+    bottom:0;
+    width:50vw;
+    min-width:min(420px,100vw);
+    background:var(--card);
+    border-right:1px solid var(--border);
+    box-shadow:12px 0 40px rgba(15,23,42,.22);
+    z-index:9980;
+    display:flex;
+    flex-direction:column;
+    transform:translateX(-102%);
+    visibility:hidden;
+    transition:transform .25s ease, visibility 0s linear .25s;
+}
+
+.guide-drawer.open{
+    transform:translateX(0);
+    visibility:visible;
+    transition:transform .25s ease;
+}
+
+.guide-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:10px 12px 10px 16px;
+    background:linear-gradient(135deg,var(--primary),var(--primary-light));
+    color:white;
+}
+
+.guide-header h3{
+    font-size:15px;
+    margin-right:auto;
+    min-width:0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.guide-header a,
+.guide-header button{
+    color:white;
+    background:rgba(255,255,255,.14);
+    border:1px solid rgba(255,255,255,.35);
+    border-radius:8px;
+    padding:5px 10px;
+    font-size:12px;
+    font-weight:600;
+    text-decoration:none;
+    white-space:nowrap;
+    cursor:pointer;
+}
+
+.guide-header a:hover,
+.guide-header button:hover{
+    background:rgba(255,255,255,.26);
+}
+
+.guide-frame{
+    flex:1;
+    width:100%;
+    border:0;
+    background:var(--bg);
+}
+
+.help-btn{
+    font-weight:700;
+    font-size:16px;
+}
+
+@media (max-width:900px){
+    .guide-drawer{
+        width:100vw;
+        min-width:0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce){
+    .guide-drawer,
+    .guide-drawer.open{
+        transition:none;
+    }
+}
+    </style>
+
+    <script>
+        function showLoader() {
+            document.getElementById("loaderOverlay").style.display = "block";
+            return true;
+        }
+
+        function toggleSidebar() {
+            document.querySelector(".sidebar").classList.toggle("open");
+        }
+
+        // Positions a drawer directly under the element that opened it (falls
+        // back to a fixed spot near the top of the main content when there's
+        // no specific anchor, e.g. the sidebar's global PLIP search), then
+        // clamps it inside the viewport so it never runs off the right edge
+        // or bottom of the screen.
+        function positionDrawerNear(drawerId, anchorEl) {
+            var drawer = document.getElementById(drawerId);
+            if (!drawer) return;
+
+            if (!anchorEl) {
+                // No specific anchor this time (e.g. re-opening after picking
+                // a search result) - leave it where it already is rather than
+                // jumping it, unless it has never been positioned at all.
+                if (!drawer.style.top) {
+                    drawer.style.top = "80px";
+                    drawer.style.left = "50%";
+                    drawer.style.transform = "translateX(-50%)";
+                }
+                return;
+            }
+
+            var rect = anchorEl.getBoundingClientRect();
+            var width = drawer.offsetWidth || 600;
+            var left = Math.max(16, Math.min(rect.left, window.innerWidth - width - 16));
+            var top = Math.max(16, Math.min(rect.bottom + 8, window.innerHeight - 120));
+
+            drawer.style.transform = "none";
+            drawer.style.left = left + "px";
+            drawer.style.top = top + "px";
+        }
+
+        function openDrawer(id, overlayId, anchorEl) {
+            positionDrawerNear(id, anchorEl);
+            document.getElementById(id).classList.add("open");
+            document.getElementById(overlayId).classList.add("show");
+        }
+
+        function closeDrawer(id, overlayId) {
+            document.getElementById(id).classList.remove("open");
+            document.getElementById(overlayId).classList.remove("show");
+        }
+
+        function openPLIPDrawer(anchorEl) { openDrawer("plipDrawer", "drawerOverlay", anchorEl); }
+        function closePLIPDrawer() { closeDrawer("plipDrawer", "drawerOverlay"); }
+        function openCTDDrawer(anchorEl) { openDrawer("CTDDrawer", "drawerOverlay1", anchorEl); }
+        function closeCTDDrawer() { closeDrawer("CTDDrawer", "drawerOverlay1"); }
+        function openMultiplierDrawer(anchorEl) { openDrawer("multiplierDrawer", "drawerOverlay2", anchorEl); }
+        function closeMultiplierDrawer() { closeDrawer("multiplierDrawer", "drawerOverlay2"); }
+
+        // The PLIP detail footer drawer isn't anchored/overlay-gated like the
+        // others - it just slides up from the bottom edge, so it can stay
+        // open alongside the PLIP search drawer while a row's PLIP is picked.
+        function openFooterDrawer() { document.getElementById("plipFooterDrawer").classList.add("open"); }
+        function closeFooterDrawer() { document.getElementById("plipFooterDrawer").classList.remove("open"); }
+
+        function toggleRemarks(link) {
+            var div = link.parentNode.querySelector("div");
+            var expanded = div.style.display !== "none";
+            div.style.display = expanded ? "none" : "block";
+            link.textContent = expanded ? "Show remarks" : "Hide remarks";
+            link.setAttribute("aria-expanded", (!expanded).toString());
+        }
+
+        // Generic confirm-before-postback helper for destructive LinkButton actions.
+        // The LinkButton already renders a javascript:__doPostBack(...) href; we
+        // capture it, show an accessible <dialog> instead of window.confirm(),
+        // and only replay the captured call if the user confirms.
+        var pendingAction = null;
+
+        function confirmAction(el, message) {
+            pendingAction = el.getAttribute("href");
+            document.getElementById("confirmMessage").textContent = message;
+            document.getElementById("confirmModal").showModal();
+            return false;
+        }
+
+        document.addEventListener("DOMContentLoaded", function () {
+            var yesBtn = document.getElementById("confirmYesBtn");
+            var noBtn = document.getElementById("confirmNoBtn");
+            var modal = document.getElementById("confirmModal");
+
+            if (yesBtn) {
+                yesBtn.addEventListener("click", function () {
+                    modal.close();
+                    var action = pendingAction;
+                    pendingAction = null;
+                    if (action) {
+                        // action looks like: javascript:__doPostBack('id','arg')
+                        eval(action.replace(/^javascript:/, ""));
+                    }
+                });
+            }
+            if (noBtn) {
+                noBtn.addEventListener("click", function () {
+                    pendingAction = null;
+                    modal.close();
+                });
+            }
+        });
+
+        // Toast helper. Server code calls showToast(type, message) via a
+        // registered startup script using HttpUtility.JavaScriptStringEncode,
+        // so message text is always safely escaped before it reaches here.
+        function showToast(type, message) {
+            var stack = document.getElementById("toastStack");
+            if (!stack) return;
+            var toast = document.createElement("div");
+            toast.className = "toast " + type;
+            toast.setAttribute("role", "status");
+            toast.textContent = message;
+            stack.appendChild(toast);
+            window.setTimeout(function () {
+                toast.remove();
+            }, 5000);
+        }
+
+        // Mirrors the server-side checks in btnSaveAll_Click (which remain the
+        // authority): Document No, Title and RAMZ ID on every row; on new
+        // document rows (data-new="1", not ACTIVITY) also a PLIP, no AAA-UU area
+        // placeholder, and dummy numbers in the DU pattern (not DUMMY / XXX).
+        var DUMMY_BAD_RE = /(^|-)DUMMY(-|$)|XXX/i;
+
+        function markField(el, bad) {
+            if (!el) return true;
+            el.classList.toggle("row-invalid", !!bad);
+            return !bad;
+        }
+
+        function validateDdrRow(row) {
+            // Class hooks, not ID suffixes: with ASP.NET 4's default ClientIDMode a
+            // grid row's IDs end in the row index (grdDDREntry_txtTitle_0).
+            var docNo = row.querySelector(".js-docno");
+            var title = row.querySelector(".js-title");
+            var ramz = row.querySelector(".js-ramz");
+            var plip = row.querySelector(".js-plip");
+            var doc = docNo ? docNo.value.trim() : "";
+            var isActivity = doc.toUpperCase() === "ACTIVITY";
+            var isNewDoc = row.getAttribute("data-new") === "1" && !isActivity;
+            var ok = true;
+            ok = markField(docNo, !doc || (isNewDoc && (/^AAA-UU/i.test(doc) || DUMMY_BAD_RE.test(doc)))) && ok;
+            ok = markField(title, !(title && title.value.trim())) && ok;
+            ok = markField(ramz, !(ramz && ramz.value)) && ok;
+            ok = markField(plip, isNewDoc && !(plip && plip.value.trim())) && ok;
+            return ok;
+        }
+
+        function validateAllDdrRows() {
+            var ok = true;
+            document.querySelectorAll(".gridview tr").forEach(function (row) {
+                if (row.querySelector(".js-docno") && !validateDdrRow(row)) {
+                    ok = false;
+                }
+            });
+            if (!ok) {
+                showToast("error", "Fix the highlighted boxes: Document No, Title and RAMZ ID are required; new documents also need a PLIP, a real area code instead of AAA-UU, and a DU dummy number (e.g. DUM01) instead of DUMMY or XXX.");
+            }
+            return ok;
+        }
+
+        // The sidebar PLIP Search is for looking PLIPs up: clear any row target so
+        // a pick can't land on the row that was searched last.
+        function openGlobalPlipSearch(anchor) {
+            var hf = document.getElementById("hfSelectedRow");
+            if (hf) hf.value = "";
+            openPLIPDrawer(anchor);
+        }
+        // ---- User guide drawer -------------------------------------------
+        // WebForms postbacks reload the whole page, so the drawer remembers
+        // (per browser tab) whether it was open and where the guide was
+        // scrolled to, and reopens itself in the same place afterwards.
+        var GUIDE_KEY = "sddr.devguide";
+
+        function guideState() {
+            try { return JSON.parse(sessionStorage.getItem(GUIDE_KEY)) || {}; } catch (e) { return {}; }
+        }
+
+        function saveGuideState(open) {
+            var st = { open: open, y: 0 };
+            try {
+                var frame = document.getElementById("guideFrame");
+                if (open && frame && frame.contentWindow) st.y = frame.contentWindow.scrollY || 0;
+            } catch (e) { /* guide on another origin: keep position 0 */ }
+            try { sessionStorage.setItem(GUIDE_KEY, JSON.stringify(st)); } catch (e) { }
+        }
+
+        function openGuide(restoreY) {
+            var drawer = document.getElementById("guideDrawer");
+            var frame = document.getElementById("guideFrame");
+            if (!drawer || !frame) return;
+            if (!frame.getAttribute("src")) {
+                frame.addEventListener("load", function () {
+                    try { if (restoreY) frame.contentWindow.scrollTo(0, restoreY); } catch (e) { }
+                }, { once: true });
+                frame.setAttribute("src", frame.getAttribute("data-src"));
+            }
+            drawer.classList.add("open");
+            drawer.setAttribute("aria-hidden", "false");
+            document.querySelectorAll(".js-guide-toggle").forEach(function (b) { b.setAttribute("aria-expanded", "true"); });
+            document.querySelector(".sidebar").classList.remove("open");
+            saveGuideState(true);
+            var close = document.getElementById("guideCloseBtn");
+            if (close && !restoreY) close.focus();
+        }
+
+        function closeGuide() {
+            var drawer = document.getElementById("guideDrawer");
+            if (!drawer) return;
+            drawer.classList.remove("open");
+            drawer.setAttribute("aria-hidden", "true");
+            document.querySelectorAll(".js-guide-toggle").forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
+            saveGuideState(false);
+        }
+
+        function toggleGuide() {
+            var drawer = document.getElementById("guideDrawer");
+            if (drawer && drawer.classList.contains("open")) closeGuide(); else openGuide();
+        }
+
+        document.addEventListener("keydown", function (e) {
+            var drawer = document.getElementById("guideDrawer");
+            if (e.key === "Escape" && drawer && drawer.classList.contains("open")) {
+                closeGuide();
+            } else if (e.key === "F1") {
+                e.preventDefault();
+                toggleGuide();
+            }
+        });
+
+        window.addEventListener("pagehide", function () {
+            var drawer = document.getElementById("guideDrawer");
+            if (drawer && drawer.classList.contains("open")) saveGuideState(true);
+        });
+
+        document.addEventListener("DOMContentLoaded", function () {
+            var st = guideState();
+            if (st.open) openGuide(st.y || 1);
+        });
+    </script>
+</head>
+
+<body>
+
+<form id="smartddrv2" runat="server" enctype="multipart/form-data">
+    <asp:ScriptManager
+        ID="ScriptManager1"
+        runat="server" />
+
+    <div class="mobile-topbar">
+        <button type="button" class="hamburger" onclick="toggleSidebar();" aria-label="Toggle navigation">&#9776;</button>
+        <strong>SmartDDR</strong>
+        <button type="button" class="hamburger help-btn js-guide-toggle" onclick="toggleGuide();" aria-label="Open the user guide" aria-controls="guideDrawer" aria-expanded="false" title="User guide (F1)">?</button>
+    </div>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+
+    <dialog id="confirmModal" class="confirm-dialog">
+        <div class="confirm-body">
+            <p id="confirmMessage">Are you sure?</p>
+        </div>
+        <div class="confirm-actions">
+            <button type="button" id="confirmNoBtn" class="btn-secondary">Cancel</button>
+            <button type="button" id="confirmYesBtn" class="btn-danger">Confirm</button>
+        </div>
+    </dialog>
+
+    <div class="container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+
+            <div class="logo">
+                <h2>SmartDDR</h2>
+                <small>DDR Developer</small>
+            </div>
+
+            <%-- Page state for the open CTD. Visible="false": kept in ViewState but never
+                 rendered, so raw database values can't reach the HTML. --%>
+            <asp:Label ID="lblProject" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblContext" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblRef" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblDiscipline" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblDocMode" runat="server" Visible="false" Text="" />
+
+            <nav class="side-nav">
+                <div class="nav-section">
+                    <div class="nav-section-label">Navigation</div>
+                    <button type="button" class="nav-item" onclick="history.back();">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7" /></svg></span>
+                        <span>Back</span>
+                    </button>
+                    <asp:LinkButton ID="btnHome" runat="server" CssClass="nav-item" OnClick="Home_Go" CausesValidation="False">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9.5 12 3l9 6.5" /><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" /></svg></span>
+                        <span>Home</span>
+                    </asp:LinkButton>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">CTD / DDR Hours</div>
+                    <div class="stat-card">
+                        <asp:GridView ID="ctd_ddr_match"
+                            runat="server"
+                            CssClass="match-table"
+                            OnRowDataBound="ctd_ddr_match_RowDataBound"
+                            AutoGenerateColumns="False"
+                            DataSourceID="CTDDDRSOURCE"
+                            ShowHeaderWhenEmpty="True"
+                            GridLines="None">
+                            <Columns>
+                                <asp:BoundField DataField="CTD Hrs" HeaderText="CTD Hrs" SortExpression="CTD Hrs" />
+                                <asp:BoundField DataField="DDR Hrs" HeaderText="DDR Hrs" SortExpression="DDR Hrs" />
+                                <asp:TemplateField HeaderText="">
+                                    <ItemTemplate>
+                                        <asp:Label ID="lblMatchFlag" runat="server" CssClass="match-flag" />
+                                    </ItemTemplate>
+                                </asp:TemplateField>
+                            </Columns>
+                            <EmptyDataTemplate>
+                                <span class="field-hint">No CTD/DDR hours yet.</span>
+                            </EmptyDataTemplate>
+                        </asp:GridView>
+
+                        <asp:SqlDataSource ID="CTDDDRSOURCE" runat="server"
+                            ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
+                            SelectCommand="SELECT [CTD Hrs],[DDR Hrs] FROM [ACAD_DATA].[dbo].[SDDR_CTD_VIEW] WHERE CTD_ID=@CTD_ID">
+                            <SelectParameters>
+                                <asp:QueryStringParameter DefaultValue="0" Name="CTD_ID" QueryStringField="CTD_ID" Type="Int32" />
+                            </SelectParameters>
+                        </asp:SqlDataSource>
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Quick Actions</div>
+                    <asp:LinkButton ID="btnAllocateHours" runat="server" CssClass="nav-item"
+                        OnClick="btnAllocateHours_Click"
+                        CausesValidation="False"
+                        ToolTip="Evenly splits this CTD's total hours across all DDR rows; the first row absorbs any rounding remainder so the totals match exactly">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></svg></span>
+                        <span>Allocate Hours</span>
+                    </asp:LinkButton>
+                    <asp:LinkButton ID="Plip_Search" runat="server" CssClass="nav-item"
+                        CausesValidation="False"
+                        OnClientClick="openGlobalPlipSearch(this); return false;">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" /></svg></span>
+                        <span>PLIP Search</span>
+                    </asp:LinkButton>
+                    <asp:LinkButton ID="btnOpenMultiplier" runat="server" CssClass="nav-item"
+                        OnClick="btnOpenMultiplier_Click"
+                        CausesValidation="False"
+                        ToolTip="Create multiple copies of a DDR row">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M4 16V6a2 2 0 0 1 2-2h10" /></svg></span>
+                        <span>DDR Multiplier</span>
+                    </asp:LinkButton>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Import / Export</div>
+                    <asp:LinkButton ID="CSV_Template" runat="server" CssClass="nav-item"
+                        CausesValidation="False"
+                        OnClick="CSV_Template_Click"
+                        ToolTip="Downloads a blank CSV template with just the column headers: CTD_ID, Ramz_ID, PLIP_ID, Document_No, Document_Title, Man_Hours, HO_Status">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v11" /><path d="M7 10l5 5 5-5" /><path d="M5 21h14" /></svg></span>
+                        <span>CSV Template</span>
+                    </asp:LinkButton>
+
+                    <div class="nav-upload-row">
+                        <asp:FileUpload ID="fuCsv" runat="server" CssClass="nav-file-input" />
+                        <asp:LinkButton ID="CSV_Upload" runat="server" CssClass="nav-item"
+                            CausesValidation="False"
+                            OnClick="CSV_Upload_Click">
+                            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 21V10" /><path d="M7 15l5-5 5 5" /><path d="M5 3h14" /></svg></span>
+                            <span>Upload CSV</span>
+                        </asp:LinkButton>
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Help</div>
+                    <button type="button" class="nav-item js-guide-toggle" onclick="toggleGuide();" aria-controls="guideDrawer" aria-expanded="false" title="Open the DDR Developer user guide (F1)">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" /><path d="M4 19V5" /><path d="M9 7h6M9 11h6" /></svg></span>
+                        <span>User Guide</span>
+                    </button>
+                </div>
+            </nav>
+
+        </div>
+
+            <div id="loaderOverlay" class="loader-overlay" role="status" aria-live="assertive">
+                <div class="cmd-loader">
+                    <span>C:\&gt;</span>
+                    <span>Processing request&hellip;</span>
+                </div>
+            </div>
+
+        <!-- Main Content -->
+        <div class="main">
+            <asp:HiddenField ID="hfSelectedRow" runat="server" ClientIDMode="Static" />
+
+            <!-- Context bar -->
+            <div class="context-bar">
+                <div class="context-item">
+                    <b>Project</b>
+                    <asp:Literal ID="litProject" runat="server" />
+                </div>
+                <div class="context-item">
+                    <b>Discipline</b>
+                    <asp:Literal ID="litDiscipline" runat="server" />
+                </div>
+                <div class="context-item">
+                    <b>Deliverable Ref</b>
+                    <asp:Literal ID="litRef" runat="server" />
+                </div>
+                <div class="context-nav">
+                    <button type="button" class="circle-btn help-btn js-guide-toggle" onclick="toggleGuide();" aria-label="Open the user guide" aria-controls="guideDrawer" aria-expanded="false" title="User guide (F1)">?</button>
+                    <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev" CausesValidation="False">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+                    </asp:LinkButton>
+                    <asp:LinkButton ID="btnCtdNext" runat="server" CssClass="circle-btn" ToolTip="Next CTD" OnClick="CTD_Next" CausesValidation="False">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                    </asp:LinkButton>
+                </div>
+            </div>
+
+            <!-- KPI scorecard -->
+            <div class="kpi-row">
+                <div class="kpi-tile">
+                    <div class="kpi-label">CTD hours</div>
+                    <div class="kpi-value"><asp:Literal ID="litKpiCtdHours" runat="server" Text="0" /></div>
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">DDR hours</div>
+                    <div class="kpi-value"><asp:Literal ID="litKpiDdrHours" runat="server" Text="0" /></div>
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">Variance</div>
+                    <asp:Label ID="lblKpiVariance" runat="server" CssClass="kpi-value" Text="0" />
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">DDR line items</div>
+                    <div class="kpi-value"><asp:Literal ID="litKpiRowCount" runat="server" Text="0" /></div>
+                </div>
+                <div class="kpi-tile">
+                    <div class="kpi-label">Match status</div>
+                    <asp:Label ID="lblKpiMatchStatus" runat="server" CssClass="kpi-value" Text="&#8212;" />
+                </div>
+            </div>
+
+            <asp:Panel ID="pnlValidationSummary" runat="server" CssClass="validation-summary" Visible="false">
+                <strong>Please fix the following before saving:</strong>
+                <asp:Literal ID="litValidationErrors" runat="server" />
+            </asp:Panel>
+
+            <!-- CTD Information Card -->
+            <div class="smart-card-ddr">
+                <div class="step-label">CTD Reference</div>
+                <asp:GridView ID="CTD_Grid"
+                    runat="server"
+                    CssClass="gridview"
+                    OnRowDataBound="CTD_Grid_RowDataBound"
+                    AutoGenerateColumns="False"
+                    DataSourceID="CTD_Source"
+                    ShowHeaderWhenEmpty="True"
+                    DataKeyNames="CTD_ID">
+                    <Columns>
+                        <asp:TemplateField HeaderText="CTD">
+                            <ItemTemplate>
+                                <asp:TextBox ID="txtCTD" CssClass="btn"
+                                    runat="server"
+                                    Width="100px"
+                                    ReadOnly="True"
+                                    Text='<%#Eval("CTD_ID") %>' />
+                                <asp:LinkButton ID="btnCTDSearch"
+                                    runat="server"
+                                    Text="&#128269;"
+                                    ToolTip="Search another CTD"
+                                    CausesValidation="False"
+                                    OnClick="btnCTDSearch_Click" />
+                            </ItemTemplate>
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="150px" Wrap="False" />
+                        </asp:TemplateField>
+
+                        <asp:BoundField DataField="Project_No" HeaderText="Project_No" SortExpression="Project_No">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="80px" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Ramz_ID" HeaderText="Ramz_ID" SortExpression="Ramz_ID">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="120px" Wrap="False" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Discipline" HeaderText="Discipline" SortExpression="Discipline">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="150px" Wrap="False" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Discipline_Code" HeaderText="Code" SortExpression="Discipline_Code">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="50px" Wrap="False" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Del_Item_Ref" HeaderText="Ref" SortExpression="Del_Item_Ref">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="80px" Wrap="False" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Deliverable_Title" HeaderText="Deliverable Type" SortExpression="Deliverable_Title">
+                            <ItemStyle HorizontalAlign="Left" VerticalAlign="Middle" Width="300px" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Deliverable" HeaderText="Deliverable" SortExpression="Deliverable">
+                            <ItemStyle HorizontalAlign="Left" VerticalAlign="Middle" Width="300px" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Total_Hours" HeaderText="CTD Hours" SortExpression="Total_Hours">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="80px" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Qty" HeaderText="Qty" SortExpression="Qty">
+                            <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="40px" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="Doc_Mode" HeaderText="Type" SortExpression="Doc_Mode">
+                            <ItemStyle HorizontalAlign="Left" VerticalAlign="Middle" Width="150px" />
+                        </asp:BoundField>
+                        <asp:BoundField DataField="CTD_Remarks" HeaderText="Remarks" SortExpression="CTD_Remarks">
+                            <ItemStyle Width="100px" HorizontalAlign="Left" VerticalAlign="Middle" />
+                        </asp:BoundField>
+                    </Columns>
+                    <RowStyle BackColor="#FFFFF4" VerticalAlign="Middle" />
+                    <EmptyDataTemplate>
+                        <div class="empty-state">No CTD record found for this ID.</div>
+                    </EmptyDataTemplate>
+                </asp:GridView>
+
+                <asp:SqlDataSource ID="CTD_Source" runat="server" ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
+                    SelectCommand="SELECT * FROM CTD_MASTER WHERE CTD_ID=@CTD_ID">
+                    <SelectParameters>
+                        <asp:QueryStringParameter DefaultValue="0" Name="CTD_ID" QueryStringField="CTD_ID" Type="Int32" />
+                    </SelectParameters>
+                </asp:SqlDataSource>
+            </div>
+
+            <!-- DDR Items -->
+            <div class="smart-card-ddr">
+                <div class="step-label">DDR Line Items</div>
+                <div class="toolbar">
+                    <asp:Button ID="btnAddDDR"
+                        runat="server"
+                        Text="Add DDR Line"
+                        CssClass="btn-primary"
+                        OnClick="btnAddDDR_Click"
+                        CausesValidation="False" />
+
+                    <asp:Button ID="btnSaveAll"
+                        runat="server"
+                        Text="Save All"
+                        CssClass="btn-primary"
+                        OnClick="btnSaveAll_Click"
+                        OnClientClick="if (!validateAllDdrRows()) return false;" />
+
+                    <asp:Button ID="DDR1"
+                        runat="server"
+                        Text="DDR + Activity"
+                        CssClass="btn-secondary"
+                        OnClick="DDR1_Click"
+                        OnClientClick="showLoader();"
+                        CausesValidation="False"
+                        ToolTip="Add one document row and one activity row" />
+                </div>
+            </div>
+
+            <div class="grid-container">
+                <asp:GridView ID="grdDDREntry"
+                    runat="server"
+                    AutoGenerateColumns="False"
+                    CssClass="gridview"
+                    DataKeyNames="DDR_ID"
+                    OnRowDataBound="grdDDREntry_RowDataBound"
+                    OnRowCommand="grdDDREntry_RowCommand"
+                    ShowHeaderWhenEmpty="True">
+                    <Columns>
+                        <asp:TemplateField Visible="false">
+                            <ItemTemplate>
+                                <asp:HiddenField ID="hdnDDRID"
+                                    runat="server"
+                                    Value='<%# Eval("DDR_ID") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Type">
+                            <ItemTemplate>
+                                <asp:DropDownList ID="ddlType"
+                                    runat="server"
+                                    Width="100px"
+                                    AutoPostBack="true"
+                                    OnSelectedIndexChanged="ddlType_SelectedIndexChanged">
+                                    <asp:ListItem Text="NEW" Value="NEW" />
+                                    <asp:ListItem Text="EXISTING" Value="EXISTING" />
+                                    <asp:ListItem Text="ACTIVITY" Value="ACTIVITY" />
+                                </asp:DropDownList>
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="PLIP *">
+                            <ItemTemplate>
+                                <asp:TextBox ID="txtPLIP"
+                                    runat="server"
+                                    CssClass="js-plip"
+                                    Width="90px"
+                                    AutoPostBack="True"
+                                    OnTextChanged="txtPLIP_TextChanged"
+                                    Text='<%# If(Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY"), "", Eval("PLIP_ID")) %>'
+                                    Enabled='<%# Not Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY") %>' />
+                                <asp:LinkButton ID="btnPLIPSearch"
+                                    runat="server"
+                                    Text="&#128269;"
+                                    ToolTip="Search PLIPs for this row"
+                                    CausesValidation="False"
+                                    OnClick="btnPLIPSearch_Click"
+                                    Enabled='<%# Not Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Area">
+                            <ItemTemplate>
+                                <asp:DropDownList ID="ddlArea"
+                                    runat="server"
+                                    Width="50px"
+                                    AutoPostBack="True"
+                                    ToolTip="Pick an area code to apply it to the document number"
+                                    OnSelectedIndexChanged="ddlArea_SelectedIndexChanged">
+                                </asp:DropDownList>
+
+                                <asp:TextBox ID="txtArea"
+                                    runat="server"
+                                    Width="80px"
+                                    AutoPostBack="True"
+                                    OnTextChanged="txtAREA_TextChanged"
+                                    Text='<%# If(Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY"),"",Eval("Document_No").ToString().Substring(0, Math.Min(6, Eval("Document_No").ToString().Length))) %>'
+                                    Enabled='<%# Not Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="RAMZ ID">
+                            <ItemTemplate>
+                                <asp:DropDownList ID="ddlRamz"
+                                    runat="server"
+                                    CssClass="js-ramz"
+                                    Width="140px">
+                                </asp:DropDownList>
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Document No">
+                            <ItemTemplate>
+                                <asp:TextBox ID="txtDocumentNo"
+                                    runat="server"
+                                    CssClass="js-docno"
+                                    Width="270px"
+                                    Text='<%# Bind("Document_No") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Document Title">
+                            <ItemTemplate>
+                                <asp:TextBox ID="txtTitle"
+                                    runat="server"
+                                    CssClass="js-title"
+                                    Width="300px"
+                                    Text='<%# Bind("Document_Title") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Hours">
+                            <ItemTemplate>
+                                <asp:TextBox ID="txtHours"
+                                    runat="server"
+                                    Width="50px"
+                                    Text='<%# Bind("Man_Hours") %>' />
+                                <asp:CompareValidator ID="cvHours" runat="server"
+                                    ControlToValidate="txtHours"
+                                    Type="Double"
+                                    Operator="GreaterThanEqual"
+                                    ValueToCompare="0"
+                                    Display="Dynamic"
+                                    ErrorMessage="Hours must be a number &gt;= 0"
+                                    CssClass="field-hint" />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="AFC/APP">
+                            <ItemTemplate>
+                                <asp:DropDownList ID="ddlStatus"
+                                    runat="server"
+                                    Width="60px">
+                                    <asp:ListItem Text="" Value="" />
+                                    <asp:ListItem Text="AFC" Value="AFC" />
+                                    <asp:ListItem Text="APP" Value="APP" />
+                                </asp:DropDownList>
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Critical?">
+                            <ItemTemplate>
+                                <asp:Label ID="lblCriticality" runat="server" Text='<%#: Eval("CRITICALITY") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+                        <asp:TemplateField HeaderText="PLIP_HO">
+                            <ItemTemplate>
+                                <asp:Label ID="lblHoReq" runat="server" Text='<%#: Eval("HO_REQ") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Software">
+                            <ItemTemplate>
+                                <asp:TextBox ID="txtSoftware"
+                                    runat="server"
+                                    Width="100px"
+                                    Text='<%# Bind("Software") %>' />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Remarks">
+                            <ItemTemplate>
+                                <a href="javascript:void(0);" onclick="toggleRemarks(this); return false;" aria-expanded="false">Show remarks</a>
+                                <div style="display: none; margin-top: 5px;">
+                                    <asp:TextBox ID="txtRemarks"
+                                        runat="server"
+                                        Width="250px"
+                                        TextMode="MultiLine"
+                                        Rows="3"
+                                        Text='<%# Bind("Disc_Remarks") %>'>
+                                    </asp:TextBox>
+                                </div>
+                            </ItemTemplate>
+                        </asp:TemplateField>
+
+                        <asp:TemplateField HeaderText="Action">
+                            <ItemTemplate>
+                                <asp:LinkButton ID="btnMultiplyRow"
+                                    runat="server"
+                                    Text="&times;N"
+                                    CssClass="btn-secondary"
+                                    ToolTip="Multiply this row"
+                                    OnClick="btnMultiplyRow_Click"
+                                    CausesValidation="False" />
+                                <asp:LinkButton ID="btnDelete"
+                                    runat="server"
+                                    Text="&#128465;"
+                                    CssClass="btn-danger"
+                                    CommandName="DeleteDDR"
+                                    CommandArgument='<%# Eval("DDR_ID") %>'
+                                    ToolTip="Delete this line"
+                                    CausesValidation="False"
+                                    OnClientClick="return confirmAction(this, 'Delete this DDR item?');" />
+                            </ItemTemplate>
+                        </asp:TemplateField>
+                    </Columns>
+                    <EmptyDataTemplate>
+                        <div class="empty-state">No DDR items yet &mdash; click "Add DDR Line" to start.</div>
+                    </EmptyDataTemplate>
+                </asp:GridView>
+            </div>
+        </div>
+    </div>
+
+    <asp:SqlDataSource ID="CTD_Search_Source" runat="server" ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
+        SelectCommand="SELECT [CTD_ID],[Discipline],[Del_Item_Ref],[Deliverable],[CTD Hrs],[DDR Hrs],[CTD Qty],[DDR Qty] FROM [ACAD_DATA].[dbo].[SDDR_CTD_VIEW] WHERE PROJECT_NO=@PROJECT_NO AND DISCIPLINE=@DISCIPLINE">
+        <SelectParameters>
+            <asp:ControlParameter ControlID="lblProject" Name="PROJECT_NO" PropertyName="Text" />
+            <asp:ControlParameter ControlID="lblDiscipline" Name="DISCIPLINE" PropertyName="Text" />
+        </SelectParameters>
+    </asp:SqlDataSource>
+
+
+
+    <asp:SqlDataSource
+        ID="PLIPSource"
+        runat="server"
+        ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
+        SelectCommand="SELECT [PLIP_ID],[Information_Required] AS [PLIP_Title],[Discipline_Code]+'-'+[Document_Type_Name] AS [Doc_Type],[Critical_Documentation] AS [Critical],[Required_Handover_Status] AS [FHO_Status],[DCAFID_Latest] AS [DCAF] FROM [ACAD_DATA].[dbo].[SPO_PLIP] WHERE [Active_YN]='YES' AND (@SEARCH = '' OR [Information_Required] LIKE '%' + @SEARCH + '%' OR [PLIP_ID] LIKE '%' + @SEARCH + '%') ORDER BY [PLIP_ID]">
+        <SelectParameters>
+            <asp:ControlParameter ControlID="txtSearchPLIP" Name="SEARCH" PropertyName="Text" DefaultValue="" Type="String" />
+        </SelectParameters>
+    </asp:SqlDataSource>
+
+    <!-- PLIP Search Drawer -->
+    <div id="plipDrawer" class="drawer" role="dialog" aria-label="PLIP search">
+        <div class="drawer-header">
+            <h3>&#128269; PLIP Search</h3>
+            <button type="button" class="drawer-close" onclick="closePLIPDrawer()" aria-label="Close">&#10006;</button>
+        </div>
+        <asp:UpdatePanel ID="updPLIP" runat="server">
+            <ContentTemplate>
+                <div class="drawer-body">
+                    <div class="search-group">
+                        <label for="<%= txtSearchPLIP.ClientID %>">PLIP ID / Description</label>
+                        <asp:TextBox ID="txtSearchPLIP"
+                            runat="server"
+                            CssClass="drawer-input"
+                            placeholder="Type at least 3 characters&hellip;"
+                            AutoPostBack="True"
+                            OnTextChanged="txtSearchPLIP_TextChanged" />
+                    </div>
+
+                    <hr />
+
+                    <div class="drawer-results">
+                        <asp:GridView ID="gvPLIPSearch"
+                            runat="server"
+                            CssClass="drawer-grid"
+                            AutoGenerateColumns="False"
+                            DataSourceID="PLIPSource"
+                            OnRowCommand="gvPLIPSearch_RowCommand"
+                            OnRowCreated="gvPLIPSearch_RowCreated"
+                            ShowHeaderWhenEmpty="True">
+                            <Columns>
+                                <asp:TemplateField HeaderText="PLIP ID">
+                                    <ItemTemplate>
+                                        <asp:LinkButton ID="lnkPLIP"
+                                            runat="server"
+                                            CausesValidation="False"
+                                            Text='<%#: Eval("PLIP_ID") %>'
+                                            CommandName="SelectPLIP"
+                                            CommandArgument='<%# Eval("PLIP_ID") %>'
+                                            CssClass="plip-link" />
+                                    </ItemTemplate>
+                                    <ItemStyle Wrap="False" />
+                                </asp:TemplateField>
+
+                                <asp:BoundField DataField="PLIP_Title" HeaderText="PLIP_Title" SortExpression="PLIP_Title" />
+                                <asp:BoundField DataField="Doc_Type" HeaderText="Doc_Type" ReadOnly="True" SortExpression="Doc_Type" />
+                                <asp:BoundField DataField="Critical" HeaderText="Critical" SortExpression="Critical" />
+                                <asp:BoundField DataField="FHO_Status" HeaderText="HO" SortExpression="FHO_Status" />
+                                <asp:BoundField DataField="DCAF" HeaderText="DCAF" SortExpression="DCAF" />
+                            </Columns>
+                            <EmptyDataTemplate>
+                                <div class="empty-state">Type a PLIP ID or keyword to search.</div>
+                            </EmptyDataTemplate>
+                        </asp:GridView>
+                    </div>
+                </div>
+            </ContentTemplate>
+        </asp:UpdatePanel>
+    </div>
+
+    <div id="drawerOverlay" class="drawer-overlay" onclick="closePLIPDrawer()"></div>
+
+    <!-- CTD Search Drawer -->
+    <div id="CTDDrawer" class="drawer" role="dialog" aria-label="CTD search">
+        <div class="drawer-header">
+            <h3>&#128269; CTD Search</h3>
+            <button type="button" class="drawer-close" onclick="closeCTDDrawer()" aria-label="Close">&#10006;</button>
+        </div>
+        <asp:UpdatePanel ID="UpdatePanel1" runat="server">
+            <ContentTemplate>
+                <div class="drawer-body">
+                    <div class="drawer-results">
+                        <asp:GridView ID="ctdGrid"
+                            runat="server"
+                            CssClass="drawer-grid"
+                            AutoGenerateColumns="False"
+                            DataSourceID="CTD_Search_Source"
+                            OnRowDataBound="ctdGrid_RowDataBound"
+                            ShowHeaderWhenEmpty="True">
+                            <Columns>
+                                <asp:TemplateField HeaderText="CTD ID">
+                                    <ItemTemplate>
+                                        <asp:HyperLink ID="lnkCTD" runat="server"
+                                            Text='<%#: Eval("CTD_ID") %>'
+                                            NavigateUrl='<%# "DDR_DeveloperV3.aspx?CTD_ID=" & HttpUtility.UrlEncode(Convert.ToString(Eval("CTD_ID"))) %>'>
+                                        </asp:HyperLink>
+                                    </ItemTemplate>
+                                </asp:TemplateField>
+                                <asp:BoundField DataField="Discipline" HeaderText="Discipline" SortExpression="Discipline" />
+                                <asp:BoundField DataField="Del_Item_Ref" HeaderText="Del_Item_Ref" SortExpression="Del_Item_Ref" />
+                                <asp:BoundField DataField="Deliverable" HeaderText="Deliverable" ReadOnly="True" SortExpression="Deliverable" />
+                                <asp:BoundField DataField="CTD Hrs" HeaderText="CTD Hrs" ReadOnly="True" SortExpression="CTD Hrs" />
+                                <asp:BoundField DataField="DDR Hrs" HeaderText="DDR Hrs" ReadOnly="True" SortExpression="DDR Hrs" />
+                                <asp:BoundField DataField="CTD Qty" HeaderText="CTD Qty" SortExpression="CTD Qty" />
+                                <asp:BoundField DataField="DDR Qty" HeaderText="DDR Qty" SortExpression="DDR Qty" />
+                            </Columns>
+                            <EmptyDataTemplate>
+                                <div class="empty-state">No matching CTDs.</div>
+                            </EmptyDataTemplate>
+                        </asp:GridView>
+                    </div>
+                </div>
+            </ContentTemplate>
+        </asp:UpdatePanel>
+    </div>
+
+    <div id="drawerOverlay1" class="drawer-overlay" onclick="closeCTDDrawer()"></div>
+
+    <!-- DDR Multiplier Drawer -->
+    <div id="multiplierDrawer" class="drawer" role="dialog" aria-label="DDR multiplier">
+        <div class="drawer-header">
+            <h3>DDR Multiplier</h3>
+            <button type="button" class="drawer-close" onclick="closeMultiplierDrawer()" aria-label="Close">&#10006;</button>
+        </div>
+        <div class="drawer-body">
+            <div class="search-group">
+                <label for="<%= ddlMultiplyTargetRow.ClientID %>">Row to multiply</label>
+                <asp:DropDownList ID="ddlMultiplyTargetRow" runat="server" CssClass="drawer-input" />
+            </div>
+
+            <div class="search-group">
+                <label>Mode</label>
+                <asp:RadioButtonList ID="rblMultiplyMode" runat="server">
+                    <asp:ListItem Text="A - Copy this row N times; each copy gets the next DUM sequence number" Value="DUM" Selected="True" />
+                    <asp:ListItem Text="B - Copy this row N times, incrementing the trailing digits each time" Value="SEQ" />
+                </asp:RadioButtonList>
+            </div>
+
+            <div class="search-group">
+                <label for="<%= txtMultiplyCount.ClientID %>">Number of copies (N)</label>
+                <asp:TextBox ID="txtMultiplyCount" runat="server" CssClass="drawer-input" TextMode="Number" Text="1" />
+            </div>
+
+            <asp:Button ID="btnApplyMultiplier" runat="server" Text="Create Copies" CssClass="btn-primary"
+                OnClick="btnApplyMultiplier_Click" CausesValidation="False" OnClientClick="showLoader();" />
+        </div>
+    </div>
+
+    <div id="drawerOverlay2" class="drawer-overlay" onclick="closeMultiplierDrawer()"></div>
+
+    <!-- PLIP Detail footer drawer: opens whenever a PLIP is picked for a DDR
+         row (search drawer selection or a typed PLIP ID), showing the same
+         descriptive fields as the PLIP Drawer's results columns. -->
+    <div id="plipFooterDrawer" class="footer-drawer" role="region" aria-label="PLIP details">
+        <div class="footer-drawer-header">
+            <h3>PLIP <asp:Literal ID="litFooterPlipId" runat="server" /></h3>
+            <button type="button" class="drawer-close" onclick="closeFooterDrawer()" aria-label="Close">&#10006;</button>
+        </div>
+        <div class="footer-drawer-body">
+            <div class="footer-detail"><b>Title</b><asp:Literal ID="litFooterTitle" runat="server" /></div>
+            <div class="footer-detail"><b>Doc Type</b><asp:Literal ID="litFooterDocType" runat="server" /></div>
+            <div class="footer-detail"><b>Critical</b><asp:Literal ID="litFooterCritical" runat="server" /></div>
+            <div class="footer-detail"><b>Required HO Status</b><asp:Literal ID="litFooterHo" runat="server" /></div>
+            <div class="footer-detail"><b>DCAF</b><asp:Literal ID="litFooterDcaf" runat="server" /></div>
+        </div>
+    </div>
+
+    <!-- User guide drawer: loads Help/DDR-Developer-Guide.html on first open -->
+    <aside id="guideDrawer" class="guide-drawer" role="complementary" aria-labelledby="guideTitle" aria-hidden="true">
+        <div class="guide-header">
+            <h3 id="guideTitle">DDR Developer &middot; User Guide</h3>
+            <a href="Help/DDR-Developer-Guide.html" target="_blank" rel="noopener" title="Open the guide in a new browser tab">New tab &#8599;</a>
+            <button type="button" id="guideCloseBtn" onclick="closeGuide()" aria-label="Close the user guide">&#10006;</button>
+        </div>
+        <iframe id="guideFrame" class="guide-frame" title="DDR Developer user guide" data-src="Help/DDR-Developer-Guide.html"></iframe>
+    </aside>
+</form>
+
+</body>
+</html>
