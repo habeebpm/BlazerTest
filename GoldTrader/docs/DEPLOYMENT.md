@@ -213,7 +213,7 @@ one good week.
 ## 11. Updating to a new version
 
 `start.bat` says so when there is one: `*** An update is available (...) -
-close this window and double-click update.bat. ***`
+press Ctrl+C here, then double-click update.bat. ***`
 
 1. Press **Ctrl+C** in the `start.bat` window (or `stop.bat`) - open trades stay
    managed by the EAs. `update.bat` refuses while one is still running.

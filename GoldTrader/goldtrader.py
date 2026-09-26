@@ -389,7 +389,7 @@ def update_notice(fetch=_http) -> str:
         return ""
     if not state.get("sha") or sha == state["sha"]:
         return ""
-    return f"An update is available ({sha[:7]}: {headline}) - close this window and double-click update.bat."
+    return f"An update is available ({sha[:7]}: {headline}) - press Ctrl+C here, then double-click update.bat."
 
 
 # --------------------------------------------------------------- autostart
