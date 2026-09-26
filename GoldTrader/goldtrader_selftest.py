@@ -365,11 +365,21 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "child.py")
         with open(script, "w", encoding="utf-8") as f:
-            f.write("import sys\nprint('line one')\nprint('keyboard:', sys.stdin.isatty())\nsys.exit(7)\n")
+            f.write("import os, sys\nprint('line one')\nprint('no prompts:', os.environ.get('GOLDTRADER_NO_PROMPT'))\n"
+                    "sys.exit(7)\n")
         got = []
         rc_child = solution.labelled_runner("BTC ", tmp, "child.py", [], got.append)()
-    check("each program's output is labelled; it gets no keyboard (never asks questions mid-run)",
-          rc_child == 7 and got == ["BTC  | line one", "BTC  | keyboard: False"], got)
+    sys.path.insert(0, solution.APP_DIR)
+    import first_run
+    os.environ["GOLDTRADER_NO_PROMPT"] = "1"
+    try:
+        quiet = first_run.should_run(env={}, marker=os.path.join(tempfile.gettempdir(), "no_marker"),
+                                     interactive=True)
+    finally:
+        del os.environ["GOLDTRADER_NO_PROMPT"]
+    check("each program's output is labelled and it never asks questions mid-run (GOLDTRADER_NO_PROMPT - "
+          "on Windows even the null device counts as a keyboard)",
+          rc_child == 7 and got == ["BTC  | line one", "BTC  | no prompts: 1"] and quiet is False, got)
 
     import warnings
     bad = []

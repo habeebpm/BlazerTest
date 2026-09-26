@@ -95,6 +95,8 @@ def needed(env=None) -> list:
 
 def should_run(env=None, marker: str = MARKER, interactive: bool | None = None) -> bool:
     import sys
+    if os.environ.get("GOLDTRADER_NO_PROMPT"):       # a program start.bat runs: never asks mid-run
+        return False                                  # (on Windows the null device even counts as a keyboard)
     interactive = sys.stdin.isatty() if interactive is None else interactive
     return interactive and (not os.path.exists(marker) or bool(needed(env)))
 

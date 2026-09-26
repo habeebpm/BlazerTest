@@ -409,8 +409,8 @@ def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
         finally:
             _TEE["path"] = None
             try:
-                drive = find_drive_root()
-                if drive:
+                drive = find_drive_root() if os.path.abspath(root) == os.path.abspath(ROOT) else None
+                if drive:                                # (a self-test's temporary install never reaches Drive)
                     mirror_logs(drive, root, sources={"update.log": log_path}, prune=False)
             except Exception:
                 pass
@@ -969,7 +969,8 @@ def labelled_runner(label: str, cwd: str, script: str, args, emit):
     "BTC  | ". No keyboard input: settings questions are asked before
     start-all launches anything."""
     def run_once() -> int:
-        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
+                   GOLDTRADER_NO_PROMPT="1")          # questions were asked before start-all began
         try:
             proc = subprocess.Popen([sys.executable, script, *args], cwd=cwd, env=env,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

@@ -86,6 +86,25 @@ def shipped_copy(name: str) -> str:
     new = os.path.join(paths.PACKAGE_ROOT, name + ".new")
     return new if os.path.exists(new) else os.path.join(paths.PACKAGE_ROOT, name)
 
+
+def is_pristine(name: str) -> bool:
+    """True when shipped_copy(name) is exactly what the package ships: the
+    .new copy, a development checkout, or the file the last update installed
+    and you have not changed. Only then are its DEFAULT values tested - your
+    own settings (relay off, other options) never fail a test."""
+    import hashlib
+    import json
+    path = shipped_copy(name)
+    if path.endswith(".new") or os.path.isdir(os.path.join(paths.PACKAGE_ROOT, "..", ".git")):
+        return True
+    try:
+        with open(os.path.join(paths.PACKAGE_ROOT, "logs", "update_state.json"), encoding="utf-8") as f:
+            shipped = json.load(f).get("shipped", {}).get(name)
+        with open(path, "rb") as f:
+            return shipped == hashlib.sha256(f.read()).hexdigest()
+    except (OSError, ValueError):
+        return False
+
 def save_test_report(name: str, failed: list, root: str) -> None:
     """logs\\selftest_<name>.log, and a copy in <My Drive>\\MyTraderbyClaude\\Logs
     when that folder exists - so a failed update's reason can be read from
@@ -3540,12 +3559,13 @@ def test_relay_supervisor() -> bool:
                                      os.path.join(tmp, "demo.log"), clock=lambda: 1_000_000.0 + 86400)
         ok &= check("the last run survives a main.py restart (state file)", not again.due())
 
-    real_preset = services.load_preset()
-    ok &= check("the shipped settings.ini parses: relay (the signal path), ML retrain (daily), conviction "
-                "report and scorecard on by default; Python Drive export off (VPS only)",
-                not real_preset.errors
-                and real_preset.enabled_names() == ["relay_bridge", "ml_retrain", "calibration_report", "scorecard"]
-                and real_preset.ml_retrain.every_days == 1.0, (real_preset.errors, real_preset.enabled_names()))
+    real_preset = services.load_preset(shipped_copy("settings.ini"))
+    ok &= check("settings.ini loads without errors", not real_preset.errors, real_preset.errors)
+    if is_pristine("settings.ini"):          # the package's defaults - never your own choices
+        ok &= check("the shipped settings.ini: relay (the signal path), ML retrain (daily), conviction "
+                    "report and scorecard on by default; Python Drive export off (VPS only)",
+                    real_preset.enabled_names() == ["relay_bridge", "ml_retrain", "calibration_report", "scorecard"]
+                    and real_preset.ml_retrain.every_days == 1.0, real_preset.enabled_names())
     env = {"ANTHROPIC_API_KEY": "sk-ant-abcdefgh1234", "TELEGRAM_ALERT_CHAT_ID": "12345",
            "TELEGRAM_API_ID": "999"}
     lines, missing = main_mod.settings_report(relay_on=True, env=env)
@@ -4087,9 +4107,10 @@ def test_scorecard() -> bool:
     ok &= check("the report names every source, its verdict and the no-edge chance",
                 "Claude: TOO EARLY" in text and "Telegram signals" in text and "chance of no real edge" in text
                 and "Empty: no closed trades yet" in text, text)
-    p = services.load_preset(paths.SETTINGS_INI)
-    ok &= check("settings.ini runs the scorecard weekly by default",
-                p.scorecard.enabled and p.scorecard.every_days == 7.0 and not p.errors, p)
+    if is_pristine("settings.ini"):          # the package's default, never your own choice
+        p = services.load_preset(shipped_copy("settings.ini"))
+        ok &= check("settings.ini runs the scorecard weekly by default",
+                    p.scorecard.enabled and p.scorecard.every_days == 7.0 and not p.errors, p)
     return ok
 
 
