@@ -28,15 +28,26 @@
 //| (PauseBtcHab / ResumeBtcHab / PauseHab) - one bot, one poller.      |
 //| InpExportCalendar: only when UnifiedTrader_EA is NOT running (it    |
 //| already exports the economic calendar both instances read).        |
+//|                                                                    |
+//| PRICE FILES FOR GOOGLE DRIVE (InpXtrExport), like gold's: closed    |
+//| M5/M15/H1 BTCUSD bars (true UTC CSV + manifest) in                  |
+//| Common\Files\XTR_Data, copied to InpXtrExportCopyTo (your Drive     |
+//| folder; needs "Allow DLL imports"). BTCUSD_M5.csv ... next to        |
+//| gold's XAUUSD_ files - Claude reads them from Drive, and            |
+//| backtest.py --csv-folder replays them.                              |
 //+------------------------------------------------------------------+
 #property copyright "BTCTrader_EA"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 #property description "Manages GoldTrader's BTCUSD positions (app/main.py --profile btc): lock at +1R, then trail 0.5R, R = each trade's own opening stop. Never opens a trade. Demo-test with InpDryRun=true first."
 
 #include <Trade\Trade.mqh>
 #include <EconCalendar.mqh>
+// Copy of the Drive price files to any folder (InpXtrExportCopyTo) uses
+// kernel32 CopyFileW. Delete this line for a build with no DLL import.
+#define XTR_EXPORT_COPY_DLL
+#include <XtrBarExport.mqh>
 
 input group "=== BTC positions (MUST match app/profiles.py 'btc') ==="
 input long    InpMagicNumber   = 20260931;  // The BTC instance's magic (profiles.py BTC_MAGIC)
@@ -49,6 +60,14 @@ input bool    InpExportCalendar     = false;              // Write the calendar 
 input string  InpCalendarExportFile = "econ_calendar.csv"; // MUST match app/config.py econ_calendar_filename
 input string  InpNewsCurrencies     = "USD";
 input int     InpCalendarRefreshMin = 30;
+
+input group "=== Price export for Google Drive (like gold's) - see XtrBarExport.mqh ==="
+input bool   InpXtrExport       = true;        // Write closed M5/M15/H1 bars (UTC CSV + manifest) on every M1 close
+input string InpXtrExportFolder = "XTR_Data";  // Folder inside Common\Files (the same as gold's is fine)
+input string InpXtrExportName   = "BTCUSD";    // File name prefix / manifest symbol (BTCUSD_M5.csv ...)
+input int    InpXtrExportBars   = 5000;        // Closed bars per file (50-5000): 5000 = 17 days M5, 52 days M15, 208 days H1
+input bool   InpXtrExportM1     = false;       // Also write <name>_M1.csv
+input string InpXtrExportCopyTo = "";          // Also copy every file to this folder, e.g. G:\My Drive\MyMQChartDrive (needs "Allow DLL imports")
 
 CTrade trade;
 
@@ -244,6 +263,17 @@ int OnInit()
    if(StringFind(sym, "BTC") < 0 && StringFind(sym, "XBT") < 0)
       PrintFormat("BTCTrader_EA: WARNING - this chart is %s, not Bitcoin. Put the EA on your BTCUSD "
                   "chart (it only manages positions of its own chart's symbol).", _Symbol);
+   if(InpXtrExport && (InpXtrExportBars < 50 || InpXtrExportBars > 5000
+                       || StringLen(InpXtrExportFolder) == 0 || StringLen(InpXtrExportName) == 0))
+   {
+      Print("BTCTrader_EA: InpXtrExportBars must be 50-5000 and InpXtrExportFolder/InpXtrExportName "
+            "non-empty (or set InpXtrExport=false).");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   XtrExpReset();
+   if(InpXtrExport && StringLen(InpXtrExportCopyTo) > 0 && !MQLInfoInteger(MQL_DLLS_ALLOWED))
+      PrintFormat("BTCTrader_EA: InpXtrExportCopyTo=%s needs \"Allow DLL imports\" (EA Common tab) - "
+                  "until then files stay in Common\\Files\\%s only.", InpXtrExportCopyTo, InpXtrExportFolder);
    trade.SetExpertMagicNumber(InpMagicNumber);
    EventSetTimer(1);
    PrintFormat("BTCTrader_EA: managing %s positions with magic %I64d - lock at +%.2fR, trail %.2fR "
@@ -263,14 +293,18 @@ void OnTick()
    ManageAll();
    if(InpExportCalendar)
       EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
+   XtrExpMaybeExport(InpXtrExport, _Symbol, InpXtrExportFolder, InpXtrExportName, InpXtrExportBars,
+                     InpXtrExportM1, InpXtrExportCopyTo);
 }
 
 // Weekend / quiet-market ticks can be minutes apart: the timer keeps the
-// cache tidy and the calendar export going between them.
+// cache tidy and the calendar and price exports going between them.
 void OnTimer()
 {
    PruneRiskCache();
    ManageAll();
    if(InpExportCalendar)
       EconMaybeExport(InpCalendarExportFile, InpNewsCurrencies, InpCalendarRefreshMin);
+   XtrExpMaybeExport(InpXtrExport, _Symbol, InpXtrExportFolder, InpXtrExportName, InpXtrExportBars,
+                     InpXtrExportM1, InpXtrExportCopyTo);
 }

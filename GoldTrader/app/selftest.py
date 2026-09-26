@@ -4828,6 +4828,43 @@ def test_btc_profile() -> bool:
                 ("mt5/Experts/BTCTrader_EA.mq5", "Experts/BTCTrader_EA.mq5") in gt.MT5_FILES
                 and ("mt5/Presets/BTCTrader_EA_Default.set", "Presets/BTCTrader_EA_Default.set") in gt.MT5_FILES
                 and "Experts/BTCTrader_EA.mq5" in gt.MT5_COMPILE)
+    ok &= check("BTCTrader_EA exports BTCUSD M5/M15/H1 price files to the same Drive folder as gold's",
+                bea["InpXtrExport"] == bset["InpXtrExport"] == "true"
+                and bea["InpXtrExportName"].strip('"') == bset["InpXtrExportName"] == "BTCUSD"
+                and int(bea["InpXtrExportBars"]) == int(bset["InpXtrExportBars"]) == 5000
+                and bset["InpXtrExportCopyTo"] == gset["InpXtrExportCopyTo"]
+                and bset["InpXtrExportFolder"] == gset["InpXtrExportFolder"]
+                and src.count("XtrExpMaybeExport(InpXtrExport, _Symbol") == 2
+                and "#include <XtrBarExport.mqh>" in src, (bea, bset))
+
+    # --- backtest from the Drive price files ---
+    with _tempfile.TemporaryDirectory() as tmp:
+        t = pd.date_range("2026-08-02 00:00", periods=24 * 10, freq="1h", tz="UTC")   # Sun 2 Aug, 10 days
+        h1 = pd.DataFrame({"datetime": t.strftime("%Y-%m-%d %H:%M:%S"), "open": np.arange(240) + 100000.0,
+                           "high": np.arange(240) + 100050.0, "low": np.arange(240) + 99950.0,
+                           "close": np.arange(240) + 100010.0, "volume": 1})
+        h1.to_csv(os.path.join(tmp, "BTCUSD_H1.csv"), index=False)
+        m15 = pd.DataFrame({"datetime": pd.date_range("2026-08-02", periods=960, freq="15min", tz="UTC")
+                            .strftime("%Y-%m-%d %H:%M:%S"), "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5})
+        m15.to_csv(os.path.join(tmp, "BTCUSD_M15.csv"), index=False)
+        got = backtest.load_csv_folder(tmp, "BTCUSD_", "M15", "H4")
+        h4 = got["H4"]
+        ok &= check("Drive price files load (datetime column, no volume -> 0); H4/D1/W1 built from H1",
+                    set(got) == {"M15", "H1", "H4", "D1", "W1"} and (got["M15"]["volume"] == 0).all()
+                    and str(got["M15"]["time"].dt.tz) == "UTC" and len(h4) == 60 and len(got["D1"]) == 10,
+                    {k: len(v) for k, v in got.items()})
+        ok &= check("H4 = first open / max high / min low / last close of its own four H1 bars (no look-ahead)",
+                    (h4.iloc[1][["open", "high", "low", "close"]].tolist()
+                     == [100004.0, 100057.0, 99954.0, 100017.0]) and h4["time"].iloc[1].hour == 4,
+                    h4.iloc[1].tolist())
+        ok &= check("W1 bars open Sunday 00:00 UTC", (got["W1"]["time"].dt.dayofweek == 6).all()
+                    and len(got["W1"]) == 2, got["W1"]["time"].tolist())
+        try:
+            backtest.load_csv_folder(tmp, "XAUUSD_", "M15", "H4")
+            missing = False
+        except FileNotFoundError:
+            missing = True
+        ok &= check("a missing primary file is a clear error", missing)
     bat = open(os.path.join(paths.PACKAGE_ROOT, "start_btc.bat"), newline="").read()
     ok &= check("start_btc.bat starts the btc profile live (CRLF)", "--profile btc --live" in bat and "\r\n" in bat)
     return ok

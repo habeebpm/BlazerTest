@@ -248,7 +248,7 @@ void XtrExpMaybeExport(bool enabled, const string symbol, const string folder, c
       "  \"broker_utc_offset_hours\": " + DoubleToString(offsetSec / 3600.0, 2) + ",\r\n"
       "  \"bars_per_file\": {" + counts + "},\r\n"
       "  \"exported_at_utc\": \"" + XtrExpUtcString(TimeGMT()) + "\",\r\n"
-      "  \"exported_by\": \"UnifiedTrader_EA\"\r\n"
+      "  \"exported_by\": \"" + MQLInfoString(MQL_PROGRAM_NAME) + "\"\r\n"
       "}\r\n";
    bool manifestOk = XtrExpWriteAtomic(folder + "\\" + name + "_manifest.json", manifest);
    if(!manifestOk)

@@ -244,7 +244,8 @@ Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 
 `start_btc.bat` runs a second, independent instance with `--profile btc`
 (`app/profiles.py`): BTCUSD, magic 20260931, `logs\btc\`, `BTC_` journal
-files, no Telegram side, no companion programs. Stop 1.0 x M15 ATR14 within
+files, no Telegram side; its own ML retrain, conviction report and scorecard
+jobs (no relay or price export). Stop 1.0 x M15 ATR14 within
 0.20%-2.0% of price; **BTCTrader_EA** locks at +1R and trails 0.5R, where R is
 each trade's own opening stop; 2% risk, 5% daily cap, 3 per direction, 24/7,
 spread limit 0.06% of price. Claude and the news check get Bitcoin-specific
@@ -252,7 +253,11 @@ wording and crypto feeds; gold's prompts are unchanged. Telegram:
 `PauseBtcHab` / `ResumeBtcHab` (UnifiedTrader_EA inputs `InpBtcMagicNumber`,
 `InpBtcPauseFilename`); `PauseHab` / `ResumeHab` include BTC.
 `backtest_btc.bat` = `backtest --profile btc --from-mt5 --months 12
---mechanical --to-drive`. Full guide: [`BTC.md`](BTC.md).
+--mechanical --to-drive`. BTCTrader_EA also writes `BTCUSD_M5/M15/H1.csv`
+(5000 bars each) into the Drive price folder, like gold's; `backtest
+--csv-folder <folder>` replays those files (`--csv-prefix`, default the
+symbol + `_`; `BTC_prices_` for `--to-drive` files; H4/D1/W1 built from H1
+when absent). Full guide: [`BTC.md`](BTC.md).
 
 ## Signal-history replay (test a provider in hours)
 
@@ -283,7 +288,8 @@ chart = Unlimited, restart MT5, scroll an M1 chart back, run again.
 
 ## Price files for XTR (Drive)
 
-Every M1 close the EA writes the last 200 closed M5/M15/H1 bars
+Every M1 close the EA writes the last 200 closed M5/M15/H1 bars (BTCTrader_EA:
+5000 bars, `BTCUSD_` files, same folder)
 (`datetime,open,high,low,close,volume`, datetime in true UTC, ascending) plus
 `XAUUSD_manifest.json` into `Common\Files\XTR_Data`, and with
 `InpXtrExportCopyTo` also into your Drive folder (needs Allow DLL imports -

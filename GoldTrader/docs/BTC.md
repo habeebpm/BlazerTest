@@ -66,8 +66,13 @@ SEC / ETF decisions, crypto bans, large holders moving coins.
    suffix such as BTCUSDm). Check its contract (usually 1 lot = 1 BTC), spread
    and leverage for crypto.
 3. Open a **BTCUSD chart** (any timeframe) -> drag **BTCTrader_EA** on it ->
-   Inputs -> **Load** `BTCTrader_EA_Default.set` -> OK, Algo Trading on. It
-   starts in dry-run (`InpDryRun=true`).
+   Inputs -> **Load** `BTCTrader_EA_Default.set` -> **Common** tab -> tick
+   **Allow DLL imports** -> OK, Algo Trading on. It starts in dry-run
+   (`InpDryRun=true`). **You should see** within a few minutes, in your Drive
+   folder next to gold's `XAUUSD_` files: `BTCUSD_M5.csv`, `BTCUSD_M15.csv`,
+   `BTCUSD_H1.csv`, `BTCUSD_manifest.json` (the preset copies to
+   `G:\My Drive\MyMQChartDrive`, as gold's does - change
+   `InpXtrExportCopyTo` if yours differs).
 4. Gold chart: reopen UnifiedTrader_EA's inputs and check
    `InpBtcMagicNumber = 20260931` (it is, after the update) - your Telegram
    buttons get a new row: **PauseBtcHab / ResumeBtcHab**.
@@ -95,7 +100,14 @@ SEC / ETF decisions, crypto bans, large holders moving coins.
 
 ## Test it on your broker's BTC prices
 
-Double-click **`backtest_btc.bat`** (MT5 open). It runs the last 12 months of
+**Chart data in Google Drive, like gold's.** BTCTrader_EA keeps the last
+5000 closed bars of M5 / M15 / H1 in Drive (about 17 / 52 / 208 days), UTC,
+refreshed each bar - Claude reads them from Drive, and they replay directly:
+
+    python goldtrader.py backtest --profile btc --csv-folder "G:\My Drive\MyMQChartDrive" --mechanical --yes
+
+(H4, D1 and W1 are built from H1; after the warm-up that is about 7 weeks of
+BTC.) For a longer test, double-click **`backtest_btc.bat`** (MT5 open). It runs the last 12 months of
 your broker's BTCUSD prices through the BTC rules (the mechanical three legs -
 free, no Claude calls) and copies the summary, every trade and the price
 history to Google Drive (`BTC_backtest_*`, `BTC_prices_*`). Then ask Claude
@@ -104,7 +116,8 @@ spread limit can be tuned on real data before any real money.
 
 ## Limits
 
-- No backtest on real BTC data yet: run `backtest_btc.bat` and demo first.
+- No backtest on real BTC data yet: the Drive price files (or
+  `backtest_btc.bat`) make one possible - then demo first.
 - Weekend gaps: the stop is a price level, so a weekend spike can fill it
   worse; the 0.06% spread limit keeps entries out of the thinnest spreads.
 - Many brokers give crypto low leverage (1:2 to 1:20); the margin guard then

@@ -547,9 +547,52 @@ class HistoricalGateway:
 
 
 def load_bars_csv(path: str) -> pd.DataFrame:
+    """time (or the Drive price export's `datetime`), open, high, low, close
+    [, volume] - bar OPEN times in UTC. A missing volume column reads as 0."""
     df = pd.read_csv(path)
+    if "time" not in df.columns and "datetime" in df.columns:
+        df = df.rename(columns={"datetime": "time"})
+    if "volume" not in df.columns:
+        df["volume"] = df["tick_volume"] if "tick_volume" in df.columns else 0
     df["time"] = pd.to_datetime(df["time"], utc=True)
-    return df.sort_values("time").reset_index(drop=True)
+    return df.sort_values("time").drop_duplicates("time", keep="last").reset_index(drop=True)
+
+
+RESAMPLE_RULES = {"H4": "4h", "D1": "1D", "W1": "7D"}
+WEEK_ORIGIN = pd.Timestamp("2023-01-01", tz="UTC")      # a Sunday: weeks open Sunday 00:00 UTC
+
+
+def resample_bars(df: pd.DataFrame, tf: str) -> pd.DataFrame:
+    """H4 / D1 / W1 bars built from finer ones (UTC boundaries; weeks from
+    Sunday). Periods without any source bar (a closed market) are dropped."""
+    origin = WEEK_ORIGIN if tf == "W1" else "epoch"
+    out = (df.set_index("time")
+             .resample(RESAMPLE_RULES[tf], origin=origin, label="left", closed="left")
+             .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+             .dropna(subset=["open"]).reset_index())
+    return out
+
+
+def load_csv_folder(folder: str, prefix: str, primary_tf: str, trend_tf: str) -> dict:
+    """Every <prefix><TF>.csv in `folder` (M5, M15, H1, H4, D1, W1) - the
+    Google Drive price files: the EAs' export (XAUUSD_M15.csv, BTCUSD_M15.csv,
+    datetime column) or backtest --to-drive's (BTC_prices_M15.csv). A missing
+    H4 / D1 / W1 is built from H1 (or from the primary timeframe)."""
+    bars = {}
+    for tf in ("M5", "M15", "H1", "H4", "D1", "W1"):
+        path = os.path.join(folder, f"{prefix}{tf}.csv")
+        if os.path.exists(path):
+            bars[tf] = load_bars_csv(path)
+    if primary_tf not in bars:
+        raise FileNotFoundError(f"{os.path.join(folder, prefix + primary_tf + '.csv')} not found")
+    source = bars.get("H1", bars[primary_tf])
+    for tf in (trend_tf, "D1", "W1"):
+        if tf not in bars:
+            if tf not in RESAMPLE_RULES:
+                raise FileNotFoundError(f"{prefix}{tf}.csv not found in {folder}")
+            bars[tf] = resample_bars(source, tf)
+            log.info("%s: built from %s (%d bars)", tf, "H1" if "H1" in bars else primary_tf, len(bars[tf]))
+    return bars
 
 
 def mechanical_verdict(features: dict):
@@ -821,6 +864,13 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--compare-xtr", action="store_true", dest="compare_xtr",
                         help="run the XTR gate OFF and ON side by side on identical data/verdicts "
                              "(combines with --compare for all four variants)")
+    parser.add_argument("--csv-folder", dest="csv_folder",
+                        help="read every timeframe from this folder instead (e.g. your Google Drive "
+                             "price folder): <prefix>M15.csv, <prefix>H1.csv, ... - H4/D1/W1 are built "
+                             "from H1 when absent")
+    parser.add_argument("--csv-prefix", dest="csv_prefix",
+                        help="file name prefix in --csv-folder (default: the symbol + '_', e.g. "
+                             "BTCUSD_ for the EA's export; BTC_prices_ for backtest --to-drive files)")
     parser.add_argument("--from-mt5", action="store_true", dest="from_mt5",
                         help="pull history from a running MT5 terminal instead of CSVs")
     parser.add_argument("--months", type=float, help="with --from-mt5: the last N months (instead of --start/--end)")
@@ -935,19 +985,39 @@ def main(argv: list | None = None) -> int:
                 bars[tf] = gw.get_bars_range(args.symbol, tf, args.start, args.end)
         spec = gw.symbol_spec(args.symbol)
     else:
-        required = [args.bars_csv, args.trend_csv, args.daily_csv, args.weekly_csv]
-        if not all(required):
-            log.error("Provide --bars-csv/--trend-csv/--daily-csv/--weekly-csv, or use --from-mt5.")
-            return 1
-        bars = {
-            base_cfg.primary_timeframe: load_bars_csv(args.bars_csv),
-            base_cfg.trend_timeframe: load_bars_csv(args.trend_csv),
-            "D1": load_bars_csv(args.daily_csv),
-            "W1": load_bars_csv(args.weekly_csv),
-        }
-        if args.m5_csv and args.h1_csv:
-            bars["M5"] = load_bars_csv(args.m5_csv)
-            bars["H1"] = load_bars_csv(args.h1_csv)
+        if args.csv_folder:
+            prefix = args.csv_prefix if args.csv_prefix is not None else f"{args.symbol}_"
+            try:
+                found = load_csv_folder(args.csv_folder, prefix, base_cfg.primary_timeframe,
+                                        base_cfg.trend_timeframe)
+            except FileNotFoundError as exc:
+                log.error("%s", exc)
+                return 1
+            bars = {tf: found[tf] for tf in (base_cfg.primary_timeframe, base_cfg.trend_timeframe, "D1", "W1")}
+            # M5 + H1 only for the XTR gate: the M5 file is the shortest and
+            # would otherwise shorten the whole replay through its warm-up
+            if args.xtr_gate not in (None, "off") or args.compare_xtr:
+                bars.update({tf: found[tf] for tf in ("M5", "H1") if tf in found})
+            primary_times = bars[base_cfg.primary_timeframe]["time"]
+            args.start = args.start or primary_times.iloc[0].strftime("%Y-%m-%d")
+            args.end = args.end or primary_times.iloc[-1].strftime("%Y-%m-%d")
+            log.info("Prices from %s (%s*.csv): %s", args.csv_folder, prefix,
+                     ", ".join(f"{tf} {len(df)} bars" for tf, df in bars.items()))
+        else:
+            required = [args.bars_csv, args.trend_csv, args.daily_csv, args.weekly_csv]
+            if not all(required):
+                log.error("Provide --csv-folder, --bars-csv/--trend-csv/--daily-csv/--weekly-csv, "
+                          "or use --from-mt5.")
+                return 1
+            bars = {
+                base_cfg.primary_timeframe: load_bars_csv(args.bars_csv),
+                base_cfg.trend_timeframe: load_bars_csv(args.trend_csv),
+                "D1": load_bars_csv(args.daily_csv),
+                "W1": load_bars_csv(args.weekly_csv),
+            }
+            if args.m5_csv and args.h1_csv:
+                bars["M5"] = load_bars_csv(args.m5_csv)
+                bars["H1"] = load_bars_csv(args.h1_csv)
         if btc:     # the usual BTCUSD CFD: 1 lot = 1 BTC, so $1 of price = $1 a lot
             spec = gw.SymbolSpec(name=args.symbol, point=0.01, digits=2, stops_level_points=0,
                                  spread_points=0, volume_min=0.01, volume_max=100.0, volume_step=0.01,

@@ -6,6 +6,9 @@
 ; InpMagicNumber / InpLockR / InpTrailR MUST match app/profiles.py 'btc'.
 ; InpDryRun=true logs only - set false to manage real positions.
 ; InpExportCalendar=true only if UnifiedTrader_EA (gold) is NOT running.
+; InpXtrExport: BTCUSD M5/M15/H1 price files into your Google Drive folder,
+; next to gold's (InpXtrExportCopyTo = the same folder as the gold EA's;
+; tick "Allow DLL imports" in the EA's Common tab).
 ;
 InpMagicNumber=20260931
 InpLockR=1.0
@@ -15,3 +18,9 @@ InpExportCalendar=false
 InpCalendarExportFile=econ_calendar.csv
 InpNewsCurrencies=USD
 InpCalendarRefreshMin=30
+InpXtrExport=true
+InpXtrExportFolder=XTR_Data
+InpXtrExportName=BTCUSD
+InpXtrExportBars=5000
+InpXtrExportM1=false
+InpXtrExportCopyTo=G:\My Drive\MyMQChartDrive
