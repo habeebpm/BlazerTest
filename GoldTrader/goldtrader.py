@@ -273,16 +273,17 @@ def extract_package(zip_bytes: bytes, dest: str) -> tuple[str, str]:
 
 
 def instance_running(root: str = ROOT, now: float | None = None) -> str:
-    """The instance whose status.json was written in the last 3 minutes
-    (start.bat still open), else ""."""
-    now = time.time() if now is None else now
-    for name, rel in (("start.bat (gold)", ("logs", "status.json")),
-                      ("start.bat (Bitcoin)", ("logs", "btc", "status.json"))):
-        try:
-            if now - os.path.getmtime(os.path.join(root, *rel)) < 180:
-                return name
-        except OSError:
-            pass
+    """Which GoldTrader program is alive right now, else "". Read from the
+    locks the running programs hold (logs\\start_all.lock, logs\\instance.lock,
+    logs\\btc\\instance.lock) - the OS frees them the moment a program ends,
+    so Ctrl+C is seen at once. (It used to be "status.json written in the last
+    3 minutes", which still said "running" for 3 minutes after a stop.)"""
+    for name, rel in (("start.bat", ("logs", "start_all.lock")),
+                      ("start.bat (gold)", ("logs", "instance.lock")),
+                      ("start.bat (Bitcoin)", ("logs", "btc", "instance.lock"))):
+        path = os.path.join(root, *rel)
+        if os.path.exists(path) and goldtrader_running(path):
+            return name
     return ""
 
 
@@ -360,8 +361,7 @@ def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
     branch = getattr(args, "branch", None) or UPDATE_BRANCH
     state_path = os.path.join(root, "logs", "update_state.json")
     pause_path = os.path.join(root, "logs", "autostart_paused")
-    running = instance_running(root) or ("start.bat" if goldtrader_running(
-        os.path.join(root, "logs", "start_all.lock")) else "")
+    running = instance_running(root)
     if running and not getattr(args, "force", False):
         set_paused(True, pause_path)                     # so the autostart does not reopen it meanwhile
         print(f"\n{running} is still running - close its window now (open trades stay managed by the "
@@ -1066,7 +1066,9 @@ def start_all(argv, runner_factory=labelled_runner, sleep=None, lock_path: str |
         for t in threads:
             t.join(20)
         set_paused(True, pause_path)
-        emit("Stopped (Ctrl+C) - the autostart will not restart GoldTrader until you double-click start.bat.")
+        emit("Stopped (Ctrl+C) - gold and Bitcoin are no longer running; update.bat can run now. "
+             "The autostart will not restart GoldTrader until you double-click start.bat. "
+             "Close this window (if Windows asks 'Terminate batch job (Y/N)?', answer Y).")
         mirror_thread.join(30)                           # last copy of the logs to Drive
         release_lock(run_lock)
         return 130

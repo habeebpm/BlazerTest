@@ -240,10 +240,19 @@ def main() -> int:
         calls.clear()
         rc2 = solution.cmd_update(None, fetch=fetch, setup=lambda _a: 1 / 0, root=home)
         check("already up to date -> no download, no setup", rc2 == 0 and not any("codeload" in u for u in calls))
-        write(home, "logs/status.json", "{}")
-        check("refuses while start.bat is running (status.json fresh)",
-              solution.cmd_update(None, fetch=fetch, root=home) == 1)
+        write(home, "logs/status.json", "{}")                 # written a moment ago, then Ctrl+C
+        check("just after Ctrl+C (status.json still fresh, nothing running) the update is NOT refused",
+              solution.cmd_update(None, fetch=fetch, root=home) == 0 and solution.instance_running(home) == "")
         os.remove(os.path.join(home, "logs", "status.json"))
+        for rel, label in (("logs/instance.lock", "start.bat (gold)"), ("logs/btc/instance.lock", "start.bat (Bitcoin)")):
+            os.makedirs(os.path.dirname(os.path.join(home, *rel.split("/"))), exist_ok=True)
+            live = solution.hold_lock(os.path.join(home, *rel.split("/")))       # a program that is running
+            refused = solution.cmd_update(None, fetch=fetch, root=home)
+            seen = solution.instance_running(home)
+            solution.release_lock(live)
+            check(f"refuses while {label} is really running (its lock is held); free again once it ends",
+                  refused == 1 and seen == label and solution.instance_running(home) == "", (refused, seen))
+        solution.set_paused(False, os.path.join(home, "logs", "autostart_paused"))
 
         # A new version that fails its self-tests is rolled back completely.
         solution.save_update_state({"sha": "b" * 40, "shipped": state["shipped"]},
