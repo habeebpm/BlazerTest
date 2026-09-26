@@ -59,6 +59,7 @@ import pandas as pd
 import claude_advisor
 import executor
 import keys
+import legs
 import market_intel
 import mt5_gateway as gw
 import paths
@@ -80,7 +81,7 @@ AUX_WARMUP_BARS = 5   # D1/W1 history needed before the first evaluated bar
 ROLLOVER_START, ROLLOVER_END = 16 * 60 + 55, 18 * 60 + 15   # daily reopen, New York minutes
 
 TRADE_FIELDS = ["entry_time", "exit_time", "direction", "lots", "entry_price",
-                "exit_price", "sl", "tp", "exit_reason", "pnl_dollars"]
+                "exit_price", "sl", "tp", "exit_reason", "pnl_dollars", "ticket", "entry_group", "leg"]
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -109,6 +110,10 @@ class SimPosition:
     tp: float | None
     armed: bool = False
     risk: float = 0.0        # entry-to-opening-stop distance (1R) - lock_mode="r" (BTC)
+    comment: str = ""
+    follower: bool = False   # leg 2+ of a split entry (legs.py): break-even at +TP1, then trail
+    group: int = 0           # leg 1's ticket - one entry, however many legs
+    leg: int = 1
 
 
 @dataclass
@@ -124,6 +129,9 @@ class ClosedTrade:
     exit_reason: str
     pnl_dollars: float
     ticket: int = 0
+    group: int = 0
+    leg: int = 1
+    risk_money: float = 0.0   # what the position risked at its opening stop (1R in money)
 
 
 class HistoricalGateway:
@@ -139,7 +147,8 @@ class HistoricalGateway:
     running inside MT5, not Python).
     """
     def __init__(self, symbol: str, bars: dict, spec, spread_points: int = 25,
-                 starting_equity: float = 10000.0, rollover_spread_points: int = 0):
+                 starting_equity: float = 10000.0, rollover_spread_points: int = 0,
+                 exit_bars: pd.DataFrame | None = None):
         """bars: {"M15": df, "H4": df, "D1": df, "W1": df, ...} - each a
         DataFrame of time(tz-aware ascending)/open/high/low/close/volume,
         every row a genuinely CLOSED historical bar. starting_equity backs
@@ -158,6 +167,20 @@ class HistoricalGateway:
         self.sim_positions: list = []
         self.closed_trades: list = []
         self._next_ticket = 1
+        self._last_group = 0
+        # Finer bars (M5) the exits are walked through inside each primary
+        # bar - see manage_positions(). None: the primary bar itself.
+        self.exit_bars = None
+        if exit_bars is not None and len(exit_bars):
+            eb = exit_bars.sort_values("time").reset_index(drop=True)
+            step = eb["time"].diff().dropna()
+            self.exit_bars = {
+                "t": eb["time"].values.astype("datetime64[ns]").astype("int64"),
+                "o": eb["open"].to_numpy(float), "h": eb["high"].to_numpy(float),
+                "l": eb["low"].to_numpy(float), "c": eb["close"].to_numpy(float),
+                "time": eb["time"],
+                "step": step.min() if len(step) else pd.Timedelta(minutes=5),
+            }
 
     def reset(self, primary_timeframe: str, warmup_bars: int) -> bool:
         """Positions the cursor at the first primary-timeframe bar for which
@@ -290,7 +313,8 @@ class HistoricalGateway:
         # mt5_gateway.count_same_direction() - a backtest run only ever
         # simulates one system's own position book (self.sim_positions),
         # so there is nothing else to count regardless of what's passed here.
-        return sum(1 for p in self.sim_positions if p.direction == direction)
+        # A split entry counts once, as live (its legs 2+ are not counted).
+        return sum(1 for p in self.sim_positions if p.direction == direction and not p.follower)
 
     def symbol_positions(self, symbol: str) -> list[dict]:
         """All positions on the symbol - in a backtest, only this system's."""
@@ -310,7 +334,7 @@ class HistoricalGateway:
         gateway instead of raising AttributeError.
         """
         return [{"ticket": p.ticket, "direction": p.direction, "volume": p.lots,
-                 "price_open": p.entry_price, "sl": p.sl, "tp": p.tp}
+                 "price_open": p.entry_price, "sl": p.sl, "tp": p.tp, "comment": p.comment}
                 for p in self.sim_positions]
 
     def recent_closed_trades(self, symbol: str, magic: int, count: int,
@@ -364,155 +388,155 @@ class HistoricalGateway:
         price = tick.ask if direction == "buy" else tick.bid
         ticket = self._next_ticket
         self._next_ticket += 1
+        follower = legs.is_follower(comment)
+        if not follower:
+            self._last_group = ticket
         self.sim_positions.append(SimPosition(
             ticket=ticket, direction=direction, lots=lots, entry_time=self.current_time,
             entry_price=price, sl=sl_price, tp=tp_price, risk=abs(price - sl_price) if sl_price else 0.0,
+            comment=comment or "", follower=follower, group=self._last_group if follower else ticket,
+            leg=legs.leg_number(comment),
         ))
         return _FakeOrderResult(retcode=10009, order=ticket, price=price)
 
     def manage_positions(self, cfg: AdvisorConfig) -> None:
-        """The backtest's stand-in for the live trade-management EA: checks
-        every open simulated position against the bar that JUST closed
-        (self.current_bar) for a stop-out or take-profit, and arms/tightens
-        the stop for FUTURE bars per cfg.exit_style - see
-        _manage_fixed_tp/_manage_sl_to_tp1 for each style's own logic.
+        """The backtest's stand-in for the live trade-management EA: walks
+        every open position through the primary bar that JUST closed
+        (self.current_bar) - stop-outs, take-profits, the lock and the trail.
 
-        A position can be tested against the SAME bar it just opened on
-        (entry and exit inside one bar is realistic), but a trail that arms
-        on bar N is only tested for a stop-out starting bar N+1 - conflating
-        "armed" and "hit by its own new stop" within the identical bar would
-        need genuine intrabar (tick-level) sequencing this bar-level
-        simulation doesn't have. This is a documented simplification, not a
-        bug - see the docs/REFERENCE.md's backtest section.
+        Inside a bar the price path is unknown, so it is modelled the way
+        MT5's own tester does for "1 minute OHLC": a bar that closed up went
+        open -> low -> high -> close, one that closed down open -> high ->
+        low -> close. When finer bars are loaded (exit_bars, M5 - main()
+        passes them whenever they exist) each primary bar is walked as its
+        M5 bars, so that assumption only ever spans five minutes. Along the
+        path everything happens in order, exactly as the EA does tick by
+        tick: a stop is hit only by a move that comes AFTER it was set, a
+        lock set on the way up is hit by the fall that follows in the same
+        bar (not deferred to the next bar's open), and the trail follows
+        each new high. Sell stops/targets fire on the ask (bid + spread).
+        A bar that OPENS through a stop (daily break, weekend, news gap)
+        fills at that worse open.
         """
-        bar = self.current_bar
-        high, low = float(bar["high"]), float(bar["low"])
-        min_stop_dist = self.spec.stops_level_points * self.spec.point
-        if cfg.exit_style == "fixed_tp":
-            manage_one = self._manage_fixed_tp
-        elif cfg.exit_style == "sl_to_tp1":
-            manage_one = self._manage_sl_to_tp1
-        else:
+        if cfg.exit_style not in ("fixed_tp", "sl_to_tp1"):
             # No backtest simulation of "breakeven_r_decay" exists yet (it's
             # live-only, implemented in the MQL5 EAs - see config.py's
             # module docstring) - fail loudly rather than silently running
-            # it through _manage_sl_to_tp1, which doesn't have its earlier
+            # it as sl_to_tp1, which doesn't have its earlier
             # breakeven-at-ATR/decay-window step and would misrepresent it.
             raise ValueError(
                 f"backtest.py has no simulation for exit_style={cfg.exit_style!r} yet - only "
                 f"'sl_to_tp1' and 'fixed_tp' are supported here.")
-        bar_open = float(bar["open"])
-        spread = self.spread_at(bar["time"])
-        still_open = []
-        for pos in self.sim_positions:
-            # Bars are bid prices. A sell is closed at the ASK, so its stop,
-            # lock and trail fire on the ask-side bar (bid + spread) - exactly
-            # like MT5 - rather than 25 points late on the bid.
-            if pos.direction == "sell":
-                h, l, o = high + spread, low + spread, bar_open + spread
-            else:
-                h, l, o = high, low, bar_open
-            stop_before = pos.sl
-            exit_price, exit_reason = manage_one(cfg, pos, h, l, min_stop_dist)
-            if exit_price is None:
-                still_open.append(pos)
-                continue
-            # A bar that OPENS through the stop (daily break, weekend, news
-            # gap) fills at that worse open, not at the stop price.
-            if exit_reason in ("sl", "trail"):
-                if pos.direction == "buy" and o < stop_before:
-                    exit_price = o
-                elif pos.direction == "sell" and o > stop_before:
-                    exit_price = o
-            self._close_position(pos, exit_price, exit_reason, self.current_time)
-        self.sim_positions = still_open
+        if not self.sim_positions:
+            return
+        min_stop_dist = self.spec.stops_level_points * self.spec.point
+        for t, step, o, h, l, c in self._exit_path_bars():
+            spread = self.spread_at(t)
+            still_open = []
+            for pos in self.sim_positions:
+                exit_price, exit_reason = self._walk_bar(cfg, pos, o, h, l, c, spread, min_stop_dist)
+                if exit_price is None:
+                    still_open.append(pos)
+                else:
+                    self._close_position(pos, exit_price, exit_reason, t + step)
+            self.sim_positions = still_open
+            if not self.sim_positions:
+                break
 
-    def _manage_fixed_tp(self, cfg: AdvisorConfig, pos: SimPosition, high: float, low: float,
-                          min_stop_dist: float):
-        """The original design: a real fixed take-profit at entry+tp1_dist,
-        which is the SAME price the trail arms at - so the standing TP
-        almost always wins that race and the trail rarely gets a real
-        chance to engage. Kept only so --compare has the old behavior to
-        measure exit_style=sl_to_tp1 against; not used live.
-        """
-        # At the reference lot (cfg.reference_lot), exactly like the live MQL5
-        # managers - see _manage_sl_to_tp1's own note.
-        arm_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot)
-        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot)
-        if pos.direction == "buy":
-            if low <= pos.sl:
-                return pos.sl, "trail" if pos.armed else "sl"
-            if pos.tp is not None and high >= pos.tp:
-                return pos.tp, "tp"
-            profit_at_high = high - pos.entry_price
-            if profit_at_high >= arm_dist:
-                candidate = high - trail_dist
-                if candidate > pos.sl and (high - candidate) >= min_stop_dist:
-                    pos.sl, pos.tp, pos.armed = candidate, None, True
-        else:
-            if high >= pos.sl:
-                return pos.sl, "trail" if pos.armed else "sl"
-            if pos.tp is not None and low <= pos.tp:
-                return pos.tp, "tp"
-            profit_at_low = pos.entry_price - low
-            if profit_at_low >= arm_dist:
-                candidate = low + trail_dist
-                if candidate < pos.sl and (candidate - low) >= min_stop_dist:
-                    pos.sl, pos.tp, pos.armed = candidate, None, True
-        return None, None
+    def _exit_path_bars(self) -> list:
+        """[(time, duration, open, high, low, close)] the current primary bar
+        is walked through: its exit_bars (M5) when they cover it, else the
+        primary bar itself."""
+        bar = self.current_bar
+        duration = TIMEFRAME_DURATIONS[self.primary_timeframe]
+        eb = self.exit_bars
+        if eb is not None:
+            t0 = pd.Timestamp(bar["time"])
+            lo = int(eb["t"].searchsorted(t0.value, side="left"))
+            hi = int(eb["t"].searchsorted((t0 + duration).value, side="left"))
+            if hi > lo:
+                return [(eb["time"].iloc[i], eb["step"], eb["o"][i], eb["h"][i], eb["l"][i], eb["c"][i])
+                        for i in range(lo, hi)]
+        return [(bar["time"], duration, float(bar["open"]), float(bar["high"]), float(bar["low"]),
+                 float(bar["close"]))]
 
-    def _manage_sl_to_tp1(self, cfg: AdvisorConfig, pos: SimPosition, high: float, low: float,
-                           min_stop_dist: float):
-        """The recommended design (matches UnifiedTrader_EA.mq5's
-        live logic): no broker take-profit exists on this position at all
-        (see executor.py - place_market_order was called with tp=0 under
-        this style), so the ONLY exit mechanism is the stop-loss. Once
-        floating profit reaches tp1_dist, the SL is moved to EXACTLY that
-        price - locking in tp1_dollars of profit, no more, no less, in one
-        deterministic step - rather than jumping straight to a trailing
-        level that depends on how far price had already run past the arm
-        point by the time this check fires. Only on LATER bars does the SL
-        continue trailing trail_dist behind new highs/lows.
-        """
-        # TP1/trail are dollars at the REFERENCE lot (cfg.reference_lot), i.e.
-        # fixed price distances - the same way the entry SL is sized and the
-        # live MQL5 managers convert them. Converting at pos.lots would
-        # shrink them as a risk-sized lot grows (risking ~$200 to lock ~$6).
+    def _lock_trail(self, cfg: AdvisorConfig, pos: SimPosition) -> tuple:
+        """(lock / break-even trigger, trail) price distances - dollars at the
+        REFERENCE lot (fixed price distances, like the entry stop and the live
+        EAs), or with lock_mode="r" multiples of the trade's own stop (BTC)."""
         if cfg.lock_mode == "r" and pos.risk > 0:
-            # BTCTrader_EA: lock at +lock_r x the trade's own stop, trail trail_r x it
-            tp1_dist, trail_dist = pos.risk * cfg.lock_r, pos.risk * cfg.trail_r
+            return pos.risk * cfg.lock_r, pos.risk * cfg.trail_r
+        return (self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot),
+                self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot))
+
+    def _walk_bar(self, cfg: AdvisorConfig, pos: SimPosition, o: float, h: float, l: float, c: float,
+                  spread: float, min_stop_dist: float):
+        """Walks one position along one bar's modelled path (see
+        manage_positions). Returns (exit_price, reason) or (None, None).
+        Works in "favourable-up" units: x = price for a buy, -(ask) for a
+        sell, so one set of rules serves both directions."""
+        sign = 1.0 if pos.direction == "buy" else -1.0
+        adj = 0.0 if pos.direction == "buy" else spread       # a sell is closed at the ask
+        path = (o, l, h, c) if c >= o else (o, h, l, c)       # MT5 tester's OHLC order
+        xs = [sign * (p + adj) for p in path]
+        entry_x = sign * pos.entry_price
+        lock_d, trail_d = self._lock_trail(cfg, pos)
+        if pos.tp:
+            kind = "fixed_tp" if cfg.exit_style == "fixed_tp" else "tp_leg"
         else:
-            tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot)
-            trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot)
-        if pos.direction == "buy":
-            if low <= pos.sl:
-                return pos.sl, "trail" if pos.armed else "sl"
-            if not pos.armed:
-                # The lock level is fixed (entry+tp1_dist), but placing it
-                # still needs enough room from the CURRENT price to satisfy
-                # the broker's own minimum stop distance - same check the
-                # trailing step below already applies, just against a fixed
-                # target instead of a moving one. If price has only just
-                # touched tp1_dist, arming waits for it to move a little
-                # further before the lock can actually be placed.
-                candidate = pos.entry_price + tp1_dist
-                if high >= candidate and (high - candidate) >= min_stop_dist:
-                    pos.sl, pos.armed = candidate, True
-            else:
-                candidate = high - trail_dist
-                if candidate > pos.sl and (high - candidate) >= min_stop_dist:
-                    pos.sl = candidate
-        else:
-            if high >= pos.sl:
-                return pos.sl, "trail" if pos.armed else "sl"
-            if not pos.armed:
-                candidate = pos.entry_price - tp1_dist
-                if low <= candidate and (candidate - low) >= min_stop_dist:
-                    pos.sl, pos.armed = candidate, True
-            else:
-                candidate = low + trail_dist
-                if candidate < pos.sl and (candidate - low) >= min_stop_dist:
-                    pos.sl = candidate
+            kind = "follower" if pos.follower else "single"
+
+        def stop_x():
+            return sign * pos.sl
+
+        def tp_x():
+            return sign * pos.tp if pos.tp else None
+
+        def stop_exit(x):
+            return sign * x, ("trail" if pos.armed else "sl")
+
+        def raise_stop(peak):
+            """The EA's stop update for a new favourable extreme `peak`."""
+            cur = stop_x()
+            new = None
+            if kind == "single":                       # lock at +TP1, then trail
+                if not pos.armed:
+                    lock = entry_x + lock_d
+                    if peak >= lock and peak - lock >= min_stop_dist:
+                        new, pos.armed = lock, True
+                        cur = lock
+                if pos.armed:
+                    cand = peak - trail_d
+                    if cand > cur and peak - cand >= min_stop_dist:
+                        new = cand
+            elif kind == "follower":                   # break-even at +TP1, then trail
+                if pos.armed or peak - entry_x >= lock_d:
+                    cand = max(entry_x, peak - trail_d)
+                    if cand > cur and peak - cand >= min_stop_dist:
+                        new, pos.armed = cand, True
+            elif kind == "fixed_tp":                   # the old design (backtest --compare only)
+                if peak - entry_x >= lock_d:
+                    cand = peak - trail_d
+                    if cand > cur and peak - cand >= min_stop_dist:
+                        new, pos.armed, pos.tp = cand, True, None
+            if new is not None:
+                pos.sl = sign * new
+
+        prev = xs[0]
+        if prev <= stop_x():                           # opened through the stop: gap fill at the open
+            return stop_exit(prev)
+        if tp_x() is not None and prev >= tp_x():
+            return sign * tp_x(), "tp"
+        raise_stop(prev)
+        for x in xs[1:]:
+            if x < prev:
+                if x <= stop_x():
+                    return stop_exit(stop_x())
+            elif x > prev:
+                if tp_x() is not None and x >= tp_x():
+                    return sign * tp_x(), "tp"
+                raise_stop(x)
+            prev = x
         return None, None
 
     def close_all_at_market(self, reason: str = "backtest_end") -> None:
@@ -538,11 +562,13 @@ class HistoricalGateway:
                          exit_time: pd.Timestamp) -> None:
         sign = 1.0 if pos.direction == "buy" else -1.0
         price_move = sign * (exit_price - pos.entry_price)
-        pnl = price_move / self.spec.tick_size * self.spec.tick_value * pos.lots
+        per_price = self.spec.tick_value / self.spec.tick_size
+        pnl = price_move * per_price * pos.lots
         self.closed_trades.append(ClosedTrade(
             entry_time=pos.entry_time, exit_time=exit_time, direction=pos.direction, lots=pos.lots,
             entry_price=pos.entry_price, exit_price=exit_price, sl=pos.sl, tp=pos.tp,
             exit_reason=reason, pnl_dollars=round(pnl, 2), ticket=pos.ticket,
+            group=pos.group or pos.ticket, leg=pos.leg, risk_money=round(pos.risk * per_price * pos.lots, 2),
         ))
 
 
@@ -804,6 +830,18 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
     return {"evaluated": evaluated, "xtr_blocks": xtr_blocks}
 
 
+def entry_results(trades: list) -> list:
+    """[(pnl, risk money)] per ENTRY: the legs of a split entry (same
+    group) added together - one trade, as the live cap and the day count
+    see it."""
+    groups = {}
+    for t in trades:
+        key = getattr(t, "group", 0) or t.ticket or id(t)
+        pnl, risk = groups.get(key, (0.0, 0.0))
+        groups[key] = (pnl + t.pnl_dollars, risk + getattr(t, "risk_money", 0.0))
+    return list(groups.values())
+
+
 def summarize(trades: list, starting_equity: float = 0.0) -> dict:
     if not trades:
         return {"total_trades": 0}
@@ -832,7 +870,25 @@ def summarize(trades: list, starting_equity: float = 0.0) -> dict:
         "expectancy_dollars": round(net / len(trades), 2),
         **({"return_pct": round(100 * net / starting_equity, 2),
             "max_drawdown_pct": round(max_dd_pct, 2)} if starting_equity > 0 else {}),
+        **_entry_stats(trades),
     }
+
+
+def _entry_stats(trades: list) -> dict:
+    """Per-entry figures (a split entry's legs together): how many entries,
+    their win rate and the average result in R (P&L / the money the entry
+    risked at its stop) - comparable between a split and a single-position
+    run whatever the equity did."""
+    results = entry_results(trades)
+    if not results:
+        return {}
+    out = {"entries": len(results),
+           "entry_win_rate_pct": round(100 * sum(1 for p, _ in results if p > 0) / len(results), 1)}
+    rs = [p / r for p, r in results if r > 0]
+    if rs:
+        out["avg_r_per_entry"] = round(sum(rs) / len(rs), 3)
+        out["total_r"] = round(sum(rs), 2)
+    return out
 
 
 def write_trades_csv(trades: list, path: str) -> None:
@@ -845,6 +901,7 @@ def write_trades_csv(trades: list, path: str) -> None:
                 "entry_time": t.entry_time, "exit_time": t.exit_time, "direction": t.direction,
                 "lots": t.lots, "entry_price": t.entry_price, "exit_price": t.exit_price,
                 "sl": t.sl, "tp": t.tp, "exit_reason": t.exit_reason, "pnl_dollars": t.pnl_dollars,
+                "ticket": t.ticket, "entry_group": getattr(t, "group", 0) or t.ticket, "leg": getattr(t, "leg", 1),
             })
 
 
@@ -862,6 +919,15 @@ def main(argv: list | None = None) -> int:
                         help="XTR entry filter to replay (needs M5+H1 history: --m5-csv/--h1-csv or "
                              "--from-mt5). Default: config.py's xtr_gate when that history is "
                              "loaded, otherwise off. Entry filter only - lot, SL, TP unchanged.")
+    parser.add_argument("--no-claude-split", action="store_true", dest="no_claude_split",
+                        help="one position per entry ($6 lock, $3 trail) instead of the default three "
+                             "legs (leg 1 takes profit at +$6, legs 2-3 break-even there then $3 trail)")
+    parser.add_argument("--compare-split", action="store_true", dest="compare_split",
+                        help="run the three-leg split and the single position side by side on identical "
+                             "data and verdicts")
+    parser.add_argument("--exit-bars", choices=["m5", "off"], default="m5", dest="exit_bars",
+                        help="walk the exits through M5 bars inside each M15 bar when M5 history is "
+                             "available (default), or 'off' to use the M15 bar alone")
     parser.add_argument("--compare-xtr", action="store_true", dest="compare_xtr",
                         help="run the XTR gate OFF and ON side by side on identical data/verdicts "
                              "(combines with --compare for all four variants)")
@@ -948,6 +1014,8 @@ def main(argv: list | None = None) -> int:
         base_cfg.use_risk_percent = args.risk_percent > 0
     if args.sl_mode:
         base_cfg.sl_mode = args.sl_mode
+    if args.no_claude_split:
+        base_cfg.claude_split = False
     if args.trade_hours is not None:
         base_cfg.trade_windows = "" if args.trade_hours.strip().lower() in ("", "any", "off") \
             else args.trade_hours
@@ -986,6 +1054,9 @@ def main(argv: list | None = None) -> int:
         if args.xtr_gate != "off" or args.compare_xtr:
             for tf in ("M5", "H1"):
                 bars[tf] = gw.get_bars_range(args.symbol, tf, args.start, args.end)
+        exit_m5 = bars.get("M5")
+        if exit_m5 is None and args.exit_bars == "m5":
+            exit_m5 = gw.get_bars_range(args.symbol, "M5", args.start, args.end)
         spec = gw.symbol_spec(args.symbol)
     else:
         if args.csv_folder:
@@ -999,6 +1070,7 @@ def main(argv: list | None = None) -> int:
                 log.error("%s", exc)
                 return 1
             bars = {tf: found[tf] for tf in (base_cfg.primary_timeframe, base_cfg.trend_timeframe, "D1", "W1")}
+            exit_m5 = found.get("M5")
             # M5 + H1 only for the XTR gate: the M5 file is the shortest and
             # would otherwise shorten the whole replay through its warm-up
             if args.xtr_gate not in (None, "off") or args.compare_xtr:
@@ -1020,8 +1092,9 @@ def main(argv: list | None = None) -> int:
                 "D1": load_bars_csv(args.daily_csv),
                 "W1": load_bars_csv(args.weekly_csv),
             }
+            exit_m5 = load_bars_csv(args.m5_csv) if args.m5_csv else None
             if args.m5_csv and args.h1_csv:
-                bars["M5"] = load_bars_csv(args.m5_csv)
+                bars["M5"] = exit_m5
                 bars["H1"] = load_bars_csv(args.h1_csv)
         if btc:     # the usual BTCUSD CFD: 1 lot = 1 BTC, so $1 of price = $1 a lot
             spec = gw.SymbolSpec(name=args.symbol, point=0.01, digits=2, stops_level_points=0,
@@ -1048,26 +1121,36 @@ def main(argv: list | None = None) -> int:
         return 1
     if args.compare_xtr and xtr_mode == "off":
         xtr_mode = base_cfg.xtr_gate if base_cfg.xtr_gate != "off" else "block_opposed"
+    if args.exit_bars == "off" or base_cfg.primary_timeframe == "M5":
+        exit_m5 = None
+    log.info("Exits walked through %s", "M5 bars inside each bar" if exit_m5 is not None
+             else f"the {base_cfg.primary_timeframe} bars")
     exit_styles = ["sl_to_tp1", "fixed_tp"] if args.compare else [args.exit_style]
     xtr_modes = ["off", xtr_mode] if args.compare_xtr else [xtr_mode]
+    split_modes = [True, False] if args.compare_split else [base_cfg.claude_split]
     log.info("XTR alignment gate: %s (entry filter only - lot, SL and TP unchanged)",
              " vs ".join(xtr_modes))
     styles = []
     gateways, cfgs = {}, {}
     for style in exit_styles:
         for mode in xtr_modes:
-            name = style if not args.compare_xtr else f"{style}_xtr-{mode}"
-            styles.append(name)
-            gateways[name] = HistoricalGateway(args.symbol, bars, spec,
-                                               spread_points=args.spread_points,
-                                               rollover_spread_points=args.rollover_spread_points)
-            if not gateways[name].reset(base_cfg.primary_timeframe, base_cfg.bars_per_timeframe):
-                log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
-                          base_cfg.bars_per_timeframe)
-                return 1
-            cfgs[name] = dataclasses.replace(base_cfg, exit_style=style, xtr_gate=mode,
-                                             log_dir=os.path.join(paths.LOG_DIR, "backtest" + (
-                                                 "_btc" if btc else ""), name))
+            for split in split_modes:
+                name = style if not args.compare_xtr else f"{style}_xtr-{mode}"
+                if args.compare_split:
+                    name += "_split" if split else "_single"
+                styles.append(name)
+                gateways[name] = HistoricalGateway(args.symbol, bars, spec,
+                                                   spread_points=args.spread_points,
+                                                   rollover_spread_points=args.rollover_spread_points,
+                                                   exit_bars=exit_m5)
+                if not gateways[name].reset(base_cfg.primary_timeframe, base_cfg.bars_per_timeframe):
+                    log.error("Not enough historical data to even warm up (need >%d bars per timeframe).",
+                              base_cfg.bars_per_timeframe)
+                    return 1
+                cfgs[name] = dataclasses.replace(base_cfg, exit_style=style, xtr_gate=mode,
+                                                 claude_split=split,
+                                                 log_dir=os.path.join(paths.LOG_DIR, "backtest" + (
+                                                     "_btc" if btc else ""), name))
 
     n_calls = estimate_call_count(gateways[styles[0]])
     if args.mechanical:
@@ -1124,6 +1207,8 @@ def publish_to_drive(cfg, args, summary: dict, bars: dict) -> None:
              f"stop {cfg.sl_mode} x{cfg.sl_atr_mult:g}" + (f" ({cfg.sl_pct_min:g}%-{cfg.sl_pct_max:g}% of price)"
                                                            if cfg.sl_pct_min or cfg.sl_pct_max else "")
              + (f", lock +{cfg.lock_r:g}R, trail {cfg.trail_r:g}R" if cfg.lock_mode == "r" else
+                f", {cfg.claude_split_legs} legs: leg 1 take-profit +${cfg.tp1_dollars:g}, the rest break-even "
+                f"there then ${cfg.trail_dollars:g} trail" if legs.split_entry(cfg) else
                 f", lock ${cfg.tp1_dollars:g}, trail ${cfg.trail_dollars:g}")
              + f", risk {cfg.risk_percent:g}%, spread {args.spread_points} points", ""]
     lines += [f"{k}: {v}" for k, v in summary.items()]

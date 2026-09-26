@@ -29,9 +29,8 @@ in the window cannot freeze it.
 | Risk per trade | 2% of equity (lot sized from it) |
 | Stop loss | $6 at the 0.01 reference lot (a fixed price distance). **Telegram trades:** the signal's own stop when it is on the right side and $3-$20 from the entry (EA `InpTelegramUseSignalSl`, `InpSignalSlMinDistance`, `InpSignalSlMaxDistance`); otherwise, or with no stop in the signal, the $6 stop |
 | Lot | sized so the stop risks 2% of equity - a wider signal stop gives a smaller lot (e.g. $14 stop: 0.71 lot at $50,000 instead of 1.66), so every trade still risks 2% |
-| TP1 | at +$6 the SL is locked there (no broker TP) |
-| Trail | $3 behind price after TP1 |
-| Positions per direction | max 5, shared by both sources |
+| Claude exits | every entry is **three legs** with the same stop and together the same lot (2% risk): leg 1 has a broker take-profit at +$6; legs 2-3 have none - at +$6 their stop goes to break-even and then trails $3 behind price, tightening only (so it is at +$3 the moment +$6 is reached). A lot too small for three legs uses two (0.02) or one (0.01, the take-profit leg). `--no-claude-split` / `claude_split = False`: one position whose SL is locked at +$6, then trailed $3 |
+| Positions per direction | max 5 **trades**, shared by both sources - the legs of a split entry (Claude's three, Telegram's two halves) count as one trade |
 | Daily loss cap | 10% of the day's starting equity - no new entries after it; each entry must also fit the remaining 10% budget including open risk. The day is the broker's server day (17:00 New York at most gold brokers) for both the EA and Python |
 | Margin guard | An entry is skipped if, after it, the free margin could not cover every open stop plus its own (both sources) - so a losing run reaches the stops, not the broker's margin call |
 
@@ -68,7 +67,12 @@ magic numbers and shared file names (checked by `goldtrader.py test`).
 5. **Breaking-news check** (free RSS feeds, one short Claude call) right
    before the order - a surprise against the trade blocks it; feeds down =
    trades anyway and says so.
-6. Order sent; Telegram alert with entry, SL, TP1 and Claude's targets.
+6. Order sent - three legs (`Claude_Sig`, `Claude_Sig|L2`, `Claude_Sig|L3`; the
+   extra legs are tagged in the order comment, which is how the EA and the
+   cap recognise them); Telegram alert with entry, SL, TP1, the legs and
+   Claude's targets. If the broker refuses leg 2 or 3, the entry stands
+   with the legs already open (less risk, never retried); a refused leg 1
+   cancels the entry.
 
 Telegram signals (EA side) are copied when they parse as a trade and no
 clear M15/H1 is against them (`InpXtrHtfFilter`), inside the same position
@@ -82,10 +86,11 @@ broker take-profit at +$4 (`InpTelegramTp1Dollars`); half B has none: from
 +$4 its stop goes to break-even and trails $3 behind price
 (`InpTelegramTrailDollars`; with a $3 trail it sits at +$1 the moment +$4
 is reached). The EA tells them apart by the broker TP; a TP you set by hand
-on a Telegram trade is respected. Each half counts in the 5 per direction;
-a signal takes one position (the +$4 half) when the lot cannot be halved or
-only one slot is left. The signal's own targets are logged only; the
-scorecard and the journal measure each half against its own stop.
+on a Telegram trade is respected. The two halves count as ONE trade in the
+5 per direction (half B's comment carries `|L2`); a signal takes one position
+(the +$4 half) when the lot cannot be halved. The signal's own targets are
+logged only; the journal lists each half (column `leg`), the scorecard,
+Claude's recent-performance context and the digests count the signal once.
 `InpTelegramSplit=false` = one position, lock +$6 / trail $3 as before;
 `InpTelegramUseSignalSl=false` = the $6 stop for every trade.
 Greetings, mood posts, long commentary, videos, audio and stickers are
@@ -104,7 +109,7 @@ position cap never change.
 
 | Tactic | Default | Why |
 |---|---|---|
-| Trading hours | 08:00-16:45 and 18:15-20:00 **New York time** = 16:00-00:45 and 02:15-04:00 **Oman time** in summer, an hour later in winter | The best window in a year of backtests: +0.14R a trade, positive in all three periods; 06:00-23:00 Oman lost -0.07R (the Asian and London-morning hours) |
+| Trading hours | 08:00-16:45 and 18:15-20:00 **New York time** = 16:00-00:45 and 02:15-04:00 **Oman time** in summer, an hour later in winter | The best window in a year of backtests: +0.14R a trade, positive in all three periods; 06:00-23:00 Oman lost -0.07R (the Asian and London-morning hours) - measured with the earlier simulator, which understated the lock (see docs/BACKTEST_REPORT.md); the ranking of the windows is what counts |
 | Friday cutoff | no new entry from 16:00 New York on Friday | A $6 stop cannot protect a position over the weekend gap |
 | Spread guard | no entry above 50 points | Reopen and news spikes; 50 points is already 8% of the $6 risk |
 | Trend filter | off (`--min-adx 25` to try it) | Helped Mar-Jul, not Aug-Sep |
@@ -234,14 +239,16 @@ file that changed is rewritten.
 
 | File | One row per | Columns |
 |---|---|---|
-| `GoldTrader_trades.csv` | closed trade, Claude and Telegram, rebuilt from MT5's own history | ticket, source, direction, lots, open/close time (UTC and Oman), minutes open, entry, exit, first stop and its distance (1R), exit reason (stop loss / closed by the EA / closed by you (PC, phone, web) / stop out), move in $, result in R, profit, swap, commission, net, note |
+| `GoldTrader_trades.csv` | closed trade, Claude and Telegram, rebuilt from MT5's own history | ticket, source, direction, lots, open/close time (UTC and Oman), minutes open, entry, exit, first stop and its distance (1R), exit reason (stop loss / closed by the EA / closed by you (PC, phone, web) / stop out), move in $, result in R, profit, swap, commission, net, note, leg (2 or 3 = an extra leg of a split entry) |
 | `GoldTrader_claude_decisions.csv` | Claude evaluation | a copy of `logs/decisions.csv` |
 | `GoldTrader_telegram_signals.csv` | Telegram message the EA received | a copy of the EA's signal log: action, direction, copied or why not |
 
 The note `stop moved by hand` marks an exit on a stop the EA never sets:
 the EA opens at the first stop (-1R) and only moves it to the +$6 lock or
 beyond, so an exit between 80% of the way to the first stop and 70% of the
-way to the lock was a stop you moved. R is measured against each trade's
+way to the lock was a stop you moved. Legs 2+ of a split entry (column
+`leg` = 2 or 3) and Telegram halves go to break-even by rule, so their
+exits at break-even or better are never flagged. R is measured against each trade's
 own first stop (`stop_distance`). To analyse, ask Claude to read the files from your
 Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 (`off` = logs only). Trading never waits on it or fails because of it.
@@ -297,8 +304,11 @@ when absent). Full guide: [`BTC.md`](BTC.md).
 Options: `--months 6`, `--equity 50000`, `--spread 0.30`, `--no-htf`,
 `--messages-file` / `--prices-file` (replay saved files, no Telegram/MT5).
 Not modelled: news blackout, slippage beyond the spread, margin guard,
-edited messages; on M1 bars a bar that touches both the stop and the
-lock/target counts as the stop (pessimistic). If MT5 returns fewer M1
+edited messages. Each M1 bar is walked in the order MT5's tester assumes
+(up bar: open-low-high-close; down bar: open-high-low-close), so a stop
+set on the way up is hit by the fall later in the same minute; on the bar
+a limit order fills, a bar touching both the stop and the target counts as
+the stop (pessimistic). If MT5 returns fewer M1
 bars than the period, it says so: Tools -> Options -> Charts -> Max bars in
 chart = Unlimited, restart MT5, scroll an M1 chart back, run again.
 
@@ -362,12 +372,19 @@ without the tactics. Results on a year of real prices:
 
 - No backtest of Claude itself yet - the demo weeks are the real test.
 - Over a year the defaults (no gate + trading hours) were positive in all
-  three periods with a 9% chance of luck - the best result, not proof. The
-  worst drawdown was 27% from the peak (32% at double spread).
+  three periods - the best result, not proof. With the corrected simulator
+  (26 Sep 2026, docs/BACKTEST_REPORT.md): one position +0.25R an entry
+  (+174%, worst drawdown 23%); the three-leg split that is live now
+  +0.16R (+85%, drawdown 24%); at double spread +0.18R and +0.10R. The
+  split keeps about two thirds of the single position's edge: leg 1 is
+  always closed at +$6 while the average winner runs to +$9.
 - Very cost-sensitive: the $6 stop is about one M15 ATR - use a broker with
   gold spread of 25 points or less.
-- The backtest is bar-level (not tick-level); spread is constant apart
-  from the daily reopen; news spikes are not modelled.
+- The backtest is bar-level, not tick-level: exits are walked through the
+  M5 bars inside each M15 bar in the order MT5's own tester assumes (up
+  bar open-low-high-close, down bar open-high-low-close), fills are exact
+  (no slippage); spread is constant apart from the daily reopen; news
+  spikes are not modelled.
 - The EA's compile, WebRequest and DLL permissions, and the Telegram/Google
   logins can only be verified on your own PC.
 

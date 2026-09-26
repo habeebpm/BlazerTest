@@ -34,8 +34,16 @@
 //| from the position itself (broker TP set = half A) - no memory      |
 //| needed. InpTelegramSplit=false = the lock-then-trail below.        |
 //|                                                                    |
-//| EXITS (Claude; Telegram with InpTelegramSplit=false): no broker    |
-//| take-profit. At +InpTp1Dollars the                                 |
+//| CLAUDE SPLIT ENTRIES (app/config.py claude_split, default): main.py |
+//| sends each entry as three legs sharing the lot and the stop. Leg 1 |
+//| carries a broker take-profit at +InpTp1Dollars and is left alone;  |
+//| legs 2-3 ("|L2"/"|L3" in the order comment, see LEG_MARK) have none|
+//| - from +InpTp1Dollars their stop goes to break-even and trails     |
+//| InpTrailDollars behind price, tightening only. Read from each      |
+//| position (TP set / comment) - no input to keep in sync.            |
+//|                                                                    |
+//| EXITS (a single Claude position; Telegram with InpTelegramSplit=   |
+//| false): no broker take-profit. At +InpTp1Dollars the               |
 //| SL moves exactly to that level (locked profit), then trails        |
 //| InpTrailDollars behind new highs/lows, tightening only. Dollars are|
 //| at InpReferenceLot, converted with the live tick value/size, so    |
@@ -47,7 +55,9 @@
 //| InpDecayWindowMinutes, whichever comes first.                      |
 //|                                                                    |
 //| SHARED CAP: InpMaxPositionsPerDirection counts BOTH magics         |
-//| together. main.py applies the same combined cap with               |
+//| together - in TRADES: the extra legs of a split entry (LEG_MARK in |
+//| the comment) ride with their leg 1 and are not counted again.      |
+//| main.py applies the same combined cap with                         |
 //| --shared-cap-magic 20260922 (start.bat does this).                 |
 //|                                                                    |
 //| REMOTE CONTROL (InpControlChatId - your private chat with the bot):|
@@ -123,6 +133,11 @@
 // Source tag for this EA's Telegram rows (signal log, order comments) and
 // the Trade Logger preset's InpSourceLabel - one name for the same trades.
 #define UNIFIED_TELEGRAM_SOURCE "Telegram_Sig_Unified"
+
+// Order-comment mark of legs 2+ of a split entry ("Telegram_Sig_Unified|L2",
+// "Claude_Sig|L3") - MUST match app/legs.py LEG_MARK. The shared cap counts a
+// split entry once; Claude legs with it get the break-even-then-trail exit.
+#define LEG_MARK "|L"
 
 //================================= INPUTS ====================================
 
@@ -314,8 +329,11 @@ bool     PrecededByWord(const string &text, int idx, const string word);
 bool     PlanCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                           double &orderPrice, bool &isPending, string &failType);
 double   TelegramStopDistance(const SignalMsg &msg, bool isBuy, double orderPrice, string &note);
+bool     IsFollowerLeg(const string comment);
+void     BreakevenTrail(ulong ticket, long type, double openPrice, double currentSl, double trigger,
+                        double trail, const string label);
 bool     PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDist, double lots,
-                          double tpDist, bool countTrade,
+                          double tpDist, int leg,
                           string &outOrderType, long &outTicket, int &outRetcode);
 void     ManagePositionExit(ulong ticket, long magic);
 void     ManageAllPositions();
@@ -656,8 +674,12 @@ int OnInit()
                InpControlChatId != 0 ? "set" : "off");
    if(InpTelegramSplit)
       PrintFormat("UnifiedTrader_EA: Telegram entries split in two halves - half A takes profit at +$%.2f, "
-                  "half B goes to break-even there and trails $%.2f (Claude trades unchanged).",
+                  "half B goes to break-even there and trails $%.2f.",
                   InpTelegramTp1Dollars, InpTelegramTrailDollars);
+   PrintFormat("UnifiedTrader_EA: Claude split entries (sent by main.py) - leg 1 closes at its take-profit "
+               "(+$%.2f), legs 2+ (\"%s\" in the comment) go to break-even at +$%.2f and trail $%.2f; "
+               "a single Claude position keeps the $%.2f lock / $%.2f trail.",
+               InpTp1Dollars, LEG_MARK, InpTp1Dollars, InpTrailDollars, InpTp1Dollars, InpTrailDollars);
 
    return(INIT_SUCCEEDED);
 }
@@ -1389,6 +1411,7 @@ int CountSameDirection(int direction)
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       long magic = (long)PositionGetInteger(POSITION_MAGIC);
       if(magic != InpTelegramMagicNumber && magic != InpClaudeMagicNumber) continue;
+      if(IsFollowerLeg(PositionGetString(POSITION_COMMENT))) continue;   // counted with its leg 1
       long type = PositionGetInteger(POSITION_TYPE);
       int posDir = (type == POSITION_TYPE_BUY) ? DIR_BUY : DIR_SELL;
       if(posDir == direction) count++;
@@ -1406,6 +1429,7 @@ int CountSameDirection(int direction)
       if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
       long magic = (long)OrderGetInteger(ORDER_MAGIC);
       if(magic != InpTelegramMagicNumber && magic != InpClaudeMagicNumber) continue;
+      if(IsFollowerLeg(OrderGetString(ORDER_COMMENT))) continue;
       long type = OrderGetInteger(ORDER_TYPE);
       int orderDir;
       if(type == ORDER_TYPE_BUY_LIMIT || type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_STOP_LIMIT)
@@ -2072,18 +2096,22 @@ double TelegramStopDistance(const SignalMsg &msg, bool isBuy, double orderPrice,
 //| Sends one planned Telegram order: stop slDist from orderPrice, the |
 //| lot already sized from that stop. tpDist > 0: broker take-profit   |
 //| that far (half A of a split signal); 0: none (half B, or the       |
-//| lock-then-trail design with InpTelegramSplit=false). countTrade:   |
-//| false for half B, so one signal counts once in InpMaxTradesPerDay. |
+//| lock-then-trail design with InpTelegramSplit=false). leg: 1 for    |
+//| half A / a single order (counts in InpMaxTradesPerDay), 2 for half |
+//| B - tagged LEG_MARK+"2" so the cap and the day count see one trade.|
 //+------------------------------------------------------------------+
 bool PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDist, double lots,
-                       double tpDist, bool countTrade,
+                       double tpDist, int leg,
                        string &outOrderType, long &outTicket, int &outRetcode)
 {
    outOrderType = "";
    outTicket    = 0;
    outRetcode   = 0;
+   bool   countTrade = (leg <= 1);
    int    digits  = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    string comment = UNIFIED_TELEGRAM_SOURCE;
+   if(!countTrade)
+      comment = comment + LEG_MARK + IntegerToString(leg);
    if(slDist <= 0.0)
    {
       // DollarsToPrice() returns 0.0 if the broker isn't fully quoting tick
@@ -2151,6 +2179,61 @@ bool PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDi
 }
 
 //+------------------------------------------------------------------+
+//| Legs 2+ of a split entry carry LEG_MARK in their order comment.   |
+//+------------------------------------------------------------------+
+bool IsFollowerLeg(const string comment)
+{
+   return(StringFind(comment, LEG_MARK) >= 0);
+}
+
+//+------------------------------------------------------------------+
+//| Break-even-then-trail for a split entry's leg without take-profit |
+//| (Telegram half B, Claude legs 2+): nothing until price is +trigger |
+//| (price distance) from the entry; from then on the stop is          |
+//| max(entry, bid - trail) for a buy (min(entry, ask + trail) for a   |
+//| sell), tightening only. "Reached +trigger" is read from the stop   |
+//| itself (at/beyond the entry) - no memory across restarts.         |
+//+------------------------------------------------------------------+
+void BreakevenTrail(ulong ticket, long type, double openPrice, double currentSl, double trigger,
+                    double trail, const string label)
+{
+   if(trigger <= 0.0 || trail <= 0.0)
+      return;
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minStopDist = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick))
+      return;
+   double target = 0.0;
+   if(type == POSITION_TYPE_BUY)
+   {
+      bool armed = (currentSl > 0.0 && currentSl >= openPrice - point);
+      if(!armed && tick.bid - openPrice < trigger)
+         return;
+      target = NormalizeDouble(MathMax(openPrice, tick.bid - trail), digits);
+      if((currentSl > 0.0 && target <= currentSl + point / 2.0) || tick.bid - target < minStopDist)
+         return;
+   }
+   else if(type == POSITION_TYPE_SELL)
+   {
+      bool armed = (currentSl > 0.0 && currentSl <= openPrice + point);
+      if(!armed && openPrice - tick.ask < trigger)
+         return;
+      target = NormalizeDouble(MathMin(openPrice, tick.ask + trail), digits);
+      if((currentSl > 0.0 && target >= currentSl - point / 2.0) || target - tick.ask < minStopDist)
+         return;
+   }
+   else
+      return;
+   if(InpDryRun)
+      PrintFormat("UnifiedTrader_EA: [DRY-RUN] would move %s ticket %I64u sl %.2f -> %.2f "
+                  "(break-even / %.2f trail)", label, ticket, currentSl, target, trail);
+   else
+      trade.PositionModify(ticket, target, 0.0);
+}
+
+//+------------------------------------------------------------------+
 //| Lock-then-trail exit for one position of either source (see the   |
 //| file header's EXITS). EXIT_BREAKEVEN_R_DECAY's extra breakeven step|
 //| only ever                                                          |
@@ -2193,43 +2276,27 @@ void ManagePositionExit(ulong ticket, long magic)
 
    // Telegram, InpTelegramSplit: half A (broker TP set) is closed by its
    // take-profit - left alone; half B (no TP): from +TP1 the stop goes to
-   // break-even, then trails InpTelegramTrailDollars behind price, tightening
-   // only. "Reached +TP1" is read from its own stop (at/beyond the entry).
+   // break-even, then trails InpTelegramTrailDollars behind price.
    if(magic == InpTelegramMagicNumber && InpTelegramSplit)
    {
       if(currentTp != 0.0)
          return;
-      double trigger = InpTelegramTp1Dollars;
-      double trail   = InpTelegramTrailDollars;
-      if(trigger <= 0.0 || trail <= 0.0)
-         return;
-      double target = 0.0;
-      if(type == POSITION_TYPE_BUY)
-      {
-         bool armed = (currentSl > 0.0 && currentSl >= openPrice - point);
-         if(!armed && tick.bid - openPrice < trigger)
-            return;
-         target = NormalizeDouble(MathMax(openPrice, tick.bid - trail), digits);
-         if((currentSl > 0.0 && target <= currentSl + point / 2.0) || tick.bid - target < minStopDist)
-            return;
-      }
-      else if(type == POSITION_TYPE_SELL)
-      {
-         bool armed = (currentSl > 0.0 && currentSl <= openPrice + point);
-         if(!armed && openPrice - tick.ask < trigger)
-            return;
-         target = NormalizeDouble(MathMin(openPrice, tick.ask + trail), digits);
-         if((currentSl > 0.0 && target >= currentSl - point / 2.0) || target - tick.ask < minStopDist)
-            return;
-      }
-      else
-         return;
-      if(InpDryRun)
-         PrintFormat("UnifiedTrader_EA: [DRY-RUN] would move Telegram half B ticket %I64u sl %.2f -> %.2f "
-                     "(break-even / $%.2f trail)", ticket, currentSl, target, trail);
-      else
-         trade.PositionModify(ticket, target, 0.0);
+      BreakevenTrail(ticket, type, openPrice, currentSl, InpTelegramTp1Dollars, InpTelegramTrailDollars,
+                     "Telegram half B");
       return;
+   }
+   // Claude split entry (app/config.py claude_split): leg 1 carries the
+   // broker take-profit at +TP1 and is left alone; legs 2+ (LEG_MARK in the
+   // comment) go to break-even at +TP1 and trail InpTrailDollars.
+   if(magic == InpClaudeMagicNumber)
+   {
+      if(currentTp != 0.0)
+         return;
+      if(IsFollowerLeg(PositionGetString(POSITION_COMMENT)))
+      {
+         BreakevenTrail(ticket, type, openPrice, currentSl, tp1Dist, trailDist, "Claude leg");
+         return;
+      }
    }
 
    bool changeSl = false;
@@ -2309,10 +2376,11 @@ void ManagePositionExit(ulong ticket, long magic)
       return;
    }
 
-   // No managed position should ever carry a broker take-profit under this
-   // exit design - clear any leftover unconditionally, even on a tick where
-   // the SL itself isn't changing yet (a standing broker TP would race the
-   // lock/trail and win).
+   // A single lock-then-trail position (Telegram with InpTelegramSplit=
+   // false) should never carry a broker take-profit - clear any leftover
+   // unconditionally, even on a tick where the SL itself isn't changing yet
+   // (a standing broker TP would race the lock/trail and win). Claude
+   // positions with a TP are split-entry leg 1s and returned above.
    if(changeSl || currentTp != 0.0)
    {
       double slToSend = changeSl ? newSl : currentSl;
@@ -2627,8 +2695,8 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 
    // InpTelegramSplit: the same total lot (same 2% risk) as two halves with
    // the same stop - half A takes profit at +TP1, half B goes to break-even
-   // there and trails. One position (= half A) when the lot cannot be halved
-   // or only one slot of the shared cap is left.
+   // there and trails. Half B rides with half A in the shared cap (one
+   // trade). One position (= half A) when the lot cannot be halved.
    double lotsA = lots, lotsB = 0.0, tpDist = 0.0;
    if(InpTelegramSplit)
    {
@@ -2637,7 +2705,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
       if(step <= 0.0) step = 0.01;
       double half = MathFloor(lots / 2.0 / step + 1e-9) * step;
-      if(half >= minLot - 1e-9 && lots - half >= minLot - 1e-9 && sameDir + 2 <= InpMaxPositionsPerDirection)
+      if(half >= minLot - 1e-9 && lots - half >= minLot - 1e-9)
       {
          lotsA = NormalizeDouble(half, 2);
          lotsB = NormalizeDouble(lots - half, 2);
@@ -2648,8 +2716,8 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       : (lotsB > 0.0
          ? StringFormat("%.2f + %.2f lots: half A takes profit at +$%.2f, half B break-even there then "
                         "$%.2f trail", lotsA, lotsB, InpTelegramTp1Dollars, InpTelegramTrailDollars)
-         : StringFormat("%.2f lots as one position (too small to halve, or one cap slot left): takes "
-                        "profit at +$%.2f", lots, InpTelegramTp1Dollars));
+         : StringFormat("%.2f lots as one position (too small to halve): takes profit at +$%.2f",
+                        lots, InpTelegramTp1Dollars));
    PrintFormat("UnifiedTrader_EA: executing %s XAUUSD %.2f-%.2f from chat %I64d - NO SMC validation, "
                "stop %.2f (%s), %s (signal TPs logged only: %s)",
                isBuy ? "BUY" : "SELL", lowerBound, upperBound, chatId, slUsed,
@@ -2659,7 +2727,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
    string outOrderType  = "";
    long   outTicket     = 0;
    int    outRetcode    = 0;
-   bool   placed = PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsA, tpDist, true,
+   bool   placed = PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsA, tpDist, 1,
                                      outOrderType, outTicket, outRetcode);
    string reason = "";
    if(!placed)
@@ -2681,7 +2749,7 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       string typeB = "";
       long   ticketB = 0;
       int    retB = 0;
-      if(!PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsB, 0.0, false, typeB, ticketB, retB))
+      if(!PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsB, 0.0, 2, typeB, ticketB, retB))
       {
          PrintFormat("UnifiedTrader_EA: half B (%.2f lots) was not placed (%s, retcode %d) - half A "
                      "stands alone.", lotsB, typeB, retB);

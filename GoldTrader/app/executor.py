@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import econ_calendar
+import legs
 import market_intel
 import tactics
 from claude_advisor import ConfluenceVerdict
@@ -60,15 +61,24 @@ class TradePlan:
     lots: float
     risk_money: float       # loss at the SL for `lots`
     tp1_money: float        # profit locked at TP1 for `lots`
+    # Split entry (config.claude_split): the lot of each position sent, in
+    # order - leg 1 carries leg_tp, legs 2+ none (break-even, then trail in
+    # the EA). [lots] and 0.0 for a single position.
+    leg_lots: list | None = None
+    leg_tp: float = 0.0
+
+    def legs(self) -> list:
+        return list(self.leg_lots) if self.leg_lots else [self.lots]
 
 
 @dataclass
 class Decision:
     executed: bool
     reject_reason: str = ""
-    ticket: str = ""
+    ticket: str = ""                 # leg 1's (the whole entry's) ticket
     plan: TradePlan | None = None
     news_note: str = ""
+    tickets: list | None = None      # every leg's ticket, leg 1 first
 
 
 def _csv_path(cfg: AdvisorConfig, name: str) -> str:
@@ -457,6 +467,12 @@ def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str) -> TradePlan:
             f"Unrecognized exit_style {cfg.exit_style!r} - must be one of "
             f"'sl_to_tp1', 'breakeven_r_decay', 'fixed_tp'.")
 
+    leg_lots, leg_tp = [lots], 0.0
+    if split_entry(cfg):
+        # Same total lot, stop and risk - only shared out over the legs.
+        leg_lots = legs.split_lots(lots, spec.volume_min, spec.volume_step, cfg.claude_split_legs)
+        leg_tp = entry_price + sign * tp1_dist
+
     money_per_price = spec.tick_value / spec.tick_size if spec.tick_size > 0 else 0.0
     return TradePlan(
         direction=direction, entry_price=entry_price,
@@ -465,7 +481,13 @@ def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str) -> TradePlan:
         trail_distance=trail_dist, lots=lots,
         risk_money=sl_dist * money_per_price * lots,
         tp1_money=tp1_dist * money_per_price * lots,
+        leg_lots=leg_lots, leg_tp=leg_tp,
     )
+
+
+def split_entry(cfg: AdvisorConfig) -> bool:
+    """See legs.split_entry()."""
+    return legs.split_entry(cfg)
 
 
 def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
@@ -513,29 +535,63 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
             if budget_reason:
                 return _reject(cfg, verdict, budget_reason, plan=plan, news_note=news_note)
 
-    entry_price, sl_price, tp_price, lots = plan.entry_price, plan.sl_price, plan.broker_tp, plan.lots
+    entry_price, sl_price, lots = plan.entry_price, plan.sl_price, plan.lots
+    leg_lots = plan.legs()
+    sent = []           # (lot, tp, fill price, retcode, ticket) of every leg the broker took
+    for i, leg_lot in enumerate(leg_lots):
+        tp_price = plan.leg_tp if (plan.leg_tp and i == 0) else plan.broker_tp
+        try:
+            result = gateway.place_market_order(
+                spec, verdict.direction, leg_lot, sl_price, tp_price,
+                cfg.magic, legs.comment_for(cfg.comment, i + 1), cfg.deviation_points, cfg.dry_run,
+            )
+        except Exception:
+            if i == 0:
+                raise                   # nothing is open yet - the caller handles it as before
+            # Leg 1 is already open: an error here must not reach main.py,
+            # which would evaluate the bar again and could open a second entry.
+            log.exception("Leg %d of %d could not be sent - the entry continues with the legs "
+                          "already open.", i + 1, len(leg_lots))
+            continue
+        retcode = getattr(result, "retcode", "")
+        ticket = getattr(result, "order", "")
+        if not cfg.dry_run and retcode not in ORDER_OK_RETCODES:
+            # A refused order (no money, invalid stops, market closed, unsupported
+            # filling, requote, ...) must never be reported as a trade.
+            comment = getattr(result, "comment", "") if result is not None else "order_send returned None"
+            if i == 0:
+                return _reject(cfg, verdict, f"order rejected by broker: retcode={retcode} {comment}".strip(),
+                               plan=plan, news_note=news_note)
+            # Leg 1 is open: the entry stands with fewer legs (less lot, less
+            # risk than planned) - never retried, which could double it.
+            log.error("Leg %d of %d (%.2f lots) refused by the broker: retcode=%s %s - the entry "
+                      "continues with the legs already open.", i + 1, len(leg_lots), leg_lot, retcode,
+                      comment)
+            continue
+        # Some brokers report price 0.0 on a market fill - keep the requested price then.
+        fill_price = getattr(result, "price", 0.0) or entry_price
+        sent.append((leg_lot, tp_price, fill_price, retcode, ticket))
 
-    result = gateway.place_market_order(
-        spec, verdict.direction, lots, sl_price, tp_price,
-        cfg.magic, cfg.comment, cfg.deviation_points, cfg.dry_run,
-    )
-    retcode = getattr(result, "retcode", "")
-    ticket = getattr(result, "order", "")
-    if not cfg.dry_run and retcode not in ORDER_OK_RETCODES:
-        # A refused order (no money, invalid stops, market closed, unsupported
-        # filling, requote, ...) must never be reported as a trade.
-        comment = getattr(result, "comment", "") if result is not None else "order_send returned None"
-        return _reject(cfg, verdict, f"order rejected by broker: retcode={retcode} {comment}".strip(),
-                       plan=plan, news_note=news_note)
-    # Some brokers report price 0.0 on a market fill - keep the requested price then.
-    fill_price = getattr(result, "price", 0.0) or entry_price
+    first_fill, first_ticket = sent[0][2], sent[0][4]
     lock_desc = f"+{cfg.lock_r:g}R" if cfg.lock_mode == "r" else f"${cfg.tp1_dollars:g}"
-    tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at {lock_desc} via SL)"
+    if len(leg_lots) > 1 or plan.leg_tp:
+        exit_desc = (f"{len(sent)} leg(s) {'/'.join(f'{x[0]:.2f}' for x in sent)} - leg 1 tp="
+                     f"{plan.leg_tp:.2f}, the rest break-even at +${cfg.tp1_dollars:g} then "
+                     f"${cfg.trail_dollars:g} trail")
+    elif plan.broker_tp:
+        exit_desc = f"tp={plan.broker_tp:.2f}"
+    else:
+        exit_desc = f"no broker TP (locks at {lock_desc} via SL)"
     log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
-              verdict.direction.upper(), lots, fill_price, sl_price, tp_desc,
+              verdict.direction.upper(), sum(x[0] for x in sent), first_fill, sl_price, exit_desc,
               verdict.conviction, verdict.confluence_count)
-    log_decision(cfg, verdict, executed=True, ticket=ticket)
-    log_trade(cfg, verdict.direction, lots, fill_price, sl_price, tp_price,
-              "dry-run" if cfg.dry_run else "live", retcode, ticket)
-    plan.entry_price = fill_price
-    return Decision(executed=True, ticket=str(ticket), plan=plan, news_note=news_note)
+    log_decision(cfg, verdict, executed=True, ticket=first_ticket)
+    for leg_lot, tp_price, fill_price, retcode, ticket in sent:
+        log_trade(cfg, verdict.direction, leg_lot, fill_price, sl_price, tp_price,
+                  "dry-run" if cfg.dry_run else "live", retcode, ticket)
+    plan.entry_price = first_fill
+    if len(sent) != len(leg_lots):
+        plan.leg_lots = [x[0] for x in sent]
+        plan.lots = round(sum(plan.leg_lots), 6)
+    return Decision(executed=True, ticket=str(first_ticket), plan=plan, news_note=news_note,
+                    tickets=[str(x[4]) for x in sent])

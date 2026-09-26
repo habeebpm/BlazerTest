@@ -95,6 +95,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.trail_dollars = args.trail_dollars
     if args.exit_style:
         cfg.exit_style = args.exit_style
+    if getattr(args, "no_claude_split", False):
+        cfg.claude_split = False
     if args.breakeven_atr_mult is not None:
         cfg.breakeven_atr_mult = args.breakeven_atr_mult
     if args.breakeven_atr_period is not None:
@@ -823,6 +825,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "tp1/trail lock, in UnifiedTrader_EA (InpExitStyle - keep it in "
                              "sync by hand); fixed_tp is only implemented here and in backtest.py "
                              "--compare, not in the EA")
+    parser.add_argument("--no-claude-split", action="store_true", dest="no_claude_split",
+                        help="send each Claude entry as ONE position ($6 lock, $3 trail) instead of the "
+                             "default three legs (leg 1 takes profit at +$6, legs 2-3 go to break-even "
+                             "there and trail $3) - config.py claude_split")
     parser.add_argument("--breakeven-atr-mult", type=float, dest="breakeven_atr_mult",
                         help="exit_style=breakeven_r_decay only: move SL to breakeven once profit "
                              "reaches this x the position's own M5 ATR (default 0.5) - enforced by "

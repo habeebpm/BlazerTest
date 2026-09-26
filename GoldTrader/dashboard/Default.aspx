@@ -397,11 +397,15 @@
         if (B(G(r, "telegram_signal_sl")))
             stop += " (Telegram: the signal's stop if $" + N(G(r, "signal_sl_min")).ToString("0.##", Inv) + "-$"
                   + N(G(r, "signal_sl_max")).ToString("0.##", Inv) + " away)";
+        string tp1 = N(G(r, "tp1_dollars")).ToString("0.##", Inv), trail = N(G(r, "trail_dollars")).ToString("0.##", Inv);
+        string claude = B(G(r, "claude_split"))
+            ? "Claude: " + N(G(r, "claude_legs")).ToString("0", Inv) + " legs - one closes at +$" + tp1
+              + ", the rest to break-even there then $" + trail + " trail"
+            : "Claude $" + tp1 + " lock · $" + trail + " trail";
         string exits = B(G(r, "telegram_split"))
-            ? "Claude $" + N(G(r, "tp1_dollars")).ToString("0.##", Inv) + " lock · $" + N(G(r, "trail_dollars")).ToString("0.##", Inv)
-              + " trail · Telegram: half closes at +$" + N(G(r, "telegram_tp1")).ToString("0.##", Inv)
+            ? claude + " · Telegram: half closes at +$" + N(G(r, "telegram_tp1")).ToString("0.##", Inv)
               + ", half to break-even there then $" + N(G(r, "telegram_trail")).ToString("0.##", Inv) + " trail"
-            : "$" + N(G(r, "tp1_dollars")).ToString("0.##", Inv) + " lock · $" + N(G(r, "trail_dollars")).ToString("0.##", Inv) + " trail";
+            : (B(G(r, "claude_split")) ? claude : "$" + tp1 + " lock · $" + trail + " trail");
         return N(G(r, "risk_percent")).ToString("0.##", Inv) + "% risk · " + stop + " · " + exits + " · "
              + N(G(r, "max_per_direction")).ToString("0", Inv) + " per direction · " + N(G(r, "max_daily_loss_pct")).ToString("0.##", Inv) + "% daily cap";
     }

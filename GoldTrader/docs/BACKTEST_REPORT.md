@@ -29,6 +29,51 @@ The year is split into three periods:
 | Mar - Jul 2026 | Used to confirm the trading hours (previous report) |
 | Aug - Sep 2026 | Where the trading-hours idea came from (first 7-week test) |
 
+## 26 Sep 2026: simulator fix and Claude's three-leg split
+
+**Simulator bug found and fixed.** When a bar reached +$6 (the lock) and
+then fell back inside the same bar, the old simulator did not stop the
+trade at the lock: it left the check to the next bar and filled it at
+that bar's open. Live, the EA's stop sits at +$6 the moment +$6 prints and
+the fall closes the trade there. In the old runs 38 of the 106 trades that
+reached +$6 were booked below +$5.90 (average +$2.88), 6 of them as
+losses, so every result below this section understated the lock-and-trail
+rule. The simulator now walks each M15 bar through its M5 bars in the
+order MT5's own tester assumes (up bar: open-low-high-close, down bar:
+open-high-low-close); a stop set on the way up is hit by the fall that
+follows. An independent script written from scratch reproduced all 920
+simulated exits exactly.
+
+Same year, same data, same mechanical verdicts (230 entries), live defaults
+(New York hours, XTR gate off, 2% risk, 10% daily cap). 1R = the $6 stop.
+
+| Claude exit rule | Win % | Avg R per entry | Return | Max DD | Sep-Mar / Mar-Jul / Aug-Sep | Chance of luck |
+|---|---|---|---|---|---|---|
+| One position, lock +$6, trail $3 (old simulator, for reference) | 43.7 | +0.14 | +57% | 27% | +0.17 / +0.16 / +0.04 | 9% |
+| **One position, lock +$6, trail $3** (fixed simulator) | 50.0 | **+0.25** | +174% | 23% | +0.22 / +0.30 / +0.17 | 0.4% |
+| **Three legs** (leg 1 take-profit +$6; legs 2-3 break-even at +$6, then $3 trail) - live since 26 Sep 2026 | 50.0 | **+0.16** | +85% | 24% | +0.13 / +0.20 / +0.11 | 3% |
+| One position, double spread (50 points) | 48.2 | +0.18 | +103% | 23% | +0.19 / +0.22 / +0.06 | 2% |
+| Three legs, double spread | 48.2 | +0.10 | +39% | 24% | +0.11 / +0.12 / -0.01 | 12% |
+| One position, M15 bars only (no M5 walk) | 48.7 | +0.38 | +365% | 19% | +0.44 / +0.38 / +0.26 | <0.1% |
+| Three legs, M15 bars only | 48.7 | +0.24 | +162% | 20% | +0.25 / +0.26 / +0.17 | 0.6% |
+
+**Reading:**
+- The split changes nothing on losing trades (both rules take the same
+  115 stops of -1R) - it only changes the winners. Legs 2-3 end about
+  where the single position does (average exit +$8.90 against +$9.03).
+  The cost is leg 1: it always closes at +$6, while the average winner
+  runs to +$9 and a quarter of the winners run past +$12. So the split
+  keeps about two thirds of the single position's edge, in every period
+  and at both spreads.
+- The split's advantage is not in these numbers: leg 1's take-profit is
+  a limit order filled exactly at +$6, where the single position's lock
+  is a stop that can slip on a fast reversal; and a third of every winner
+  is banked early. Slippage is not modelled (fills are exact).
+- Coarser bars flatter the trail: M15 bars alone give +0.38R, M5 bars
+  +0.25R. Ticks would likely give less again, so treat +0.25R / +0.16R as
+  upper estimates and the old +0.14R as a floor for the single position.
+- This is still the mechanical stand-in, not Claude's judgment.
+
 ## Oman trading hours (tested for Claude, not used for Claude)
 
 Same year, same data, same mechanical verdicts, only the entry hours

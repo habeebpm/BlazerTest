@@ -26,6 +26,7 @@ import time
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
+import legs
 import status_report
 import tactics
 
@@ -45,7 +46,7 @@ HAND_MOVED = (0.8, 0.7)
 COLUMNS = ["ticket", "source", "direction", "lots", "open_time_utc", "close_time_utc",
            "open_time_local", "close_time_local", "minutes_open", "entry_price", "exit_price",
            "initial_sl", "stop_distance", "exit_reason", "move", "result_r", "profit", "swap", "commission",
-           "net_pnl", "note"]
+           "net_pnl", "note", "leg"]
 
 _state = {"last": 0.0, "warned": set()}
 
@@ -64,7 +65,9 @@ def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str
     `lock_distance`: the +$6 lock's price distance (default: sl_distance);
     `lock_r` > 0: the lock is that many times each trade's own stop (BTC).
     `breakeven_magics`: sources whose stop goes to break-even by rule (the
-    Telegram split's half B) - a stop-out at break-even or better is normal there."""
+    Telegram split's half B) - a stop-out at break-even or better is normal there;
+    so is it for any leg 2+ of a split entry (legs.LEG_MARK in its comment).
+    "leg": 2, 3 for those legs, 1 for leg 1 / a single position."""
     zone = ZoneInfo(local_zone)
     lock = lock_distance or sl_distance
     out = []
@@ -76,7 +79,8 @@ def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str
         r = move / risk if risk > 0 else 0.0
         note = ""
         lock_here = lock_r * risk if lock_r > 0 else lock
-        by_rule = int(p.get("magic", 0)) in breakeven_magics and move >= -0.05
+        follower = legs.is_follower(p.get("comment"))
+        by_rule = (int(p.get("magic", 0)) in breakeven_magics or follower) and move >= -0.05
         if (p["exit_reason"] == "stop loss" and risk > 0 and not by_rule
                 and -HAND_MOVED[0] * risk < move < HAND_MOVED[1] * lock_here):
             note = "stop moved by hand"
@@ -103,6 +107,7 @@ def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str
             "commission": round(p["commission"], 2),
             "net_pnl": round(p["net"], 2),
             "note": note,
+            "leg": legs.leg_number(p.get("comment")),
         })
     return out
 
@@ -214,7 +219,9 @@ def build(gateway, cfg, spec) -> dict:
         return cfg.journal_prefix + base[len("GoldTrader_"):]
 
     lock_r = cfg.lock_r if cfg.lock_mode == "r" else 0.0
-    be = tuple(m for m, src in names.items() if src == "Telegram") if getattr(cfg, "telegram_split", False) else ()
+    be = tuple(m for m, src in names.items()
+               if (src == "Telegram" and getattr(cfg, "telegram_split", False))
+               or (src == "Claude" and getattr(cfg, "claude_split", False)))
     files[name(TRADES_FILE)] = to_csv(trade_rows(positions, names, sl_distance, cfg.display_timezone,
                                                  lock_distance, lock_r, breakeven_magics=be), COLUMNS)
     decisions = status_report.read_text(os.path.join(cfg.log_dir, "decisions.csv"))

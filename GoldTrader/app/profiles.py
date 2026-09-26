@@ -71,6 +71,8 @@ PROFILES = {
         "lock_mode": "r",
         "lock_r": 1.0,
         "trail_r": 0.5,
+        "claude_split": False,               # one position, BTCTrader_EA's lock/trail
+
         # risk: 2% a trade like gold; its own 5% daily cap and 3 per direction.
         # Both caps read the shared account's equity: BTC stops opening once
         # the account is 5% down on the day (either market), gold at 10%.

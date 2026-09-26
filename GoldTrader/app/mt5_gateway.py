@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
+import legs
+
 log = logging.getLogger(__name__)
 
 _mt5 = None
@@ -342,6 +344,7 @@ def open_positions(symbol: str, magic: int) -> list:
             "price_open": p.price_open,
             "sl": p.sl,
             "tp": p.tp,
+            "comment": str(getattr(p, "comment", "") or ""),
         })
     return out
 
@@ -407,7 +410,8 @@ def pending_orders(symbol: str) -> list:
                  getattr(m, "ORDER_TYPE_BUY_STOP_LIMIT", m.ORDER_TYPE_BUY_STOP)}
     return [{"ticket": o.ticket, "magic": o.magic,
              "direction": "buy" if o.type in buy_types else "sell",
-             "volume": o.volume_current, "price_open": o.price_open, "sl": o.sl}
+             "volume": o.volume_current, "price_open": o.price_open, "sl": o.sl,
+             "comment": str(getattr(o, "comment", "") or "")}
             for o in orders]
 
 
@@ -422,12 +426,16 @@ def count_same_direction(symbol: str, magic: int, direction: str, additional_mag
     position's direction is derived.
     """
     magics = {magic, *additional_magics}
+    # A split entry counts ONCE: legs 2+ (legs.LEG_MARK in the comment) ride
+    # with their leg 1 - "5 per direction" means 5 trades, as in the EA.
     positions = sum(1 for magic_id in magics
-                    for p in open_positions(symbol, magic_id) if p["direction"] == direction)
+                    for p in open_positions(symbol, magic_id)
+                    if p["direction"] == direction and not legs.is_follower(p.get("comment")))
     # Pending orders count too, exactly as UnifiedTrader_EA's own shared cap
     # counts them - otherwise resting Telegram limits are invisible here.
     pending = sum(1 for o in pending_orders(symbol)
-                  if o["magic"] in magics and o["direction"] == direction)
+                  if o["magic"] in magics and o["direction"] == direction
+                  and not legs.is_follower(o.get("comment")))
     return positions + pending
 
 
@@ -451,7 +459,13 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
     net P&L = profit+swap+commission, volume = the closed volume, time = the
     last close in true UTC - so a partial close never counts as two trades.
     risk_distance: the price distance from the entry to the stop the trade
-    was opened with (0 when not in the history window) - its 1R."""
+    was opened with (0 when not in the history window) - its 1R.
+
+    A split entry (legs.py) is ONE trade here too: its legs 2+ are added to
+    their leg 1 (same magic and direction, opened within LEG_GROUP_SECONDS
+    before them) - P&L and volume summed, the ticket leg 1's, "legs" the
+    count - so Claude's recent-performance context, the scorecard, the
+    digests and the XTR stand-down count entries, not positions."""
     m = mt5()
     now = datetime.now(timezone.utc)
     # The terminal reads these bounds on its SERVER clock (up to 14h ahead of
@@ -490,14 +504,51 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
             "ticket": d.position_id,
             "risk_distance": 0.0,
         }
-    entries = {}
+    entries, opened = {}, {}
     for d in deals:
         if d.symbol == symbol and d.entry == m.DEAL_ENTRY_IN and d.position_id in by_position:
             entries.setdefault(d.position_id, float(getattr(d, "price", 0.0) or 0.0))
+            opened.setdefault(d.position_id, (int(getattr(d, "time", 0) or 0),
+                                              str(getattr(d, "comment", "") or "")))
     for pid, stop in _first_stops(m, start, end, set(by_position)).items():
         if entries.get(pid):
             by_position[pid]["risk_distance"] = abs(entries[pid] - stop)
-    return sorted(by_position.values(), key=lambda r: r["time"])
+    return sorted(group_legs(by_position, opened).values(), key=lambda r: r["time"])
+
+
+LEG_GROUP_SECONDS = 120
+
+
+def group_legs(rows: dict, opened: dict) -> dict:
+    """{position id: closed-trade row} with every leg 2+ of a split entry
+    (legs.LEG_MARK in its opening comment) folded into its leg 1: the
+    nearest leg-1 position of the same magic and direction opened at most
+    LEG_GROUP_SECONDS before it. `opened`: {position id: (open time, comment)}.
+    A leg whose leg 1 is not found (still open, outside the history window)
+    stays its own row."""
+    out = dict(rows)
+    leaders = sorted((t, pid) for pid, (t, c) in opened.items() if pid in rows and not legs.is_follower(c))
+    for pid, (t, comment) in sorted(opened.items(), key=lambda kv: kv[1][0]):
+        if pid not in out or not legs.is_follower(comment):
+            continue
+        row = out[pid]
+        lead_id = None
+        for lt, lpid in leaders:
+            if lt > t + 5:
+                break
+            lead = rows[lpid]
+            if t - lt <= LEG_GROUP_SECONDS and lead["magic"] == row["magic"] \
+                    and lead["direction"] == row["direction"]:
+                lead_id = lpid
+        if lead_id is None or lead_id not in out:
+            continue
+        lead = out[lead_id]
+        lead["pnl_dollars"] += row["pnl_dollars"]
+        lead["volume"] += row["volume"]
+        lead["time"] = max(lead["time"], row["time"])
+        lead["legs"] = lead.get("legs", 1) + 1
+        del out[pid]
+    return out
 
 
 # DEAL_REASON_* -> who or what closed a position (MetaTrader5's own values).

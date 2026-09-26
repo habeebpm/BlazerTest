@@ -241,7 +241,15 @@ class Replay:
                 hh, ll, oo = h + s.spread, lo + s.spread, o + s.spread
             else:
                 hh, ll, oo = h, lo, o
-            price, why = self._manage(q, hh, ll)
+            if k > q.from_bar or q.order_type != "LIMIT":
+                # a whole bar after the fill: walked in order, as the EA sees the ticks
+                price, why = self._walk(q, o, h, lo, p.c[k])
+                if price is not None:
+                    self._close(q, price, why, bt)
+                else:
+                    keep.append(q)
+                continue
+            price, why = self._manage(q, hh, ll)          # the fill bar: stop first (conservative)
             if price is None:
                 keep.append(q)
                 continue
@@ -250,6 +258,62 @@ class Replay:
                 price = oo
             self._close(q, price, why, bt)
         self.open = keep
+
+    def _walk(self, q: Pos, o: float, h: float, lo: float, c: float):
+        """One M1 bar for an open position, along the path MT5's tester
+        assumes (up bar: open-low-high-close, down bar: open-high-low-close):
+        a stop is only hit by a move after it was set, a lock or trail set on
+        the way up is hit by a fall later in the same bar, and the trail
+        follows each new high - as the EA does tick by tick. A bar opening
+        through the stop fills at that open. Sells trade at the ask."""
+        s = self.s
+        sign = 1.0 if q.direction == "buy" else -1.0
+        adj = 0.0 if q.direction == "buy" else s.spread
+        path = (o, lo, h, c) if c >= o else (o, h, lo, c)
+        xs = [sign * (x + adj) for x in path]
+        e = sign * q.entry
+        managed = not (self.v == "provider" or q.leg == "A")
+
+        def sl_x():
+            return sign * q.sl
+
+        def tp_x():
+            return sign * q.tp if q.tp is not None else None
+
+        def stopped(x):
+            return sign * x, ("trail" if q.armed else "stop")
+
+        def raise_stop(peak):
+            if not managed:
+                return
+            if q.leg == "B":                            # break-even at +TP1, then the trail
+                if q.armed or peak - e >= s.split_tp:
+                    q.armed = True
+                    cand = max(e, peak - s.split_trail)
+                    if cand > sl_x():
+                        q.sl = sign * cand
+                return
+            if not q.armed and peak - e >= s.lock:     # lock at +lock, then the trail
+                q.armed = True
+                q.sl = sign * max(sl_x(), e + s.lock)
+            if q.armed and peak - s.trail > sl_x():
+                q.sl = sign * (peak - s.trail)
+
+        prev = xs[0]
+        if prev <= sl_x():
+            return stopped(prev)
+        if tp_x() is not None and prev >= tp_x():
+            return sign * tp_x(), "target"
+        raise_stop(prev)
+        for x in xs[1:]:
+            if x < prev and x <= sl_x():
+                return stopped(sl_x())
+            if x > prev:
+                if tp_x() is not None and x >= tp_x():
+                    return sign * tp_x(), "target"
+                raise_stop(x)
+            prev = x
+        return None, None
 
     def _manage(self, q: Pos, h: float, lo: float):
         s = self.s
@@ -393,7 +457,8 @@ class Replay:
             self.day, self.day_start = day, self.equity()
         if self.equity() <= self.day_start * (1 - s.daily_loss_pct / 100.0):
             return self._skip("daily loss cap reached")
-        same = sum(1 for q in self.open + self.pending if q.direction == sig.direction)
+        # one signal = one trade in the cap: half B rides with half A (the EA's LEG_MARK)
+        same = sum(1 for q in self.open + self.pending if q.direction == sig.direction and q.leg != "B")
         if same >= s.max_per_direction:
             return self._skip("5 per direction reached")
         lower, upper = (min(sig.entry_a, sig.entry_b), max(sig.entry_a, sig.entry_b)) if sig.has_range \
@@ -432,7 +497,7 @@ class Replay:
         if self.v != "provider" and s.split:            # the EA's InpTelegramSplit
             half = int(lots / 2 / s.lot_step + 1e-9) * s.lot_step
             target = price + s.split_tp if buy else price - s.split_tp
-            if half >= s.min_lot - 1e-9 and lots - half >= s.min_lot - 1e-9 and same + 2 <= s.max_per_direction:
+            if half >= s.min_lot - 1e-9 and lots - half >= s.min_lot - 1e-9:
                 legs = [(round(half, 2), target, "A"), (round(lots - half, 2), None, "B")]
             else:
                 legs = [(lots, target, "A")]

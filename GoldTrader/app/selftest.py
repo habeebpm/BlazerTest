@@ -54,15 +54,18 @@ import claude_advisor
 import econ_calendar
 import first_run
 import executor
+import legs
 import main as main_mod
 import market_intel
 import ml_advisor
 import news_check
 import paths
+import profiles
 import relay_supervisor
 import services
 import tactics
 import telegram_alert
+import trade_journal
 import xtr_logic
 import mt5_gateway as gw
 from claude_advisor import ConfluenceLeg, ConfluenceVerdict
@@ -468,7 +471,10 @@ def make_verdict(direction="buy", confluence_count=3, conviction="full") -> Conf
 def test_executor() -> bool:
     print("\n=== 5. executor gating ===")
     ok = True
-    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False)
+    # claude_split=False: these gating checks are about ONE position (the
+    # split entry is tested in test_claude_split()).
+    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False,
+                        claude_split=False)
     spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0,
                          spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                          tick_value=1.0, tick_size=0.01)
@@ -478,7 +484,7 @@ def test_executor() -> bool:
     ok &= check("a 3/3 full-conviction buy is executed", d.executed, d.reject_reason)
     ok &= check("the fake order was actually sent with the right lot size (use_risk_percent=False here)",
                 fg.orders_sent and fg.orders_sent[0][1] == cfg.fixed_lot, fg.orders_sent)
-    ok &= check("exit_style=sl_to_tp1 (the default) sends tp=0.0 - no broker take-profit at all",
+    ok &= check("exit_style=sl_to_tp1 (the default), one position: sends tp=0.0 - no broker take-profit",
                 fg.orders_sent[0][3] == 0.0, fg.orders_sent)
 
     cfg_fixed_tp = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", exit_style="fixed_tp")
@@ -488,7 +494,7 @@ def test_executor() -> bool:
                 fg_fixed.orders_sent and fg_fixed.orders_sent[0][3] > 0, fg_fixed.orders_sent)
 
     cfg_breakeven = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs",
-                                  exit_style="breakeven_r_decay")
+                                  exit_style="breakeven_r_decay", claude_split=False)
     fg_breakeven = FakeGateway(same_dir_open=0)
     executor.execute(fg_breakeven, cfg_breakeven, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("exit_style=breakeven_r_decay also sends tp=0.0 - no broker take-profit, same as "
@@ -707,8 +713,9 @@ def test_executor() -> bool:
 
     fg8 = FakeGateway(same_dir_open=0, equity=6000.0)
     executor.execute(fg8, cfg_risk, make_verdict("buy", 3, "full"), spec, trades_today=0)
-    ok &= check("execute() actually sends the risk-sized lot, not fixed_lot",
-                fg8.orders_sent and abs(fg8.orders_sent[0][1] - lots_6k) < 1e-9, fg8.orders_sent)
+    ok &= check("execute() actually sends the risk-sized lot, not fixed_lot (all legs together)",
+                fg8.orders_sent and abs(sum(o[1] for o in fg8.orders_sent) - lots_6k) < 1e-9,
+                fg8.orders_sent)
 
     # --- daily loss BUDGET (max_daily_loss_pct as a real cap) ---
     # Defaults: 2% risk, $6 SL at 0.01 lot = 6.0 price -> 0.33 lots risks
@@ -795,10 +802,11 @@ def test_executor() -> bool:
                             use_risk_percent=False, fixed_lot=0.05)
     fg_lot = FakeGateway()
     executor.execute(fg_lot, cfg_lot, make_verdict("buy", 3, "full"), spec, trades_today=0)
-    sent = fg_lot.orders_sent[0]
-    ok &= check("fixed_lot=0.05 trades 0.05 lots but keeps the 6.0-price SL of the 0.01 reference "
-                "lot (so the EA's TP1 lock/trail distances still match it)",
-                sent[1] == 0.05 and abs((fg_lot.ask - sent[2]) - 6.0) < 1e-9, sent)
+    sent = fg_lot.orders_sent
+    ok &= check("fixed_lot=0.05 trades 0.05 lots (all legs together) but keeps the 6.0-price SL of the "
+                "0.01 reference lot (so the EA's TP1 lock/trail distances still match it)",
+                abs(sum(o[1] for o in sent) - 0.05) < 1e-9
+                and all(abs((fg_lot.ask - o[2]) - 6.0) < 1e-9 for o in sent), sent)
 
     ok &= check("verdict_independent_block() includes the daily trade limit, so main.run_once() "
                 "can skip the paid Claude call when it's already reached",
@@ -1548,7 +1556,7 @@ def test_backtest_no_lookahead_and_reset() -> bool:
                 "against this gateway instead of raising AttributeError",
                 gateway.open_positions("XAUUSD", 999) == [
                     {"ticket": 1, "direction": "buy", "volume": 0.01, "price_open": 2350.0,
-                     "sl": 2344.0, "tp": None}],
+                     "sl": 2344.0, "tp": None, "comment": ""}],
                 gateway.open_positions("XAUUSD", 999))
     gateway.sim_positions = []
 
@@ -1692,13 +1700,13 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
     g1.sim_positions = [backtest.SimPosition(ticket=1, direction="buy", lots=0.01,
                          entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                          entry_price=2350.0, sl=2344.0, tp=0.0)]
-    set_bar(g1, 2350.0, 2353.5, 2349.5, 2353.0)  # profit_at_high 3.5 >= tp1_dist 3.0
+    set_bar(g1, 2350.0, 2353.5, 2349.5, 2353.2)  # profit_at_high 3.5 >= tp1_dist 3.0, closes above the lock
     g1.manage_positions(cfg)
     pos = g1.sim_positions[0]
     ok &= check("reaching tp1_dist locks the SL to EXACTLY entry+tp1_dist, not a trail-from-high value",
                 pos.armed and abs(pos.sl - 2353.0) < 1e-9, (pos.sl, pos.armed))
 
-    set_bar(g1, 2353.0, 2355.0, 2353.5, 2354.5)  # a new high past the lock - trail should now tighten
+    set_bar(g1, 2353.2, 2355.0, 2353.1, 2354.5)  # a new high past the lock - trail should now tighten
     g1.manage_positions(cfg)
     ok &= check("once armed, later bars trail trail_dist behind new highs",
                 abs(g1.sim_positions[0].sl - 2354.0) < 1e-9, g1.sim_positions[0].sl)
@@ -1768,7 +1776,7 @@ def test_backtest_exit_simulation_sl_to_tp1() -> bool:
     ok &= check("a 0.33-lot position is NOT locked by a 2.0 price move - TP1 is a fixed price "
                 "distance at the reference lot, not tp1_dollars re-priced at 0.33 lots",
                 not g4.sim_positions[0].armed and g4.sim_positions[0].sl == 2344.0, g4.sim_positions[0])
-    set_bar(g4, 2351.5, 2353.5, 2351.0, 2353.0)
+    set_bar(g4, 2351.5, 2353.5, 2351.0, 2353.3)
     g4.manage_positions(cfg)
     ok &= check("...and it locks at EXACTLY the same price as a 0.01-lot position would (entry+3.0)",
                 g4.sim_positions[0].armed and abs(g4.sim_positions[0].sl - 2353.0) < 1e-9,
@@ -2950,7 +2958,8 @@ def _run_once_wiring(spec) -> bool:
             main_mod.news_check.check_before_trade = fake_news
             cfg = AdvisorConfig(dry_run=True, use_risk_percent=False, log_dir="/tmp/claudesmc_selftest_logs",
                                 telegram_alert_bot_token="T", telegram_alert_chat_id="C",
-                                claude_pause_filename="", send_performance_digest=False)
+                                claude_pause_filename="", send_performance_digest=False,
+                                claude_split=False)
             day = main_mod.DayRoll()
             main_mod.run_once(object(), cfg, spec, day)
             for t in threading.enumerate():
@@ -2999,7 +3008,10 @@ def test_entry_levels_and_alert() -> bool:
     spec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0,
                          spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
                          tick_value=1.0, tick_size=0.01)
-    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False)
+    # One position (claude_split=False): the lock-then-trail message; the
+    # split entry's own plan and message are checked in test_claude_split().
+    cfg = AdvisorConfig(dry_run=True, log_dir="/tmp/claudesmc_selftest_logs", use_risk_percent=False,
+                        claude_split=False)
 
     fg = FakeGateway(bid=2350.0, ask=2350.2)
     plan = executor.build_plan(fg, cfg, spec, "buy")
@@ -3387,7 +3399,7 @@ def test_xtr_logic() -> bool:
     ok &= check("XTR never changes lot size, SL or TP: the same order with no XTR, full conviction, or "
                 "ranging + reduced conviction",
                 fg_plain.orders_sent == fg_trend.orders_sent == fg_range.orders_sent
-                and len(fg_plain.orders_sent) == 1, (fg_plain.orders_sent, fg_range.orders_sent))
+                and len(fg_plain.orders_sent) == 3, (fg_plain.orders_sent, fg_range.orders_sent))
 
     msg = telegram_alert.format_full_conviction_message("XAUUSD", make_verdict(), True, xtr_note=full.summary())
     ok &= check("the Telegram alert carries the XTR reading",
@@ -3921,18 +3933,35 @@ def test_ea_preset_python_consistency() -> bool:
     mgmt = ea_src[ea_src.index("void ManagePositionExit(ulong ticket, long magic)"):]
     mgmt = mgmt[:mgmt.index("\n}\n")]
     tg = mgmt[mgmt.index("if(magic == InpTelegramMagicNumber && InpTelegramSplit)"):]
-    ok &= check("EA Telegram split: half A = the take-profit (counts as the trade), half B = no TP (does not "
-                "count again); only with room for both in the 5-per-direction cap",
-                "PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsA, tpDist, true," in proc
-                and "PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsB, 0.0, false," in proc
-                and "sameDir + 2 <= InpMaxPositionsPerDirection" in proc
-                and proc.index("lotsA, tpDist, true,") < proc.index("lotsB, 0.0, false,"))
-    ok &= check("EA Telegram split: half A (broker TP) is left alone; half B goes to break-even at +TP1, then "
-                "trails - never below the entry, tightening only; Claude's management unchanged",
-                tg.index("if(currentTp != 0.0)") < tg.index("return;") < tg.index("PositionModify")
-                and "MathMax(openPrice, tick.bid - trail)" in tg and "MathMin(openPrice, tick.ask + trail)" in tg
-                and "tick.bid - openPrice < trigger" in tg and "openPrice - tick.ask < trigger" in tg
+    ok &= check("EA Telegram split: half A = the take-profit (leg 1, counts as the trade), half B = no TP, "
+                "tagged leg 2 (rides with half A in the cap and the day count)",
+                "PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsA, tpDist, 1," in proc
+                and "PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsB, 0.0, 2," in proc
+                and "sameDir + 2" not in proc
+                and proc.index("lotsA, tpDist, 1,") < proc.index("lotsB, 0.0, 2,")
+                and "comment = comment + LEG_MARK + IntegerToString(leg);" in body
+                and "bool   countTrade = (leg <= 1);" in body)
+    bet = ea_src[ea_src.index("void BreakevenTrail(ulong ticket, long type"):]
+    bet = bet[:bet.index("\n}\n")]
+    count_fn = ea_src[ea_src.index("int CountSameDirection(int direction)"):]
+    count_fn = count_fn[:count_fn.index("\n}\n")]
+    ok &= check("EA split legs: half A / Claude leg 1 (broker TP) are left alone; half B and Claude legs 2+ "
+                "go to break-even at +TP1, then trail - never below the entry, tightening only",
+                tg.index("if(currentTp != 0.0)") < tg.index("return;") < tg.index("BreakevenTrail(")
+                and "InpTelegramTp1Dollars, InpTelegramTrailDollars" in tg
+                and "MathMax(openPrice, tick.bid - trail)" in bet and "MathMin(openPrice, tick.ask + trail)" in bet
+                and "tick.bid - openPrice < trigger" in bet and "openPrice - tick.ask < trigger" in bet
+                and "PositionModify(ticket, target, 0.0)" in bet
                 and mgmt.index("InpTelegramSplit)") < mgmt.index("bool useBreakevenDecay"))
+    cl = mgmt[mgmt.index("if(magic == InpClaudeMagicNumber)\n"):mgmt.index("bool useBreakevenDecay")]
+    ok &= check("EA Claude split: leg 1 (TP set) left alone; a leg with LEG_MARK gets break-even at +$6 then "
+                "the $3 trail; a plain Claude position keeps the $6 lock / $3 trail",
+                cl.index("if(currentTp != 0.0)") < cl.index("IsFollowerLeg(PositionGetString(POSITION_COMMENT))")
+                < cl.index("BreakevenTrail(ticket, type, openPrice, currentSl, tp1Dist, trailDist")
+                and '#define LEG_MARK "|L"' in ea_src and legs.LEG_MARK == "|L")
+    ok &= check("EA shared cap counts a split entry once (legs 2+ skipped), positions and pending orders",
+                "IsFollowerLeg(PositionGetString(POSITION_COMMENT))) continue;" in count_fn
+                and "IsFollowerLeg(OrderGetString(ORDER_COMMENT))) continue;" in count_fn)
     order = [proc.find(x) for x in ("TelegramStopDistance(msg, isBuy, orderPrice", "PositionSizeLots(slDist)",
                                     "DailyRiskBudgetReason(lots, slDist)",
                                     "MarginGuardReason(isBuy, lots, slDist)", "PlaceCopiedOrder(isBuy, orderPrice")]
@@ -4761,9 +4790,10 @@ def test_signal_replay() -> bool:
                 and small[0]["exit"] == 4326.0, small)
     one_slot = SR.run([msg], SR.Prices(bars_from(t0, path), htf=False),
                       SR.Settings(start_equity=10000, spread=0.30, htf_filter=False, max_per_direction=1))
-    ok &= check("split: only one slot of the 5-per-direction cap left -> one position (take-profit +$4)",
-                [x["leg"] for x in one_slot["fixed"].trades] == ["A"] and one_slot["fixed"].trades[0]["lots"] == 0.33,
-                one_slot["fixed"].trades)
+    ok &= check("split: one slot of the per-direction cap is enough - half B rides with half A (one trade, "
+                "as the EA counts it)",
+                sorted(x["leg"] for x in one_slot["fixed"].trades) == ["A", "B"]
+                and sum(x["lots"] for x in one_slot["fixed"].trades) == 0.33, one_slot["fixed"].trades)
     text = SR.summary_text(res, st, [{}] * 5, "test", "test chat")
     ok &= check("summary names every version and the reasons for not trading",
                 all(f"== {v}:" in text for v in SR.VARIANTS) and "not traded:" in text)
@@ -4985,11 +5015,16 @@ def test_btc_profile() -> bool:
     pos = backtest.SimPosition(ticket=1, direction="buy", lots=0.1, entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
                                entry_price=100000.0, sl=99500.0, tp=None, risk=500.0)
     bt = dataclasses.replace(cfg, exit_style="sl_to_tp1")
-    backtest.HistoricalGateway._manage_sl_to_tp1(None, bt, pos, 100400.0, 99900.0, 0.0)
+    wg = backtest.HistoricalGateway("BTCUSD", {"M15": pd.DataFrame(
+        {"time": [pd.Timestamp("2026-01-01", tz="UTC")], "open": [1.0], "high": [1.0], "low": [1.0],
+         "close": [1.0]})}, gw.SymbolSpec(name="BTCUSD", point=0.01, digits=2, stops_level_points=0,
+                                          spread_points=0, volume_min=0.01, volume_max=100.0,
+                                          volume_step=0.01, tick_value=0.01, tick_size=0.01))
+    wg._walk_bar(bt, pos, 100000.0, 100400.0, 99900.0, 100300.0, 0.0, 0.0)
     before_lock = (pos.sl, pos.armed)
-    backtest.HistoricalGateway._manage_sl_to_tp1(None, bt, pos, 100600.0, 100100.0, 0.0)
+    wg._walk_bar(bt, pos, 100300.0, 100600.0, 100100.0, 100550.0, 0.0, 0.0)
     locked = (pos.sl, pos.armed)
-    backtest.HistoricalGateway._manage_sl_to_tp1(None, bt, pos, 101200.0, 100700.0, 0.0)
+    wg._walk_bar(bt, pos, 100600.0, 101200.0, 100560.0, 101100.0, 0.0, 0.0)
     ok &= check("backtest: no lock below +1R; lock exactly at +1R (100500); then trail 0.5R (250) behind the high",
                 before_lock == (99500.0, False) and locked == (100500.0, True) and pos.sl == 100950.0,
                 (before_lock, locked, pos.sl))
@@ -5115,6 +5150,238 @@ def test_btc_profile() -> bool:
     return ok
 
 
+def test_claude_split() -> bool:
+    print("\n=== 47. Claude split entries: 3 legs - leg 1 TP +$6, legs 2-3 break-even then $3 trail ===")
+    ok = True
+    spec = _flat_spec()
+
+    # --- sharing the lot ---
+    ok &= check("legs.split_lots: the whole lot, shared as evenly as the step allows, extra steps to leg 1",
+                legs.split_lots(1.67, 0.01, 0.01, 3) == [0.56, 0.56, 0.55]
+                and legs.split_lots(0.33, 0.01, 0.01, 3) == [0.11, 0.11, 0.11]
+                and legs.split_lots(0.03, 0.01, 0.01, 3) == [0.01, 0.01, 0.01],
+                (legs.split_lots(1.67, 0.01, 0.01, 3), legs.split_lots(0.33, 0.01, 0.01, 3)))
+    ok &= check("legs.split_lots: a lot too small for three legs uses fewer (0.02 -> 2, 0.01 -> 1); "
+                "a 0.10 minimum lot is respected",
+                legs.split_lots(0.02, 0.01, 0.01, 3) == [0.01, 0.01] and legs.split_lots(0.01, 0.01, 0.01, 3) == [0.01]
+                and legs.split_lots(0.25, 0.1, 0.01, 3) == [0.13, 0.12]
+                and all(abs(sum(legs.split_lots(x / 100, 0.01, 0.01, 3)) - x / 100) < 1e-9 for x in range(1, 500)))
+    ok &= check("legs: leg 1 keeps the plain comment; legs 2+ are tagged and fit MT5's 31 characters",
+                legs.comment_for("Claude_Sig", 1) == "Claude_Sig" and legs.comment_for("Claude_Sig", 2) == "Claude_Sig|L2"
+                and len(legs.comment_for("X" * 40, 3)) == 31 and legs.comment_for("X" * 40, 3).endswith("|L3")
+                and legs.is_follower("Claude_Sig|L3") and not legs.is_follower("Claude_Sig")
+                and not legs.is_follower(None) and legs.leg_number("Telegram_Sig_Unified|L2") == 2
+                and legs.leg_number("Claude_Sig") == 1 and legs.leg_number("") == 1)
+    ok &= check("gold splits by default; BTC (R-based lock), fixed_tp and claude_split=False never do",
+                legs.split_entry(AdvisorConfig()) and AdvisorConfig().claude_split_legs == 3
+                and not legs.split_entry(profiles.apply(AdvisorConfig(), "btc"))
+                and not legs.split_entry(AdvisorConfig(exit_style="fixed_tp"))
+                and not legs.split_entry(AdvisorConfig(claude_split=False))
+                and legs.split_entry(AdvisorConfig(exit_style="breakeven_r_decay")))
+
+    class LegGateway(FakeGateway):
+        def __init__(self, refuse=(), **kw):
+            super().__init__(**kw)
+            self.refuse, self.comments, self.n = set(refuse), [], 0
+
+        def place_market_order(self, spec, direction, lots, sl_price, tp_price, magic, comment,
+                               deviation_points, dry_run):
+            self.orders_sent.append((direction, lots, sl_price, tp_price))
+            self.comments.append(comment)
+            self.n += 1
+            if dry_run:
+                return None
+            if self.n in self.refuse:
+                return FakeResult(retcode=10019, order=0)
+            return FakeResult(retcode=10009, order=1000 + self.n, price=self.ask)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = AdvisorConfig(dry_run=False, log_dir=tmp)             # defaults: 2% risk, split on
+        g = LegGateway(equity=10000.0)
+        plan_lots = executor.build_plan(g, cfg, spec, "buy").lots
+        d = executor.execute(g, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0,
+                             day_start_equity=10000.0)
+        sent = g.orders_sent
+        ok &= check("a 0.33-lot entry goes out as 3 x 0.11: the SAME total lot and $6 stop (2% risk) as one position",
+                    d.executed and [o[1] for o in sent] == [0.11, 0.11, 0.11] and abs(plan_lots - 0.33) < 1e-9
+                    and all(abs(o[2] - 2344.2) < 1e-9 for o in sent), sent)
+        ok &= check("leg 1 carries the broker take-profit at entry +$6; legs 2-3 have none",
+                    abs(sent[0][3] - 2356.2) < 1e-9 and sent[1][3] == 0.0 and sent[2][3] == 0.0, sent)
+        ok &= check("legs 2-3 are tagged in the order comment (the EA's break-even rule and the cap read it)",
+                    g.comments == ["Claude_Sig", "Claude_Sig|L2", "Claude_Sig|L3"], g.comments)
+        with open(os.path.join(tmp, "trades.csv")) as f:
+            trades = list(csv.DictReader(f))
+        with open(os.path.join(tmp, "decisions.csv")) as f:
+            decisions = list(csv.DictReader(f))
+        ok &= check("one decision (leg 1's ticket - the calibration/ML join) and one trades.csv row per leg",
+                    d.ticket == "1001" and d.tickets == ["1001", "1002", "1003"] and len(decisions) == 1
+                    and decisions[0]["ticket"] == "1001" and [t["ticket"] for t in trades] == ["1001", "1002", "1003"]
+                    and trades[0]["tp"] == "2356.2" and trades[1]["tp"] == "0.0", (d, trades))
+        ok &= check("the daily budget and margin guard see the WHOLE entry's risk, not one leg's",
+                    abs(d.plan.risk_money - 0.33 * 6.0 * 100) < 1e-6, d.plan.risk_money)
+
+        g_refuse2 = LegGateway(refuse={2}, equity=10000.0)
+        d2 = executor.execute(g_refuse2, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+        ok &= check("a refused leg 2 leaves the entry with legs 1 and 3 (less risk), never retried",
+                    d2.executed and d2.tickets == ["1001", "1003"] and len(g_refuse2.orders_sent) == 3
+                    and abs(d2.plan.lots - 0.22) < 1e-9, (d2, g_refuse2.orders_sent))
+        class RaisingLegGateway(LegGateway):
+            def place_market_order(self, *a, **kw):
+                if self.n == 1:
+                    self.n += 1
+                    raise RuntimeError("IPC lost")
+                return super().place_market_order(*a, **kw)
+        g_raise = RaisingLegGateway(equity=10000.0)
+        d3 = executor.execute(g_raise, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+        ok &= check("an error while sending leg 2 never escapes (main.py would re-run the bar and open a "
+                    "second entry): the entry stands with legs 1 and 3",
+                    d3.executed and len(d3.tickets) == 2, d3)
+        g_refuse1 = LegGateway(refuse={1}, equity=10000.0)
+        d1 = executor.execute(g_refuse1, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+        ok &= check("a refused leg 1 rejects the entry and sends nothing more",
+                    not d1.executed and len(g_refuse1.orders_sent) == 1 and "retcode=10019" in d1.reject_reason, d1)
+
+    # --- the cap counts entries, not legs (gateway and backtest) ---
+    real_open, real_pending = gw.open_positions, gw.pending_orders
+    try:
+        gw.open_positions = lambda symbol, magic: [
+            {"direction": "buy", "comment": c} for c in
+            (["Claude_Sig", "Claude_Sig|L2", "Claude_Sig|L3"] if magic == 20260921 else
+             ["Telegram_Sig_Unified", "Telegram_Sig_Unified|L2", "Telegram_Sig_Unified"])]
+        gw.pending_orders = lambda symbol: [{"magic": 20260922, "direction": "buy", "comment": "Telegram_Sig_Unified|L2"},
+                                            {"magic": 20260922, "direction": "buy", "comment": "Telegram_Sig_Unified"}]
+        n = gw.count_same_direction("XAUUSD", 20260921, "buy", [20260922])
+    finally:
+        gw.open_positions, gw.pending_orders = real_open, real_pending
+    ok &= check("mt5_gateway: 5 per direction counts TRADES - a 3-leg Claude entry and a 2-leg Telegram "
+                "signal count once each (positions and pending orders)", n == 4, n)
+
+    def bars_gateway(m15_rows, m5_rows=None):
+        m15 = pd.DataFrame(m15_rows, columns=["time", "open", "high", "low", "close"])
+        m5 = pd.DataFrame(m5_rows, columns=["time", "open", "high", "low", "close"]) if m5_rows else None
+        g = backtest.HistoricalGateway("XAUUSD", {"M15": m15}, spec, spread_points=0, exit_bars=m5)
+        g.primary_timeframe, g.cursor = "M15", 0
+        return g
+
+    t0 = pd.Timestamp("2026-09-23 14:00", tz="UTC")
+    bt_cfg = AdvisorConfig(dry_run=True, exit_style="sl_to_tp1")
+    g = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
+    for i, (tp, c) in enumerate(((2356.0, "Claude_Sig"), (0.0, "Claude_Sig|L2"), (0.0, "Claude_Sig|L3"))):
+        g.place_market_order(spec, "buy", 0.11, 2344.0, tp, 1, c, 0, True)
+    single = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
+    single.place_market_order(spec, "buy", 0.33, 2344.0, 0.0, 1, "Claude_Sig", 0, True)
+    ok &= check("backtest: the 3 legs count as one entry in the cap, one group",
+                g.count_same_direction("XAUUSD", 1, "buy") == 1 and {p.group for p in g.sim_positions} == {1}
+                and [p.leg for p in g.sim_positions] == [1, 2, 3])
+    # up to +7, then down to +1 inside one bar (bearish: open -> high -> low -> close)
+    for gg in (g, single):
+        gg.bars["M15"] = pd.DataFrame({"time": [t0], "open": [2350.0], "high": [2357.0], "low": [2351.0],
+                                      "close": [2351.0]})
+        gg.manage_positions(bt_cfg)
+    res = sorted((t.leg, t.exit_reason, round(t.exit_price, 2)) for t in g.closed_trades)
+    ok &= check("backtest, +7 then back: leg 1 takes profit at +6, legs 2-3 exit at break-even+trail "
+                "(+7 - 3 = +4) in the same bar",
+                res == [(1, "tp", 2356.0), (2, "trail", 2354.0), (3, "trail", 2354.0)], res)
+    ok &= check("...the single position on the same path locks +6 and exits there",
+                [(t.exit_reason, round(t.exit_price, 2)) for t in single.closed_trades] == [("trail", 2356.0)],
+                single.closed_trades)
+    total_split = sum(t.pnl_dollars for t in g.closed_trades)
+    ok &= check("...so on a +7 run the split books less (+$154 vs +$198): the legs give back up to $3 "
+                "for the chance to run further", abs(total_split - (0.11 * 600 + 0.22 * 400)) < 1e-6
+                and abs(single.closed_trades[0].pnl_dollars - 198.0) < 1e-6, total_split)
+    g2 = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
+    g2.place_market_order(spec, "buy", 0.11, 2344.0, 0.0, 1, "Claude_Sig|L2", 0, True)
+    g2.bars["M15"] = pd.DataFrame({"time": [t0], "open": [2350.0], "high": [2362.0], "low": [2349.0],
+                                  "close": [2361.0]})
+    g2.manage_positions(bt_cfg)
+    ok &= check("backtest: a leg 2 on a run to +12 trails to +9 (never below break-even) and stays open",
+                not g2.closed_trades and abs(g2.sim_positions[0].sl - 2359.0) < 1e-9, g2.sim_positions)
+    g3 = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
+    g3.place_market_order(spec, "buy", 0.11, 2344.0, 0.0, 1, "Claude_Sig|L2", 0, True)
+    g3.bars["M15"] = pd.DataFrame({"time": [t0], "open": [2350.0], "high": [2355.9], "low": [2345.0],
+                                  "close": [2346.0]})
+    g3.manage_positions(bt_cfg)
+    ok &= check("backtest: a leg that never reaches +6 keeps the $6 stop (no early break-even)",
+                not g3.closed_trades and g3.sim_positions[0].sl == 2344.0 and not g3.sim_positions[0].armed)
+
+    # --- walking the M15 bar through its M5 bars ---
+    m15_row = [(t0, 2350.0, 2357.0, 2343.0, 2352.0)]           # an up bar: O -> L -> H -> C on M15 alone
+    m5_rows = [(t0, 2350.0, 2357.0, 2350.0, 2356.5),             # the high came FIRST...
+               (t0 + pd.Timedelta(minutes=5), 2356.5, 2356.6, 2343.0, 2344.0),   # ...then the fall
+               (t0 + pd.Timedelta(minutes=10), 2344.0, 2352.5, 2343.5, 2352.0)]
+    coarse, fine = bars_gateway(m15_row), bars_gateway(m15_row, m5_rows)
+    for gg in (coarse, fine):
+        gg.place_market_order(spec, "buy", 0.1, 2344.0, 0.0, 1, "Claude_Sig", 0, True)
+        gg.sim_positions[0].entry_price = 2350.0          # filled at the bar's open
+        gg.manage_positions(bt_cfg)
+    ok &= check("backtest: with M5 bars the exit follows the real order inside the M15 bar (locked +6 on the "
+                "way up, stopped there on the fall); the M15 bar alone has to guess (low first: -$6)",
+                [(t.exit_reason, t.exit_price) for t in fine.closed_trades] == [("trail", 2356.0)]
+                and fine.closed_trades[0].exit_time == t0 + pd.Timedelta(minutes=10)
+                and [(t.exit_reason, t.exit_price) for t in coarse.closed_trades] == [("sl", 2344.0)],
+                (fine.closed_trades, coarse.closed_trades))
+    summary = backtest.summarize(g.closed_trades, 10000.0)
+    ok &= check("backtest summary: legs are grouped back into entries (entries, entry win rate, R per entry)",
+                summary["total_trades"] == 3 and summary["entries"] == 1 and summary["entry_win_rate_pct"] == 100.0
+                and abs(summary["avg_r_per_entry"] - total_split / (0.33 * 600)) < 1e-3, summary)
+
+    # --- MT5 history: a split entry is ONE closed trade (Claude context, scorecard, digests, XTR) ---
+    H = FakeMt5History
+
+    def deal(entry, type_, time_, profit, pid, comment="", magic=20260921):
+        d = H.Deal("XAUUSD", magic, entry, type_, time_, profit, 0.0, 0.0, pid)
+        d.comment, d.volume = comment, 0.11
+        return d
+
+    fake = H([deal(H.DEAL_ENTRY_IN, H.DEAL_TYPE_BUY, 1000, 0.0, 201, "Claude_Sig"),
+              deal(H.DEAL_ENTRY_IN, H.DEAL_TYPE_BUY, 1001, 0.0, 202, "Claude_Sig|L2"),
+              deal(H.DEAL_ENTRY_IN, H.DEAL_TYPE_BUY, 1001, 0.0, 203, "Claude_Sig|L3"),
+              deal(H.DEAL_ENTRY_OUT, H.DEAL_TYPE_SELL, 1500, 66.0, 201),
+              deal(H.DEAL_ENTRY_OUT, H.DEAL_TYPE_SELL, 2000, 44.0, 202),
+              deal(H.DEAL_ENTRY_OUT, H.DEAL_TYPE_SELL, 2100, 33.0, 203),
+              deal(H.DEAL_ENTRY_IN, H.DEAL_TYPE_BUY, 5000, 0.0, 204, "Claude_Sig"),
+              deal(H.DEAL_ENTRY_OUT, H.DEAL_TYPE_SELL, 5100, -66.0, 204),
+              deal(H.DEAL_ENTRY_IN, H.DEAL_TYPE_SELL, 9000, 0.0, 205, "Claude_Sig|L2"),     # no leg 1 of its own
+              deal(H.DEAL_ENTRY_OUT, H.DEAL_TYPE_BUY, 9100, 10.0, 205)])
+    gw._mt5 = fake
+    try:
+        rows = gw.closed_trades("XAUUSD", [20260921])
+    finally:
+        gw._mt5 = None
+    first = rows[0] if rows else {}
+    ok &= check("closed_trades: the 3 legs of an entry are one trade (P&L and lots summed, leg 1's ticket, "
+                "last close); a separate entry and a leg without its leg 1 stay their own rows",
+                len(rows) == 3 and first.get("ticket") == 201 and abs(first.get("pnl_dollars", 0) - 143.0) < 1e-9
+                and abs(first.get("volume", 0) - 0.33) < 1e-9 and first.get("legs") == 3
+                and [r["ticket"] for r in rows] == [201, 204, 205], rows)
+
+    # --- alert, journal, status ---
+    cfg_alert = AdvisorConfig(dry_run=True, use_risk_percent=False, fixed_lot=0.03)
+    plan = executor.build_plan(FakeGateway(), cfg_alert, spec, "buy")
+    verdict = make_verdict("buy", 3, "full")
+    verdict.take_profit_targets = [2361.5]
+    msg = telegram_alert.format_full_conviction_message("XAUUSD", verdict, True, plan=plan)
+    ok &= check("the alert spells out the legs: leg 1 takes profit at +6, the other 2 go to break-even and trail",
+                "Entry: 2350.20 (market, 0.03 lot in 3 positions)" in msg
+                and "TP1: 2356.20 - leg 1 (0.01 lot) takes profit here" in msg
+                and "Other 2 leg(s) (0.02 lot): stop to break-even at TP1, then trails 3.00 behind price" in msg
+                and "TP2: 2361.50" in msg, msg)
+    rows = trade_journal.trade_rows(
+        [{"ticket": 7, "magic": 20260921, "direction": "buy", "volume": 0.11, "entry_price": 2350.0,
+          "exit_price": 2353.5, "initial_sl": 2344.0, "exit_reason": "stop loss", "profit": 38.5, "swap": 0.0,
+          "commission": 0.0, "net": 38.5, "open_time": None, "close_time": None, "comment": "Claude_Sig|L2"},
+         {"ticket": 8, "magic": 20260921, "direction": "buy", "volume": 0.11, "entry_price": 2350.0,
+          "exit_price": 2353.5, "initial_sl": 2344.0, "exit_reason": "stop loss", "profit": 38.5, "swap": 0.0,
+          "commission": 0.0, "net": 38.5, "open_time": None, "close_time": None, "comment": "Claude_Sig"}],
+        {20260921: "Claude"}, 6.0, "Asia/Muscat", 6.0)
+    ok &= check("journal: a leg 2 stopped at +3.5 is the rule working (no 'moved by hand'); a single position "
+                "stopped there still is flagged; the leg number is a column",
+                rows[0]["note"] == "" and rows[0]["leg"] == 2 and rows[1]["note"] == "stop moved by hand"
+                and rows[1]["leg"] == 1 and trade_journal.COLUMNS[-1] == "leg", rows)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -5164,6 +5431,7 @@ def main() -> int:
         test_trade_journal(),
         test_signal_replay(),
         test_btc_profile(),
+        test_claude_split(),
     ]
     print()
     save_test_report("app", FAILED_CHECKS, paths.PACKAGE_ROOT)
