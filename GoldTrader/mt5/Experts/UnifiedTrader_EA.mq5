@@ -26,7 +26,16 @@
 //| Exit management never depends on those two flags: any position     |
 //| under either magic keeps being protected while the EA runs.        |
 //|                                                                    |
-//| EXITS (both sources): no broker take-profit. At +InpTp1Dollars the |
+//| TELEGRAM EXITS (InpTelegramSplit, default): every signal is two    |
+//| half lots with the same stop. Half A carries a broker take-profit  |
+//| at +InpTelegramTp1Dollars; half B has none - from +TP1 its stop    |
+//| goes to break-even (the entry) and then trails InpTelegramTrail-   |
+//| Dollars behind price, tightening only. Which half is which is read |
+//| from the position itself (broker TP set = half A) - no memory      |
+//| needed. InpTelegramSplit=false = the lock-then-trail below.        |
+//|                                                                    |
+//| EXITS (Claude; Telegram with InpTelegramSplit=false): no broker    |
+//| take-profit. At +InpTp1Dollars the                                 |
 //| SL moves exactly to that level (locked profit), then trails        |
 //| InpTrailDollars behind new highs/lows, tightening only. Dollars are|
 //| at InpReferenceLot, converted with the live tick value/size, so    |
@@ -177,6 +186,9 @@ input double  InpMaxEntryDeviationPips = 200.0;    // Reject if current price is
 input bool    InpTelegramUseSignalSl  = true;      // Telegram entries: use the signal's own stop, lot resized to still risk InpRiskPercent (false = fixed InpSlDollars)
 input double  InpSignalSlMinDistance  = 3.0;       // Signal stop used only if at least this far from the entry (price, gold $)...
 input double  InpSignalSlMaxDistance  = 20.0;      // ...and at most this far - otherwise, or with no stop in the signal, the fixed InpSlDollars stop
+input bool    InpTelegramSplit        = true;      // Telegram entries as two half lots: half A takes profit at +TP1, half B goes to break-even there and trails (false = one position, $6 lock / $3 trail)
+input double  InpTelegramTp1Dollars   = 4.0;       // Telegram: half A's take-profit and half B's break-even trigger (price, gold $)
+input double  InpTelegramTrailDollars = 3.0;       // Telegram: half B's trail behind price once +TP1 is reached (price, gold $)
 
 input group "=== Remote control (optional) - see file header's REMOTE CONTROL section ==="
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
@@ -303,7 +315,8 @@ bool     PlanCopiedOrder(bool isBuy, double lowerBound, double upperBound,
                           double &orderPrice, bool &isPending, string &failType);
 double   TelegramStopDistance(const SignalMsg &msg, bool isBuy, double orderPrice, string &note);
 bool     PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDist, double lots,
-                           string &outOrderType, long &outTicket, int &outRetcode);
+                          double tpDist, bool countTrade,
+                          string &outOrderType, long &outTicket, int &outRetcode);
 void     ManagePositionExit(ulong ticket, long magic);
 void     ManageAllPositions();
 void     ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText);
@@ -346,6 +359,12 @@ int OnInit()
    {
       Print("UnifiedTrader_EA: InpFixedLot, InpReferenceLot, InpSlDollars, InpTp1Dollars and "
             "InpTrailDollars must all be positive.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpTelegramSplit && (InpTelegramTp1Dollars <= 0.0 || InpTelegramTrailDollars <= 0.0))
+   {
+      Print("UnifiedTrader_EA: InpTelegramTp1Dollars and InpTelegramTrailDollars must be positive "
+            "(or set InpTelegramSplit=false).");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(!ParseTradeHours(InpTradeHours) || InpTradeUtcOffsetHours < -12.0 || InpTradeUtcOffsetHours > 14.0)
@@ -635,6 +654,10 @@ int OnInit()
                EnumToString(InpExitStyle), InpBreakevenAtrMult, InpAtrPeriod, InpDecayWindowMinutes,
                InpSlDollars, InpTp1Dollars, InpTrailDollars, InpDryRun ? "true" : "false",
                InpControlChatId != 0 ? "set" : "off");
+   if(InpTelegramSplit)
+      PrintFormat("UnifiedTrader_EA: Telegram entries split in two halves - half A takes profit at +$%.2f, "
+                  "half B goes to break-even there and trails $%.2f (Claude trades unchanged).",
+                  InpTelegramTp1Dollars, InpTelegramTrailDollars);
 
    return(INIT_SUCCEEDED);
 }
@@ -2046,11 +2069,14 @@ double TelegramStopDistance(const SignalMsg &msg, bool isBuy, double orderPrice,
 }
 
 //+------------------------------------------------------------------+
-//| Sends the planned Telegram order: stop slDist from orderPrice, the |
-//| lot already sized from that stop (PositionSizeLots(slDist)). No    |
-//| broker TP (tp=0.0, lock-then-trail exit design - see file header). |
+//| Sends one planned Telegram order: stop slDist from orderPrice, the |
+//| lot already sized from that stop. tpDist > 0: broker take-profit   |
+//| that far (half A of a split signal); 0: none (half B, or the       |
+//| lock-then-trail design with InpTelegramSplit=false). countTrade:   |
+//| false for half B, so one signal counts once in InpMaxTradesPerDay. |
 //+------------------------------------------------------------------+
 bool PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDist, double lots,
+                       double tpDist, bool countTrade,
                        string &outOrderType, long &outTicket, int &outRetcode)
 {
    outOrderType = "";
@@ -2073,16 +2099,19 @@ bool PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDi
       return(false);
    }
    double sl = NormalizeDouble(isBuy ? orderPrice - slDist : orderPrice + slDist, digits);
-   double tp = 0.0;   // no broker TP - see file header's shared exit design
+   double tp = tpDist > 0.0 ? NormalizeDouble(isBuy ? orderPrice + tpDist : orderPrice - tpDist, digits) : 0.0;
 
    outOrderType = isPending ? "LIMIT" : "MARKET";
 
    if(InpDryRun)
    {
-      PrintFormat("UnifiedTrader_EA: [DRY-RUN] would place %s %s %.2f lots @ %.2f sl=%.2f "
-                  "(no broker TP - locks at $%.2f via SL)",
+      PrintFormat("UnifiedTrader_EA: [DRY-RUN] would place %s %s %.2f lots @ %.2f sl=%.2f %s",
                   isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", lots, orderPrice, sl,
-                  InpTp1Dollars);
+                  tp > 0.0 ? StringFormat("tp=%.2f", tp)
+                           : (InpTelegramSplit ? StringFormat("(no TP - break-even at +$%.2f, then $%.2f trail)",
+                                                              InpTelegramTp1Dollars, InpTelegramTrailDollars)
+                                               : StringFormat("(no broker TP - locks at $%.2f via SL)",
+                                                              InpTp1Dollars)));
       return(true);
    }
 
@@ -2100,10 +2129,13 @@ bool PlaceCopiedOrder(bool isBuy, double orderPrice, bool isPending, double slDi
 
    if(ok)
    {
-      g_tradesToday++;
-      SaveDayState();
-      PrintFormat("UnifiedTrader_EA: %s %s placed - %.2f lots @ %.2f sl=%.2f ticket=%I64u",
-                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", lots, orderPrice, sl,
+      if(countTrade)
+      {
+         g_tradesToday++;
+         SaveDayState();
+      }
+      PrintFormat("UnifiedTrader_EA: %s %s placed - %.2f lots @ %.2f sl=%.2f tp=%.2f ticket=%I64u",
+                  isBuy ? "BUY" : "SELL", isPending ? "LIMIT" : "MARKET", lots, orderPrice, sl, tp,
                   outTicket);
    }
    else
@@ -2158,6 +2190,47 @@ void ManagePositionExit(ulong ticket, long magic)
    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double currentSl = PositionGetDouble(POSITION_SL);
    double currentTp = PositionGetDouble(POSITION_TP);
+
+   // Telegram, InpTelegramSplit: half A (broker TP set) is closed by its
+   // take-profit - left alone; half B (no TP): from +TP1 the stop goes to
+   // break-even, then trails InpTelegramTrailDollars behind price, tightening
+   // only. "Reached +TP1" is read from its own stop (at/beyond the entry).
+   if(magic == InpTelegramMagicNumber && InpTelegramSplit)
+   {
+      if(currentTp != 0.0)
+         return;
+      double trigger = InpTelegramTp1Dollars;
+      double trail   = InpTelegramTrailDollars;
+      if(trigger <= 0.0 || trail <= 0.0)
+         return;
+      double target = 0.0;
+      if(type == POSITION_TYPE_BUY)
+      {
+         bool armed = (currentSl > 0.0 && currentSl >= openPrice - point);
+         if(!armed && tick.bid - openPrice < trigger)
+            return;
+         target = NormalizeDouble(MathMax(openPrice, tick.bid - trail), digits);
+         if((currentSl > 0.0 && target <= currentSl + point / 2.0) || tick.bid - target < minStopDist)
+            return;
+      }
+      else if(type == POSITION_TYPE_SELL)
+      {
+         bool armed = (currentSl > 0.0 && currentSl <= openPrice + point);
+         if(!armed && openPrice - tick.ask < trigger)
+            return;
+         target = NormalizeDouble(MathMin(openPrice, tick.ask + trail), digits);
+         if((currentSl > 0.0 && target >= currentSl - point / 2.0) || target - tick.ask < minStopDist)
+            return;
+      }
+      else
+         return;
+      if(InpDryRun)
+         PrintFormat("UnifiedTrader_EA: [DRY-RUN] would move Telegram half B ticket %I64u sl %.2f -> %.2f "
+                     "(break-even / $%.2f trail)", ticket, currentSl, target, trail);
+      else
+         trade.PositionModify(ticket, target, 0.0);
+      return;
+   }
 
    bool changeSl = false;
    double newSl = currentSl;
@@ -2551,16 +2624,42 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
 
    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double slUsed = NormalizeDouble(isBuy ? orderPrice - slDist : orderPrice + slDist, digits);
+
+   // InpTelegramSplit: the same total lot (same 2% risk) as two halves with
+   // the same stop - half A takes profit at +TP1, half B goes to break-even
+   // there and trails. One position (= half A) when the lot cannot be halved
+   // or only one slot of the shared cap is left.
+   double lotsA = lots, lotsB = 0.0, tpDist = 0.0;
+   if(InpTelegramSplit)
+   {
+      tpDist = InpTelegramTp1Dollars;
+      double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      if(step <= 0.0) step = 0.01;
+      double half = MathFloor(lots / 2.0 / step + 1e-9) * step;
+      if(half >= minLot - 1e-9 && lots - half >= minLot - 1e-9 && sameDir + 2 <= InpMaxPositionsPerDirection)
+      {
+         lotsA = NormalizeDouble(half, 2);
+         lotsB = NormalizeDouble(lots - half, 2);
+      }
+   }
+   string exitDesc = !InpTelegramSplit
+      ? StringFormat("%.2f lots, $%.2f lock/$%.2f trail", lots, InpTp1Dollars, InpTrailDollars)
+      : (lotsB > 0.0
+         ? StringFormat("%.2f + %.2f lots: half A takes profit at +$%.2f, half B break-even there then "
+                        "$%.2f trail", lotsA, lotsB, InpTelegramTp1Dollars, InpTelegramTrailDollars)
+         : StringFormat("%.2f lots as one position (too small to halve, or one cap slot left): takes "
+                        "profit at +$%.2f", lots, InpTelegramTp1Dollars));
    PrintFormat("UnifiedTrader_EA: executing %s XAUUSD %.2f-%.2f from chat %I64d - NO SMC validation, "
-               "stop %.2f (%s), %.2f lots, $%.2f lock/$%.2f trail (signal TPs logged only: %s)",
+               "stop %.2f (%s), %s (signal TPs logged only: %s)",
                isBuy ? "BUY" : "SELL", lowerBound, upperBound, chatId, slUsed,
-               stopNote != "" ? stopNote : StringFormat("fixed $%.2f", slDist), lots,
-               InpTp1Dollars, InpTrailDollars, msg.tpCount > 0 ? tpList : "none");
+               stopNote != "" ? stopNote : StringFormat("fixed $%.2f", slDist), exitDesc,
+               msg.tpCount > 0 ? tpList : "none");
 
    string outOrderType  = "";
    long   outTicket     = 0;
    int    outRetcode    = 0;
-   bool   placed = PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lots,
+   bool   placed = PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsA, tpDist, true,
                                      outOrderType, outTicket, outRetcode);
    string reason = "";
    if(!placed)
@@ -2570,10 +2669,29 @@ void ProcessSignal(const SignalMsg &msg, long chatId, const string &rawText)
       else                                     reason = "no price available";
    }
    else
+   {
       reason = "stop: " + (stopNote != "" ? stopNote : StringFormat("fixed $%.2f", slDist));
+      if(InpTelegramSplit)
+         reason += lotsB > 0.0 ? StringFormat("; split: %.2f lots TP +$%.2f, %.2f lots break-even + $%.2f trail",
+                                              lotsA, InpTelegramTp1Dollars, lotsB, InpTelegramTrailDollars)
+                               : StringFormat("; one position, TP +$%.2f", InpTelegramTp1Dollars);
+   }
+   if(placed && lotsB > 0.0)
+   {
+      string typeB = "";
+      long   ticketB = 0;
+      int    retB = 0;
+      if(!PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsB, 0.0, false, typeB, ticketB, retB))
+      {
+         PrintFormat("UnifiedTrader_EA: half B (%.2f lots) was not placed (%s, retcode %d) - half A "
+                     "stands alone.", lotsB, typeB, retB);
+         reason += StringFormat(" - half B NOT placed (%s)", typeB);
+         lotsB = 0.0;
+      }
+   }
 
    LogSignalRow(chatId, "OPEN", dirStr, msg.symbolOk, lowerBound, upperBound, tpList,
-                true, reason, placed, outOrderType, orderPrice, placed ? lots : 0.0, InpDryRun,
+                true, reason, placed, outOrderType, orderPrice, placed ? lotsA + lotsB : 0.0, InpDryRun,
                 outTicket, outRetcode, rawText, placed ? slUsed : 0.0);
 }
 

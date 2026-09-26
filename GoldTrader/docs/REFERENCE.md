@@ -76,12 +76,18 @@ cap, daily cap, news filter and spread limit (`InpMaxSpreadPoints`, 50).
 Their stop is the signal's own (`SL`, `Stop loss`, `Stop:`) when it is on
 the right side and $3-$20 from the entry, with the lot sized from it so
 the trade still risks 2%; the daily budget and the margin guard check that
-real stop and lot. Otherwise the $6 stop. The lock (+$6) and trail ($3)
-are the same for every trade; the signal's targets are logged only. With
-a wide signal stop the $6 lock is less than 1R (a $14 stop: +0.43R), so
-those trades need a higher win rate - the scorecard and the journal
-measure each trade against its own stop. `InpTelegramUseSignalSl=false`
-goes back to the $6 stop for every trade.
+real stop and lot. Otherwise the $6 stop. **Exits (`InpTelegramSplit`):**
+the lot is split into two halves with the same stop - half A carries a
+broker take-profit at +$4 (`InpTelegramTp1Dollars`); half B has none: from
++$4 its stop goes to break-even and trails $3 behind price
+(`InpTelegramTrailDollars`; with a $3 trail it sits at +$1 the moment +$4
+is reached). The EA tells them apart by the broker TP; a TP you set by hand
+on a Telegram trade is respected. Each half counts in the 5 per direction;
+a signal takes one position (the +$4 half) when the lot cannot be halved or
+only one slot is left. The signal's own targets are logged only; the
+scorecard and the journal measure each half against its own stop.
+`InpTelegramSplit=false` = one position, lock +$6 / trail $3 as before;
+`InpTelegramUseSignalSl=false` = the $6 stop for every trade.
 Greetings, mood posts, long commentary, videos, audio and stickers are
 ignored. Telegram's trading hours: a signal posted outside 06:00-23:00
 Oman time or at the weekend is logged "outside trading hours" and not
@@ -280,7 +286,8 @@ when absent). Full guide: [`BTC.md`](BTC.md).
 3. Replays every message the way UnifiedTrader_EA reads it - same message
    filter and parser, Oman hours, M15/H1 filter, $20 zone check, limit /
    market / stale, 240-min pending expiry, 5 per direction, 10% daily cap
-   and budget, 2% lot sizing, $6 lock and $3 trail, CLOSE / CANCEL messages.
+   and budget, 2% lot sizing, the two halves (+$4 take-profit / break-even
+   then $3 trail), CLOSE / CANCEL messages.
 4. Three versions: `fixed` ($6 stop), `signal` (the signal's stop when
    $3-$20 away - the EA as shipped) and `provider` (reference only: the
    signal's own stop and first target, no lock/trail).

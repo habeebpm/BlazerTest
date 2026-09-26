@@ -4,6 +4,8 @@
 ;
 ; Telegram entries: the signal's own stop when it is $3-$20 from the entry (lot
 ; resized to keep the 2% risk), else the fixed $6 stop (InpTelegramUseSignalSl).
+; Each signal is two half lots (InpTelegramSplit): half A takes profit at +$4,
+; half B goes to break-even there and trails $3 (InpTelegramTp1Dollars/TrailDollars).
 ;
 ; Ships with BOTH sources on (Telegram signals + managing Claude's trades)
 ; and InpDryRun=true (nothing is sent until you set it false). Everything
@@ -76,6 +78,9 @@ InpMaxEntryDeviationPips=200.0
 InpTelegramUseSignalSl=true
 InpSignalSlMinDistance=3.0
 InpSignalSlMaxDistance=20.0
+InpTelegramSplit=true
+InpTelegramTp1Dollars=4.0
+InpTelegramTrailDollars=3.0
 InpControlChatId=0
 InpLastVerdictFilename=claudesmc_last_verdict.txt
 InpClaudePauseFilename=claudesmc_pause.txt

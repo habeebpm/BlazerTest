@@ -397,8 +397,12 @@
         if (B(G(r, "telegram_signal_sl")))
             stop += " (Telegram: the signal's stop if $" + N(G(r, "signal_sl_min")).ToString("0.##", Inv) + "-$"
                   + N(G(r, "signal_sl_max")).ToString("0.##", Inv) + " away)";
-        return N(G(r, "risk_percent")).ToString("0.##", Inv) + "% risk · " + stop + " · $"
-             + N(G(r, "tp1_dollars")).ToString("0.##", Inv) + " lock · $" + N(G(r, "trail_dollars")).ToString("0.##", Inv) + " trail · "
+        string exits = B(G(r, "telegram_split"))
+            ? "Claude $" + N(G(r, "tp1_dollars")).ToString("0.##", Inv) + " lock · $" + N(G(r, "trail_dollars")).ToString("0.##", Inv)
+              + " trail · Telegram: half closes at +$" + N(G(r, "telegram_tp1")).ToString("0.##", Inv)
+              + ", half to break-even there then $" + N(G(r, "telegram_trail")).ToString("0.##", Inv) + " trail"
+            : "$" + N(G(r, "tp1_dollars")).ToString("0.##", Inv) + " lock · $" + N(G(r, "trail_dollars")).ToString("0.##", Inv) + " trail";
+        return N(G(r, "risk_percent")).ToString("0.##", Inv) + "% risk · " + stop + " · " + exits + " · "
              + N(G(r, "max_per_direction")).ToString("0", Inv) + " per direction · " + N(G(r, "max_daily_loss_pct")).ToString("0.##", Inv) + "% daily cap";
     }
 </script>

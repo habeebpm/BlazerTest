@@ -15,7 +15,8 @@ and troubleshooting are in [`REFERENCE.md`](REFERENCE.md).
 | Friday | Claude: no new entry from 16:00 New York (00:00 Oman in summer); Telegram: last entries at 23:00 Oman | `app/config.py` `friday_cutoff_ny`; EA hours |
 | Claude trades when | 2 of 3 checks agree (1 confirmed) **and** Claude says `full` | `app/config.py` |
 | Risk per trade | 2% of equity | EA + `app/config.py` |
-| Stop / lock / trail | $6 SL, locked at +$6, then trailed $3 (at the 0.01 reference lot) | EA + `app/config.py` |
+| Stop / lock / trail | Claude: $6 SL, locked at +$6, then trailed $3 (at the 0.01 reference lot) | EA + `app/config.py` |
+| Telegram exits | two halves, same stop: half A closes at +$4 (take-profit); half B goes to break-even at +$4, then trails $3 | EA `InpTelegramSplit=true`, `InpTelegramTp1Dollars=4.0`, `InpTelegramTrailDollars=3.0` |
 | Telegram stop | the signal's own stop when $3-$20 from the entry (lot resized to keep 2% risk), else $6 | EA `InpTelegramUseSignalSl=true`, `InpSignalSlMinDistance=3.0`, `InpSignalSlMaxDistance=20.0` |
 | Positions | max 5 per direction, both sources together | EA + `app/config.py` |
 | Daily loss cap | 10% of the day's starting equity | EA + `app/config.py` |
@@ -258,6 +259,7 @@ press Ctrl+C here, then double-click update.bat. ***`
 | Telegram trades use the signal's own stop ($3-$20 away), lot resized to keep 2% risk | EA inputs `InpTelegramUseSignalSl=true`, `InpSignalSlMinDistance=3.0`, `InpSignalSlMaxDistance=20.0`; Experts tab at start: "Telegram entries use the signal's own stop ..." |
 | Trade journal in Google Drive | `start.bat` log: `Trade journal every 5 min -> Google Drive MyMQChartDrive\GoldTrader (found automatically)`, then `Trade journal: Google Drive folder found - G:\My Drive\MyMQChartDrive\GoldTrader`; the folder appears in Drive within minutes |
 | Dashboard shows the stop used on each copied signal | Signals tab: "stop: signal stop ..." or "stop: fixed $6.00" |
+| Telegram signals as two halves: +$4 take-profit / break-even + $3 trail | EA inputs `InpTelegramSplit=true`, `InpTelegramTp1Dollars=4.0`, `InpTelegramTrailDollars=3.0`; Experts tab at start: "Telegram entries split in two halves ..."; each copied signal shows two positions (one with a TP); Signals tab: "split: ... lots TP +$4.00, ... lots break-even + $3.00 trail" |
 
 ## 12. What stays on your PC only
 

@@ -165,6 +165,8 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
                   "lock_r": cfg.lock_r, "trail_r": cfg.trail_r, "sl_atr_mult": cfg.sl_atr_mult,
                   "telegram_signal_sl": cfg.telegram_use_signal_sl and cfg.instrument == "gold",
                   "signal_sl_min": cfg.signal_sl_min_distance, "signal_sl_max": cfg.signal_sl_max_distance,
+                  "telegram_split": cfg.telegram_split and cfg.instrument == "gold",
+                  "telegram_tp1": cfg.telegram_tp1_dollars, "telegram_trail": cfg.telegram_trail_dollars,
                   "weekend_max_daily_loss_pct": cfg.weekend_max_daily_loss_pct,
                   "weekend_max_per_direction": cfg.weekend_max_positions_per_direction,
                   "weekend_active": tactics.weekend_mode(cfg, datetime.fromtimestamp(now, timezone.utc))},

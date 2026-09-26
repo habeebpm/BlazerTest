@@ -150,6 +150,14 @@ class AdvisorConfig:
     telegram_use_signal_sl: bool = True
     signal_sl_min_distance: float = 3.0
     signal_sl_max_distance: float = 20.0
+    # Telegram exits (EA InpTelegramSplit / InpTelegramTp1Dollars /
+    # InpTelegramTrailDollars, mirrored for the dashboard, replay and self-test):
+    # every signal is two half lots with the same stop - half A takes profit at
+    # +$4 (price), half B goes to break-even there and trails $3. Claude's
+    # trades keep sl_dollars / tp1_dollars / trail_dollars.
+    telegram_split: bool = True
+    telegram_tp1_dollars: float = 4.0
+    telegram_trail_dollars: float = 3.0
     display_timezone: str = "Asia/Muscat"             # the owner's clock, for the dashboard (Oman)
     # Trade journal (trade_journal.py): every closed trade of both sources, Claude's
     # decisions and the Telegram signal log as CSV files, copied into this folder

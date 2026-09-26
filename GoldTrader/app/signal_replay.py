@@ -15,7 +15,8 @@ provider's PAST messages? Hours instead of weeks of demo.
    (ea_signal_parser.py), the Oman 06:00-23:00 Mon-Fri window, the M15/H1
    filter, the $20 zone-distance check, limit / market / stale, pending
    expiry 240 min, 5 per direction, the 10% daily cap and budget, 2% risk
-   lot sizing, the $6 lock and $3 trail, and CLOSE / CANCEL messages.
+   lot sizing, the two halves (one takes profit at +$4, the other goes to
+   break-even there and trails $3), and CLOSE / CANCEL messages.
 4. Three versions side by side:
      fixed     every trade with the fixed $6 stop
      signal    the signal's own stop when $3-$20 away, else $6 (the EA today)
@@ -55,8 +56,9 @@ import message_filter  # noqa: E402  (relay/, the EA's filter rules in Python)
 log = logging.getLogger("replay")
 
 VARIANTS = {
-    "fixed": "fixed $6 stop, $6 lock, $3 trail (EA with InpTelegramUseSignalSl=false)",
-    "signal": "signal's stop if $3-$20 away else $6, $6 lock, $3 trail (the EA as shipped)",
+    "fixed": "fixed $6 stop; half at +$4, half break-even then $3 trail (EA with InpTelegramUseSignalSl=false)",
+    "signal": "signal's stop if $3-$20 away else $6; half at +$4, half break-even then $3 trail (the EA as "
+              "shipped)",
     "provider": "reference: the signal's own stop and first target, no lock/trail",
 }
 NEW_YORK = ZoneInfo("America/New_York")
@@ -69,8 +71,11 @@ class Settings:
     """The EA inputs that matter for the replay (preset values)."""
     risk_pct: float = 2.0
     fixed_stop: float = 6.0          # price distance ($6 at the 0.01 reference lot = $6 of gold price)
-    lock: float = 6.0
+    lock: float = 6.0                # InpTelegramSplit=false: lock at +$6, then trail $3
     trail: float = 3.0
+    split: bool = True               # InpTelegramSplit: two halves - A takes profit at +split_tp,
+    split_tp: float = 4.0            # B goes to break-even there and trails split_trail
+    split_trail: float = 3.0
     signal_min: float = 3.0
     signal_max: float = 20.0
     provider_max: float = 50.0       # "provider": any stop on the right side up to this far
@@ -106,6 +111,7 @@ class Pos:
     expires: datetime | None = None
     armed: bool = False
     from_bar: int = 0                # first M1 bar that can touch it (a market fill: the bar after the signal)
+    leg: str = ""                    # "A" (take-profit half), "B" (break-even + trail half), "" (one position)
 
 
 # --- hours, days ---------------------------------------------------------------
@@ -252,7 +258,15 @@ class Replay:
                 return q.sl, "trail" if q.armed else "stop"
             if q.tp is not None and h >= q.tp:
                 return q.tp, "target"
-            if self.v == "provider":
+            if self.v == "provider" or q.leg == "A":
+                return None, None
+            if q.leg == "B":                             # break-even at +TP1, then the trail
+                if not q.armed:
+                    if h >= q.entry + s.split_tp:
+                        q.sl = max(q.sl, q.entry, q.entry + s.split_tp - s.split_trail)
+                        q.armed = True
+                elif h - s.split_trail > q.sl:
+                    q.sl = h - s.split_trail
                 return None, None
             if not q.armed:
                 if h >= q.entry + s.lock:
@@ -264,7 +278,15 @@ class Replay:
                 return q.sl, "trail" if q.armed else "stop"
             if q.tp is not None and lo <= q.tp:
                 return q.tp, "target"
-            if self.v == "provider":
+            if self.v == "provider" or q.leg == "A":
+                return None, None
+            if q.leg == "B":
+                if not q.armed:
+                    if lo <= q.entry - s.split_tp:
+                        q.sl = min(q.sl, q.entry, q.entry - s.split_tp + s.split_trail)
+                        q.armed = True
+                elif lo + s.split_trail < q.sl:
+                    q.sl = lo + s.split_trail
                 return None, None
             if not q.armed:
                 if lo <= q.entry - s.lock:
@@ -285,7 +307,7 @@ class Replay:
             "version": self.v, "signal_time_utc": _fmt(q.msg_time), "direction": q.direction,
             "order": q.order_type, "open_time_utc": _fmt(q.open_time), "entry": round(q.entry, 2),
             "stop": round(q.first_sl, 2), "stop_distance": round(risk, 2), "stop_from": q.stop_source,
-            "target": round(q.tp, 2) if q.tp else "", "lots": q.lots, "close_time_utc": _fmt(t),
+            "target": round(q.tp, 2) if q.tp else "", "lots": q.lots, "leg": q.leg, "close_time_utc": _fmt(t),
             "exit": round(price, 2), "exit_reason": why, "move": round(move, 2),
             "result_r": round(move / risk, 2) if risk > 0 else 0.0, "pnl": round(pnl, 2),
             "risk_distance": risk, "volume": q.lots, "pnl_dollars": pnl,
@@ -406,17 +428,26 @@ class Replay:
         if max(0.0, self.day_start - eq) + self.open_risk() + dist * lots * s.per_price_lot > budget + 1e-9:
             return self._skip("daily loss budget")
         sl = price - dist if buy else price + dist
-        q = Pos(sig.direction, lots, price, sl, sl, tp, source, t, order_type=order)
+        legs = [(lots, tp, "")]
+        if self.v != "provider" and s.split:            # the EA's InpTelegramSplit
+            half = int(lots / 2 / s.lot_step + 1e-9) * s.lot_step
+            target = price + s.split_tp if buy else price - s.split_tp
+            if half >= s.min_lot - 1e-9 and lots - half >= s.min_lot - 1e-9 and same + 2 <= s.max_per_direction:
+                legs = [(round(half, 2), target, "A"), (round(lots - half, 2), None, "B")]
+            else:
+                legs = [(lots, target, "A")]
         self.orders += 1
-        if order == "LIMIT":
-            q.expires = t + timedelta(minutes=s.expiry_minutes) if s.expiry_minutes > 0 else None
-            self.pending.append(q)
-        else:
-            k = self.i                                  # the bar holding the signal time is only partly after it
-            if k < len(self.p.t) and self.p.t[k] < t:
-                k += 1
-            q.open_time, q.from_bar = t, k
-            self.open.append(q)
+        for leg_lots, leg_tp, leg in legs:
+            q = Pos(sig.direction, leg_lots, price, sl, sl, leg_tp, source, t, order_type=order, leg=leg)
+            if order == "LIMIT":
+                q.expires = t + timedelta(minutes=s.expiry_minutes) if s.expiry_minutes > 0 else None
+                self.pending.append(q)
+            else:
+                k = self.i                              # the bar holding the signal time is only partly after it
+                if k < len(self.p.t) and self.p.t[k] < t:
+                    k += 1
+                q.open_time, q.from_bar = t, k
+                self.open.append(q)
 
     def _stop(self, sig, buy: bool, price: float):
         """(distance, where it came from, target) - or (None, skip reason, None)."""
@@ -514,7 +545,7 @@ def write_outputs(results: dict, summary: str, messages: list, bars: pd.DataFram
     os.makedirs(OUT_DIR, exist_ok=True)
     files = {}
     cols = ["version", "signal_time_utc", "direction", "order", "open_time_utc", "entry", "stop",
-            "stop_distance", "stop_from", "target", "lots", "close_time_utc", "exit", "exit_reason", "move",
+            "stop_distance", "stop_from", "target", "lots", "leg", "close_time_utc", "exit", "exit_reason", "move",
             "result_r", "pnl", "balance"]
     rows = [t for r in results.values() for t in r.trades]
     files["trades.csv"] = _csv(rows, cols)
@@ -678,6 +709,8 @@ def main(argv: list | None = None) -> int:
     cfg = AdvisorConfig()
     s = Settings(spread=args.spread, htf_filter=not args.no_htf,
                  signal_min=cfg.signal_sl_min_distance, signal_max=cfg.signal_sl_max_distance,
+                 split=cfg.telegram_split, split_tp=cfg.telegram_tp1_dollars,
+                 split_trail=cfg.telegram_trail_dollars,
                  risk_pct=cfg.risk_percent, daily_loss_pct=cfg.max_daily_loss_pct,
                  max_per_direction=cfg.max_open_positions_per_direction,
                  trade_hours=cfg.telegram_trade_windows, utc_offset_hours=cfg.telegram_utc_offset_hours,

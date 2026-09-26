@@ -3879,6 +3879,14 @@ def test_ea_preset_python_consistency() -> bool:
                 == cfg.signal_sl_max_distance == 20.0,
                 (ea.get("InpTelegramUseSignalSl"), ea.get("InpSignalSlMinDistance"),
                  ea.get("InpSignalSlMaxDistance")))
+    ok &= check("Telegram exits: EA default = preset = Python mirror (two halves: TP +$4 / break-even then "
+                "$3 trail)",
+                ea["InpTelegramSplit"] == ea_set.get("InpTelegramSplit") == "true" and cfg.telegram_split
+                and num(ea["InpTelegramTp1Dollars"]) == num(ea_set["InpTelegramTp1Dollars"])
+                == cfg.telegram_tp1_dollars == 4.0
+                and num(ea["InpTelegramTrailDollars"]) == num(ea_set["InpTelegramTrailDollars"])
+                == cfg.telegram_trail_dollars == 3.0,
+                (ea.get("InpTelegramSplit"), ea.get("InpTelegramTp1Dollars"), ea.get("InpTelegramTrailDollars")))
     ok &= check("Claude window: the tested New York hours (not the Oman window)",
                 cfg.trade_windows == "08:00-16:45,18:15-20:00" and cfg.trade_timezone == "America/New_York")
     with open(os.path.join(mt5, "Experts", "UnifiedTrader_EA.mq5"), encoding="utf-8") as f:
@@ -3887,9 +3895,24 @@ def test_ea_preset_python_consistency() -> bool:
     body = body[:body.index("\n}\n")]
     ok &= check("EA: a Telegram order the broker refuses is never logged as copied (PlaceCopiedOrder "
                 "returns the broker's answer)",
-                body.rstrip().endswith("return(ok);") and "return(true);" in body.split("if(InpDryRun)")[1][:600])
+                body.rstrip().endswith("return(ok);") and "return(true);" in body.split("if(InpDryRun)")[1][:1200])
     proc = ea_src[ea_src.index("void ProcessSignal(const SignalMsg &msg"):]
     proc = proc[:proc.index("\n}\n")]
+    mgmt = ea_src[ea_src.index("void ManagePositionExit(ulong ticket, long magic)"):]
+    mgmt = mgmt[:mgmt.index("\n}\n")]
+    tg = mgmt[mgmt.index("if(magic == InpTelegramMagicNumber && InpTelegramSplit)"):]
+    ok &= check("EA Telegram split: half A = the take-profit (counts as the trade), half B = no TP (does not "
+                "count again); only with room for both in the 5-per-direction cap",
+                "PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsA, tpDist, true," in proc
+                and "PlaceCopiedOrder(isBuy, orderPrice, isPending, slDist, lotsB, 0.0, false," in proc
+                and "sameDir + 2 <= InpMaxPositionsPerDirection" in proc
+                and proc.index("lotsA, tpDist, true,") < proc.index("lotsB, 0.0, false,"))
+    ok &= check("EA Telegram split: half A (broker TP) is left alone; half B goes to break-even at +TP1, then "
+                "trails - never below the entry, tightening only; Claude's management unchanged",
+                tg.index("if(currentTp != 0.0)") < tg.index("return;") < tg.index("PositionModify")
+                and "MathMax(openPrice, tick.bid - trail)" in tg and "MathMin(openPrice, tick.ask + trail)" in tg
+                and "tick.bid - openPrice < trigger" in tg and "openPrice - tick.ask < trigger" in tg
+                and mgmt.index("InpTelegramSplit)") < mgmt.index("bool useBreakevenDecay"))
     order = [proc.find(x) for x in ("TelegramStopDistance(msg, isBuy, orderPrice", "PositionSizeLots(slDist)",
                                     "DailyRiskBudgetReason(lots, slDist)",
                                     "MarginGuardReason(isBuy, lots, slDist)", "PlaceCopiedOrder(isBuy, orderPrice")]
@@ -4499,6 +4522,10 @@ def test_trade_journal() -> bool:
     ok &= check("the EA's own stops are not flagged (-1R, and the +1R lock with slippage)",
                 rows[203]["note"] == "" and rows[203]["result_r"] == -1.0
                 and rows[202]["note"] == "" and rows[202]["result_r"] == 0.8, (rows[203], rows[202]))
+    be_rows = {r["ticket"]: r for r in TJ.trade_rows(pos, names, 6.0, "Asia/Muscat", breakeven_magics=(20260922,))}
+    ok &= check("Telegram split: half B stopped at break-even or better is the rule, not 'moved by hand'",
+                be_rows[201]["note"] == "" and be_rows[203]["note"] == "" and be_rows[203]["result_r"] == -1.0,
+                (be_rows[201]["note"], be_rows[203]["note"]))
     ok &= check("times in UTC and Oman (UTC+4), minutes open",
                 r1["open_time_utc"] == "2026-09-25 09:00:00" and r1["open_time_local"] == "2026-09-25 13:00:00"
                 and r1["minutes_open"] == 60, r1)
@@ -4636,13 +4663,14 @@ def test_signal_replay() -> bool:
         return [a + (b - a) * (i + 1) / n for i in range(n)]
 
     t0 = datetime(2026, 9, 22, 6, 0, tzinfo=timezone.utc)             # Tuesday 10:00 Oman
-    st = SR.Settings(start_equity=10000, spread=0.30, htf_filter=False)
+    # The single-position rule (InpTelegramSplit=false: lock +$6, trail $3):
+    st = SR.Settings(start_equity=10000, spread=0.30, htf_filter=False, split=False)
     path = [4330.0] * 121 + lin(4330, 4318, 10) + lin(4318, 4330, 10) + [4330.0] * 5
     msg = {"time": t0 + timedelta(minutes=120, seconds=30), "media": "",
            "text": "Gold Short Zone:4328.3-4338.3\n\nStop: 4342.3\n\nTarget 1: 4324.3\nTarget 2: 4320"}
     res = SR.run([msg], SR.Prices(bars_from(t0, path), htf=False), st)
     a = {v: r.trades[0] for v, r in res.items() if r.trades}
-    ok &= check("your zone sell: market at 4330; fixed $6 stop locks +$6 and trails out at 4321.30 = +1.45R",
+    ok &= check("split off: your zone sell at 4330; fixed $6 stop locks +$6 and trails out at 4321.30 = +1.45R",
                 a["fixed"]["entry"] == 4330.0 and a["fixed"]["stop"] == 4336.0 and a["fixed"]["lots"] == 0.33
                 and a["fixed"]["exit"] == 4321.3 and a["fixed"]["exit_reason"] == "trail"
                 and a["fixed"]["result_r"] == 1.45, a.get("fixed"))
@@ -4681,12 +4709,40 @@ def test_signal_replay() -> bool:
     mt = t3 + timedelta(days=6, hours=6, seconds=30)
     px = 4000 + ((mt - t3).total_seconds() // 60) * 0.01
     pr = SR.Prices(bars_from(t3, up), htf=True)
-    st2 = SR.Settings(start_equity=10000, spread=0.30, htf_filter=True)
+    st2 = SR.Settings(start_equity=10000, spread=0.30, htf_filter=True, split=False)
     sell = SR.run([{"time": mt, "media": "", "text": f"Gold sell {px - 1:.1f}-{px + 2:.1f} SL {px + 8:.1f}"}], pr, st2)
     buy = SR.run([{"time": mt, "media": "", "text": f"Gold buy {px - 2:.1f}-{px + 1:.1f} SL {px - 8:.1f}"}], pr, st2)
     ok &= check("M15/H1 filter: a sell into a clear uptrend is skipped, the buy is taken",
                 sell["fixed"].skips.get("XTR HTF filter: M15 is clearly bullish") == 1
                 and len(buy["fixed"].trades) == 1, (dict(sell["fixed"].skips), len(buy["fixed"].trades)))
+    # --- the EA as shipped: two halves (A: take-profit +$4; B: break-even there, then $3 trail) ---
+    sp = SR.Settings(start_equity=10000, spread=0.30, htf_filter=False)
+    path = [4330.0] * 121 + lin(4330, 4318, 10) + lin(4318, 4330, 10) + [4330.0] * 5
+    msg = {"time": t0 + timedelta(minutes=120, seconds=30), "media": "",
+           "text": "Gold Short Zone:4328.3-4338.3\n\nStop: 4342.3\n\nTarget 1: 4324.3\nTarget 2: 4320"}
+    legs = {x["leg"]: x for x in SR.run([msg], SR.Prices(bars_from(t0, path), htf=False), sp)["fixed"].trades}
+    ok &= check("split: your zone sell, 0.33 lot -> 0.16 closes at +$4 (4326, +0.67R); 0.17 goes to break-even "
+                "at +$4 and trails $3 out at 4321.30 (+1.45R)",
+                set(legs) == {"A", "B"} and legs["A"]["lots"] == 0.16 and legs["B"]["lots"] == 0.17
+                and legs["A"]["exit"] == 4326.0 and legs["A"]["exit_reason"] == "target"
+                and legs["A"]["result_r"] == 0.67 and legs["B"]["exit"] == 4321.3
+                and legs["B"]["exit_reason"] == "trail" and legs["B"]["result_r"] == 1.45
+                and legs["A"]["stop"] == legs["B"]["stop"] == 4336.0, legs)
+    back = [4330.0] * 121 + lin(4330, 4325.7, 4) + lin(4325.7, 4340, 12) + [4340.0] * 5
+    legs = {x["leg"]: x for x in SR.run([msg], SR.Prices(bars_from(t0, back), htf=False), sp)["fixed"].trades}
+    ok &= check("split: +$4 reached then a reversal -> half A banked +$4, half B out at +$1 (break-even step, "
+                "never a loss)",
+                legs["A"]["exit"] == 4326.0 and legs["B"]["exit"] == 4329.0 and legs["B"]["move"] == 1.0, legs)
+    small = SR.run([msg], SR.Prices(bars_from(t0, path), htf=False),
+                   SR.Settings(start_equity=300, spread=0.30, htf_filter=False))["fixed"].trades
+    ok &= check("split: a 0.01 lot cannot be halved -> one position that takes profit at +$4",
+                len(small) == 1 and small[0]["leg"] == "A" and small[0]["lots"] == 0.01
+                and small[0]["exit"] == 4326.0, small)
+    one_slot = SR.run([msg], SR.Prices(bars_from(t0, path), htf=False),
+                      SR.Settings(start_equity=10000, spread=0.30, htf_filter=False, max_per_direction=1))
+    ok &= check("split: only one slot of the 5-per-direction cap left -> one position (take-profit +$4)",
+                [x["leg"] for x in one_slot["fixed"].trades] == ["A"] and one_slot["fixed"].trades[0]["lots"] == 0.33,
+                one_slot["fixed"].trades)
     text = SR.summary_text(res, st, [{}] * 5, "test", "test chat")
     ok &= check("summary names every version and the reasons for not trading",
                 all(f"== {v}:" in text for v in SR.VARIANTS) and "not traded:" in text)

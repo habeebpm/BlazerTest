@@ -57,12 +57,14 @@ def _warn_once(key: str, text: str, *args) -> None:
 
 
 def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str,
-               lock_distance: float = 0.0, lock_r: float = 0.0) -> list:
+               lock_distance: float = 0.0, lock_r: float = 0.0, breakeven_magics=()) -> list:
     """journal_positions() output -> CSV rows. 1R is each trade's own first
     stop (a Telegram signal's stop, or the fixed one); `sl_distance` - the
     fixed stop's price distance - when the first stop isn't known.
     `lock_distance`: the +$6 lock's price distance (default: sl_distance);
-    `lock_r` > 0: the lock is that many times each trade's own stop (BTC)."""
+    `lock_r` > 0: the lock is that many times each trade's own stop (BTC).
+    `breakeven_magics`: sources whose stop goes to break-even by rule (the
+    Telegram split's half B) - a stop-out at break-even or better is normal there."""
     zone = ZoneInfo(local_zone)
     lock = lock_distance or sl_distance
     out = []
@@ -74,7 +76,8 @@ def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str
         r = move / risk if risk > 0 else 0.0
         note = ""
         lock_here = lock_r * risk if lock_r > 0 else lock
-        if (p["exit_reason"] == "stop loss" and risk > 0
+        by_rule = int(p.get("magic", 0)) in breakeven_magics and move >= -0.05
+        if (p["exit_reason"] == "stop loss" and risk > 0 and not by_rule
                 and -HAND_MOVED[0] * risk < move < HAND_MOVED[1] * lock_here):
             note = "stop moved by hand"
         opened, closed = p.get("open_time"), p.get("close_time")
@@ -211,8 +214,9 @@ def build(gateway, cfg, spec) -> dict:
         return cfg.journal_prefix + base[len("GoldTrader_"):]
 
     lock_r = cfg.lock_r if cfg.lock_mode == "r" else 0.0
+    be = tuple(m for m, src in names.items() if src == "Telegram") if getattr(cfg, "telegram_split", False) else ()
     files[name(TRADES_FILE)] = to_csv(trade_rows(positions, names, sl_distance, cfg.display_timezone,
-                                                 lock_distance, lock_r), COLUMNS)
+                                                 lock_distance, lock_r, breakeven_magics=be), COLUMNS)
     decisions = status_report.read_text(os.path.join(cfg.log_dir, "decisions.csv"))
     if decisions:
         files[name(DECISIONS_FILE)] = decisions.replace("\r\n", "\n")
