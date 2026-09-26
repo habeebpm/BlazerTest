@@ -1,6 +1,6 @@
 /* =====================================================================================
    SmartDDR Dashboard - database objects for Trend history, Baselines and Saved views.
-   Run once in the ACAD_DATA database (safe to re-run). SQL Server 2016+.
+   Run once in the ACAD_DATA database (safe to re-run). SQL Server 2016 SP1+ (uses CREATE OR ALTER).
 
    Creates
      dbo.SDDR_DASH_SNAPSHOT        nightly KPI snapshot per project and discipline ('*' = project total)
@@ -86,37 +86,38 @@ BEGIN
     SET XACT_ABORT ON;   -- any error rolls the whole snapshot back
     SET @SnapDate = ISNULL(@SnapDate, CAST(GETDATE() AS date));
 
-    -- PLN% may be stored as a fraction (0-1) or a percentage (0-100).
-    DECLARE @plnDiv float =
-        CASE WHEN (SELECT MAX(ABS(TRY_CONVERT(float, [PLN%]))) FROM dbo.SDDR_ACON_DDR_EPR
-                   WHERE @Project IS NULL OR Project_No = @Project) > 1.0001 THEN 100.0 ELSE 1.0 END;
-
     ;WITH src AS (
         SELECT
             e.Project_No,
-            ISNULL(NULLIF(LTRIM(RTRIM(e.Discipline)), ''), '(Blank)') AS Discipline,
+            COALESCE(NULLIF(LTRIM(RTRIM(e.Discipline)), ''), '(Blank)') AS Discipline,
             ISNULL(TRY_CONVERT(float, e.Hours), 0)        AS Hours,
             ISNULL(TRY_CONVERT(float, e.[Used Hours]), 0) AS Earned,
-            TRY_CONVERT(float, e.[PLN%]) / @plnDiv        AS PlnFrac,
+            -- PLN% may be stored as a fraction (0-1) or a percentage (0-100); decided per project.
+            TRY_CONVERT(float, e.[PLN%])
+              / CASE WHEN MAX(ABS(TRY_CONVERT(float, e.[PLN%]))) OVER (PARTITION BY e.Project_No) > 1.0001
+                     THEN 100.0 ELSE 1.0 END                AS PlnFrac,
             UPPER(LTRIM(RTRIM(ISNULL(e.CURR_STATUS, ''))))  AS St,
             UPPER(LTRIM(RTRIM(ISNULL(e.STATUS_REQD, ''))))  AS Rq,
-            -- dates (TRY_CONVERT copes with text columns; <= 1900 means "blank")
-            NULLIF(TRY_CONVERT(date, e.IDC_PLN),  '19000101') AS P1, NULLIF(TRY_CONVERT(date, e.IDC_ACT),  '19000101') AS A1,
-            NULLIF(TRY_CONVERT(date, e.IFR_PLN),  '19000101') AS P2, NULLIF(TRY_CONVERT(date, e.IFR1_ACT), '19000101') AS A2,
-            NULLIF(TRY_CONVERT(date, e.RCC_PLN),  '19000101') AS P3, NULLIF(TRY_CONVERT(date, e.RCC1_ACT), '19000101') AS A3,
-            NULLIF(TRY_CONVERT(date, e.IFR2_PLN), '19000101') AS P4, NULLIF(TRY_CONVERT(date, e.IFR2_ACT), '19000101') AS A4,
-            NULLIF(TRY_CONVERT(date, e.RCC2_PLN), '19000101') AS P5, NULLIF(TRY_CONVERT(date, e.RCC2_ACT), '19000101') AS A5,
-            NULLIF(TRY_CONVERT(date, e.APP_PLN),  '19000101') AS P6, NULLIF(TRY_CONVERT(date, e.APP_ACT),  '19000101') AS A6,
-            NULLIF(TRY_CONVERT(date, e.AFC_PLN),  '19000101') AS P7, NULLIF(TRY_CONVERT(date, e.AFC_ACT),  '19000101') AS A7
+            -- dates (TRY_CONVERT copes with text columns; year <= 1900 means "blank", as in the web page)
+            CASE WHEN TRY_CONVERT(date, e.IDC_PLN) > '19001231' THEN TRY_CONVERT(date, e.IDC_PLN) END AS P1, CASE WHEN TRY_CONVERT(date, e.IDC_ACT) > '19001231' THEN TRY_CONVERT(date, e.IDC_ACT) END AS A1,
+            CASE WHEN TRY_CONVERT(date, e.IFR_PLN) > '19001231' THEN TRY_CONVERT(date, e.IFR_PLN) END AS P2, CASE WHEN TRY_CONVERT(date, e.IFR1_ACT) > '19001231' THEN TRY_CONVERT(date, e.IFR1_ACT) END AS A2,
+            CASE WHEN TRY_CONVERT(date, e.RCC_PLN) > '19001231' THEN TRY_CONVERT(date, e.RCC_PLN) END AS P3, CASE WHEN TRY_CONVERT(date, e.RCC1_ACT) > '19001231' THEN TRY_CONVERT(date, e.RCC1_ACT) END AS A3,
+            CASE WHEN TRY_CONVERT(date, e.IFR2_PLN) > '19001231' THEN TRY_CONVERT(date, e.IFR2_PLN) END AS P4, CASE WHEN TRY_CONVERT(date, e.IFR2_ACT) > '19001231' THEN TRY_CONVERT(date, e.IFR2_ACT) END AS A4,
+            CASE WHEN TRY_CONVERT(date, e.RCC2_PLN) > '19001231' THEN TRY_CONVERT(date, e.RCC2_PLN) END AS P5, CASE WHEN TRY_CONVERT(date, e.RCC2_ACT) > '19001231' THEN TRY_CONVERT(date, e.RCC2_ACT) END AS A5,
+            CASE WHEN TRY_CONVERT(date, e.APP_PLN) > '19001231' THEN TRY_CONVERT(date, e.APP_PLN) END AS P6, CASE WHEN TRY_CONVERT(date, e.APP_ACT) > '19001231' THEN TRY_CONVERT(date, e.APP_ACT) END AS A6,
+            CASE WHEN TRY_CONVERT(date, e.AFC_PLN) > '19001231' THEN TRY_CONVERT(date, e.AFC_PLN) END AS P7, CASE WHEN TRY_CONVERT(date, e.AFC_ACT) > '19001231' THEN TRY_CONVERT(date, e.AFC_ACT) END AS A7
         FROM dbo.SDDR_ACON_DDR_EPR e
+        CROSS APPLY (SELECT UPPER(' ' + ISNULL(e.CURR_STATUS, '') + ' ' + ISNULL(e.REMARKS, '') + ' '
+                                  + ISNULL(CONVERT(varchar(400), e.Doc_Status), '') + ' ') AS Txt) c
         WHERE e.Document_No IS NOT NULL
+          AND e.Project_No IS NOT NULL AND LTRIM(e.Project_No) <> ''
           AND (@Project IS NULL OR e.Project_No = @Project)
           AND e.Document_No NOT LIKE '%ACTIVI%'
-          AND ISNULL(e.CURR_STATUS, '') + ' ' + ISNULL(e.REMARKS, '') + ' ' + ISNULL(e.Doc_Status, '')
-              NOT LIKE '%DELETED%'
-          AND ISNULL(e.CURR_STATUS, '') + ' ' + ISNULL(e.REMARKS, '') NOT LIKE '%CANCEL%'
-          AND ISNULL(e.CURR_STATUS, '') + ' ' + ISNULL(e.REMARKS, '') NOT LIKE '%SUPERSEDED%'
-          AND ' ' + ISNULL(e.CURR_STATUS, '') + ' ' + ISNULL(e.REMARKS, '') + ' ' NOT LIKE '%[^A-Z]VOID[^A-Z]%'
+          -- same test as the web page: status, remarks and Doc_Status
+          AND c.Txt NOT LIKE '%DELETED%'
+          AND c.Txt NOT LIKE '%CANCELED%' AND c.Txt NOT LIKE '%CANCELLED%'
+          AND c.Txt NOT LIKE '%SUPERSEDED%'
+          AND c.Txt NOT LIKE '%[^A-Z0-9_]VOID[^A-Z0-9_]%'
     ), staged AS (
         SELECT s.*,
             -- last achieved stage (actual on or before the snapshot date)
@@ -149,11 +150,11 @@ BEGIN
         FROM nxt
         GROUP BY GROUPING SETS ((Project_No, Discipline), (Project_No))
     ), m75 AS (
-        SELECT Project_No, ISNULL(NULLIF(LTRIM(RTRIM(Discipline)), ''), '(Blank)') AS Discipline,
+        SELECT Project_No, COALESCE(NULLIF(LTRIM(RTRIM(Discipline)), ''), '(Blank)') AS Discipline,
                SUM(ISNULL(AFC_PLN_TOTAL, 0)) AS M75Plan, SUM(ISNULL(AFCX_COUNT, 0) + ISNULL(ADH_COUNT, 0)) AS M75Done
         FROM dbo.SDDR_ACON_AFC_STATUS_01
         WHERE @Project IS NULL OR Project_No = @Project
-        GROUP BY GROUPING SETS ((Project_No, ISNULL(NULLIF(LTRIM(RTRIM(Discipline)), ''), '(Blank)')), (Project_No))
+        GROUP BY GROUPING SETS ((Project_No, COALESCE(NULLIF(LTRIM(RTRIM(Discipline)), ''), '(Blank)')), (Project_No))
     )
     SELECT per.Project_No, ISNULL(per.Discipline, '*') AS Discipline, per.Docs, per.Complete, per.Pending, per.Overdue,
            per.Due14, per.NotStarted, per.EstHours, per.EarnedHours, per.PlannedHours,
@@ -205,10 +206,10 @@ BEGIN
             (BaselineName, Project_No, DocKey, DDR_ID, Document_No,
              IDC_PLN, IFR_PLN, RCC_PLN, IFR2_PLN, RCC2_PLN, APP_PLN, AFC_PLN, CapturedAt, CapturedBy)
         SELECT @Name, @Project, LEFT(DocKey, 150), CONVERT(varchar(50), DDR_ID), LEFT(Document_No, 150),
-               NULLIF(TRY_CONVERT(date, IDC_PLN),  '19000101'), NULLIF(TRY_CONVERT(date, IFR_PLN),  '19000101'),
-               NULLIF(TRY_CONVERT(date, RCC_PLN),  '19000101'), NULLIF(TRY_CONVERT(date, IFR2_PLN), '19000101'),
-               NULLIF(TRY_CONVERT(date, RCC2_PLN), '19000101'), NULLIF(TRY_CONVERT(date, APP_PLN),  '19000101'),
-               NULLIF(TRY_CONVERT(date, AFC_PLN),  '19000101'), SYSDATETIME(), @User
+               CASE WHEN TRY_CONVERT(date, IDC_PLN) > '19001231' THEN TRY_CONVERT(date, IDC_PLN) END, CASE WHEN TRY_CONVERT(date, IFR_PLN) > '19001231' THEN TRY_CONVERT(date, IFR_PLN) END,
+               CASE WHEN TRY_CONVERT(date, RCC_PLN) > '19001231' THEN TRY_CONVERT(date, RCC_PLN) END, CASE WHEN TRY_CONVERT(date, IFR2_PLN) > '19001231' THEN TRY_CONVERT(date, IFR2_PLN) END,
+               CASE WHEN TRY_CONVERT(date, RCC2_PLN) > '19001231' THEN TRY_CONVERT(date, RCC2_PLN) END, CASE WHEN TRY_CONVERT(date, APP_PLN) > '19001231' THEN TRY_CONVERT(date, APP_PLN) END,
+               CASE WHEN TRY_CONVERT(date, AFC_PLN) > '19001231' THEN TRY_CONVERT(date, AFC_PLN) END, SYSDATETIME(), @User
         FROM src
         WHERE rn = 1 AND DocKey IS NOT NULL;
     COMMIT;

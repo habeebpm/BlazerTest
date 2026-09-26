@@ -69,6 +69,7 @@ Public Class SmartDDRDashboard
                     WriteJson(200, DeleteView())
                 Case "snapshot"
                     RequirePost() : RequireAdmin()
+                    Server.ScriptTimeout = 900   ' an all-projects snapshot can outlast the default request timeout
                     Dim project As String = ValidProject(Request.QueryString("project"))
                     ExecProc("dbo.usp_SDDR_Dash_Snapshot", P("@Project", If(project.Length > 0, project, Nothing)))
                     WriteJson(200, New Dictionary(Of String, Object) From {{"ok", True}})
@@ -77,6 +78,7 @@ Public Class SmartDDRDashboard
                     Dim project As String = ValidProject(Request.QueryString("project"))
                     If project.Length = 0 Then Throw New ArgumentException("Select a single project to capture a baseline.")
                     Dim name As String = ValidName(FormValue("name"))
+                    Server.ScriptTimeout = 900
                     ExecProc("dbo.usp_SDDR_Dash_Baseline", P("@Project", project), P("@Name", name), P("@User", _user))
                     WriteJson(200, New Dictionary(Of String, Object) From {{"ok", True}})
                 Case Else
@@ -86,8 +88,9 @@ Public Class SmartDDRDashboard
             WriteJson(400, ErrorPayload(ex.Message))
         Catch ex As UnauthorizedAccessException
             WriteJson(403, ErrorPayload(ex.Message))
-        Catch ex As SqlException When ex.Number = 208 OrElse ex.Number = 2812
-            ' 208 = invalid object name, 2812 = stored procedure not found: setup script not run yet.
+        Catch ex As SqlException When ex.Number = 208 OrElse ex.Number = 2812 OrElse ex.Number = 229
+            ' 208 = invalid object name, 2812 = stored procedure not found, 229 = permission denied:
+            ' setup script (or its GRANTs) not run yet.
             WriteJson(501, ErrorPayload("This feature needs the SmartDDR dashboard database objects (run SmartDDRDashboard_Setup.sql)."))
         Catch ex As Exception
             ' Don't leak SQL / server details to the browser; keep them in the trace.
@@ -254,7 +257,8 @@ Public Class SmartDDRDashboard
                 blRows = QueryTable("SELECT " & BaselineCols & " FROM [dbo].[SDDR_DASH_BASELINE] WHERE " & sc.Sql & " AND [BaselineName] = @B",
                                     P("@S", sc.Value), P("@B", blName))
             End If
-        Catch ex As SqlException When ex.Number = 208
+        Catch ex As SqlException When ex.Number = 208 OrElse ex.Number = 229
+            ' Tables missing or not granted: the live dashboard still works without history.
             historyOk = False
         End Try
 
@@ -295,7 +299,7 @@ Public Class SmartDDRDashboard
 
     ' Returns the latest Aconex register record for a document plus an optional deep link built from the
     ' web.config appSetting "SmartDDR.AconexDocUrl", e.g.
-    '   https://ae1.aconex.com/Logon?returnUrl=/Document?docNo={Document_No}
+    '   https://ae1.aconex.com/Logon?returnUrl=/Document?docNo={Document_No:2}   ({Col:2} = encode twice)
     ' Any {Column_Name} of PDC_ACON_LATEST_DATE can be used as a placeholder.
     Private Shared Function GetAconex(project As String, doc As String) As Object
         If project.Length = 0 OrElse doc.Length = 0 OrElse doc.Length > 200 Then Throw New ArgumentException("Project and document number are required.")
@@ -315,15 +319,22 @@ Public Class SmartDDRDashboard
             If Not String.IsNullOrWhiteSpace(template) Then
                 url = template
                 For Each c As DataColumn In dt.Columns
-                    url = url.Replace("{" & c.ColumnName & "}", HttpUtility.UrlEncode(Convert.ToString(ToJsonValue(r(c)), CultureInfo.InvariantCulture)))
+                    url = FillPlaceholder(url, c.ColumnName, Convert.ToString(ToJsonValue(r(c)), CultureInfo.InvariantCulture))
                 Next
             End If
         ElseIf Not String.IsNullOrWhiteSpace(template) Then
-            url = template.Replace("{Document_No}", HttpUtility.UrlEncode(doc)).Replace("{Project_No}", HttpUtility.UrlEncode(project))
+            url = FillPlaceholder(FillPlaceholder(template, "Document_No", doc), "Project_No", project)
         End If
         ' Only hand out http(s) links.
         If Not (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) OrElse url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) Then url = ""
         Return New Dictionary(Of String, Object) From {{"found", dt.Rows.Count > 0}, {"record", record}, {"url", url}}
+    End Function
+
+    ' {Name} is replaced with the percent-encoded value; {Name:2} encodes it twice, for a value that
+    ' sits inside a URL that is itself a query parameter (e.g. ...&returnUrl=/Document?docNo={Document_No:2}).
+    Private Shared Function FillPlaceholder(url As String, name As String, value As String) As String
+        Dim once As String = Uri.EscapeDataString(If(value, ""))
+        Return url.Replace("{" & name & ":2}", Uri.EscapeDataString(once)).Replace("{" & name & "}", once)
     End Function
 
     ' ------------------------------------------------------------------ saved views
@@ -361,7 +372,7 @@ Public Class SmartDDRDashboard
         End Try
         Dim isShared As Boolean = FormValue("shared") = "1"
         ExecNonQuery(
-            "MERGE [dbo].[SDDR_DASH_VIEWS] AS T
+            "MERGE [dbo].[SDDR_DASH_VIEWS] WITH (HOLDLOCK) AS T
              USING (SELECT @N AS [Name], @U AS [Owner]) AS S ON T.[Name] = S.[Name] AND T.[Owner] = S.[Owner]
              WHEN MATCHED THEN UPDATE SET [Scope] = @SC, [StateJson] = @J, [IsShared] = @SH, [UpdatedAt] = SYSDATETIME()
              WHEN NOT MATCHED THEN INSERT ([Name], [Scope], [StateJson], [Owner], [IsShared], [CreatedAt], [UpdatedAt])
