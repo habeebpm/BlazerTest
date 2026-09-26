@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 GoldTrader launcher - everything runs from this folder.
 
     python goldtrader.py setup          install every Python package + run every self-test

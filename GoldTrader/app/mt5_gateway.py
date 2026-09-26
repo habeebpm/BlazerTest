@@ -164,16 +164,56 @@ def ny_close_offset_seconds(ts_utc) -> int:
     return int(ts.tz_convert("America/New_York").utcoffset().total_seconds()) + 7 * 3600
 
 
-def server_utc_offset_seconds(symbol: str) -> int | None:
-    """How far the broker server's clock runs ahead of UTC right now (seconds),
-    read from the latest tick; also updates the clock model used for every
-    bar and deal time. None when the tick is too old to tell (market
-    closed), the offset is not a whole or half hour, or MT5 does not answer."""
+_TICK_SEEN: dict = {}      # symbol -> last tick stamp (ms) server_utc_offset_seconds() saw
+
+
+def _tick_stamp(tick) -> int:
+    if tick is None:
+        return 0
+    return int(getattr(tick, "time_msc", 0) or 0) or int(getattr(tick, "time", 0) or 0) * 1000
+
+
+def live_tick(symbol: str, wait: float = 3.0, sleep=None, clock=None):
+    """The latest tick, but only while quotes are still arriving - its time
+    moved since the previous reading, or moves within `wait` seconds. A tick
+    left over from the Friday close or the daily break never moves, and its
+    age can line up with a whole/half hour (on a weekend for about 4 minutes
+    in every 30), which once read as "broker clock UTC-6h". None otherwise."""
     import time
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    m = mt5()
     try:
-        tick = mt5().symbol_info_tick(symbol)
+        tick = m.symbol_info_tick(symbol)
     except Exception:
         return None
+    stamp = _tick_stamp(tick)
+    if not stamp:
+        return None
+    previous = _TICK_SEEN.get(symbol)
+    _TICK_SEEN[symbol] = stamp
+    if previous is not None and stamp != previous:
+        return tick
+    deadline = clock() + wait
+    while clock() < deadline:
+        sleep(0.5)
+        try:
+            newer = m.symbol_info_tick(symbol)
+        except Exception:
+            return None
+        newer_stamp = _tick_stamp(newer)
+        if newer_stamp and newer_stamp != stamp:
+            _TICK_SEEN[symbol] = newer_stamp
+            return newer
+    return None
+
+
+def server_utc_offset_seconds(symbol: str, wait: float = 3.0, sleep=None, clock=None) -> int | None:
+    """How far the broker server's clock runs ahead of UTC right now (seconds),
+    read from a LIVE tick (live_tick); also updates the clock model used for
+    every bar and deal time. None when the market is closed (no new quotes),
+    the offset is not a whole or half hour, or MT5 does not answer."""
+    import time
+    tick = live_tick(symbol, wait=wait, sleep=sleep, clock=clock)
     if tick is None or not getattr(tick, "time", 0):
         return None
     now = time.time()

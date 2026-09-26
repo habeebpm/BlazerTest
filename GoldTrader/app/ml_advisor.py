@@ -214,7 +214,7 @@ def train_model(cfg: AdvisorConfig, gateway=None, min_samples: int = 30,
 
     rows = _load_snapshots(cfg)
     if not rows:
-        return {"trained": False,
+        return {"trained": False, "waiting": True,
                 "reason": "no logged snapshots yet (logs/ml_snapshots.csv is empty or missing) - "
                           "needs at least one executed trade first."}
 
@@ -244,11 +244,11 @@ def train_model(cfg: AdvisorConfig, gateway=None, min_samples: int = 30,
         y.append(1 if pnl > 0 else 0)
 
     if len(X) < min_samples:
-        return {"trained": False,
+        return {"trained": False, "waiting": True,
                 "reason": f"only {len(X)} labeled trade(s) with real MT5 P&L so far - need at "
                           f"least {min_samples} before training a useful model."}
     if len(set(y)) < 2:
-        return {"trained": False,
+        return {"trained": False, "waiting": True,
                 "reason": "every labeled trade so far shares one outcome (all wins or all "
                           "losses) - a classifier needs both to learn anything yet."}
 

@@ -67,7 +67,9 @@ def main(argv: list | None = None) -> int:
               "main.py's live loop will pick it up on the next evaluation cycle.")
         return 0
     print(f"Not trained: {result['reason']}")
-    return 1
+    # Not enough trades yet is the normal state of a new instance, not a
+    # failure (exit 0); a missing library or unreadable MT5 history is (1).
+    return 0 if result.get("waiting") else 1
 
 
 if __name__ == "__main__":

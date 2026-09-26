@@ -2394,7 +2394,7 @@ def test_ml_advisor() -> bool:
         no_data_result = ml_advisor.train_model(no_data_cfg, gateway=FakePerformanceGateway([]))
         ok &= check("train_model() gracefully declines rather than raising when no snapshots have "
                     "been logged yet",
-                    no_data_result == {"trained": False,
+                    no_data_result == {"trained": False, "waiting": True,
                                         "reason": "no logged snapshots yet (logs/ml_snapshots.csv is "
                                                   "empty or missing) - needs at least one executed "
                                                   "trade first."},
@@ -2438,7 +2438,7 @@ def test_ml_advisor() -> bool:
             under_min_cfg, gateway=FakePerformanceGateway([{"ticket": "9001", "pnl_dollars": 5.0}]),
             min_samples=30)
         ok &= check("train_model() declines rather than training on too few labeled trades",
-                    under_result == {"trained": False,
+                    under_result == {"trained": False, "waiting": True,
                                       "reason": "only 1 labeled trade(s) with real MT5 P&L so far - "
                                                 "need at least 30 before training a useful model."},
                     under_result)
@@ -3916,32 +3916,56 @@ def test_broker_clock_and_trading_day() -> bool:
         gw._CLOCK["fixed_offset"] = saved
 
     class Tick:
-        def __init__(self, t):
-            self.time = t
+        def __init__(self, t, msc):
+            self.time, self.time_msc = t, msc
 
     class FakeMt5:
-        def __init__(self, t):
-            self.t = t
+        """live=True: every read is a newer quote (market open); False: the
+        same last quote forever (weekend / daily break)."""
+        def __init__(self, t, live=True):
+            self.t, self.live, self.n = t, live, 0
 
         def symbol_info_tick(self, symbol):
-            return Tick(self.t)
+            self.n += 1 if self.live else 0
+            return Tick(self.t, self.t * 1000 + self.n)
     import time as _time
     real_mt5 = gw.mt5
+    fake_clock = [0.0]
+    naps = []
+
+    def nap(sec):
+        naps.append(sec)
+        fake_clock[0] += sec
+    offset = lambda sym: gw.server_utc_offset_seconds(sym, sleep=nap, clock=lambda: fake_clock[0])  # noqa: E731
     try:
+        gw._TICK_SEEN.clear()
         now = int(_time.time())
         expected = gw.ny_close_offset_seconds(pd.Timestamp(now, unit="s", tz="UTC"))
-        gw.mt5 = lambda: FakeMt5(now + expected + 20)
+        gw.mt5 = (lambda f: (lambda: f))(FakeMt5(now + expected + 20))
         ok &= check("a live tick reveals the broker offset (New York + 7h model kept)",
-                    gw.server_utc_offset_seconds("XAUUSD") == expected and gw._CLOCK["fixed_offset"] is None)
-        gw.mt5 = lambda: FakeMt5(now + 3600 + 5)
+                    offset("XAUUSD") == expected and gw._CLOCK["fixed_offset"] is None)
+        gw.mt5 = (lambda f: (lambda: f))(FakeMt5(now + 3600 + 5))
         ok &= check("a different fixed offset switches the clock model",
-                    gw.server_utc_offset_seconds("XAUUSD") == 3600 and gw._CLOCK["fixed_offset"] == 3600)
-        gw.mt5 = lambda: FakeMt5(now + expected - 600)
+                    offset("XAUUSD") == 3600 and gw._CLOCK["fixed_offset"] == 3600)
+        gw.mt5 = (lambda f: (lambda: f))(FakeMt5(now + expected - 600))
         ok &= check("a stale tick (market closed) tells nothing and changes nothing",
-                    gw.server_utc_offset_seconds("XAUUSD") is None and gw._CLOCK["fixed_offset"] == 3600)
+                    offset("XAUUSD") is None and gw._CLOCK["fixed_offset"] == 3600)
+        # The 26 Sep log: Friday's last gold quote, read exactly 6h later on
+        # Saturday, looked like a live "UTC-6h" clock. A quote that never
+        # moves is now rejected whatever its age.
+        gw._TICK_SEEN.clear()
+        naps.clear()
+        gw.mt5 = (lambda f: (lambda: f))(FakeMt5(now - 6 * 3600 + 10, live=False))
+        first = offset("XAUUSD")
+        second = offset("XAUUSD")
+        ok &= check("weekend: Friday's last quote aged a whole 6h is NOT read as a UTC-6h broker clock "
+                    "(the clock model stays as it was)",
+                    first is None and second is None and gw._CLOCK["fixed_offset"] == 3600 and 0 < sum(naps) <= 7,
+                    (first, second, naps))
     finally:
         gw.mt5 = real_mt5
         gw._CLOCK["fixed_offset"] = saved
+        gw._TICK_SEEN.clear()
 
     td = tactics.trading_day
     ok &= check("trading day rolls at 17:00 New York (server midnight): 20:59 UTC in summer is still "

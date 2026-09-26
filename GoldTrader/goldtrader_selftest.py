@@ -283,6 +283,21 @@ def main() -> int:
     check("each program's output is labelled; it gets no keyboard (never asks questions mid-run)",
           rc_child == 7 and got == ["BTC  | line one", "BTC  | keyboard: False"], got)
 
+    import warnings
+    bad = []
+    for rel in solution.solution_files(solution.ROOT):
+        if rel.endswith(".py"):
+            with open(os.path.join(solution.ROOT, rel), encoding="utf-8") as f:
+                source = f.read()
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                try:
+                    compile(source, rel, "exec")
+                except (SyntaxError, SyntaxWarning) as exc:
+                    bad.append(f"{rel}: {exc}")
+    check("every .py compiles without warnings (a bad backslash once printed a SyntaxWarning in start.bat)",
+          not bad, bad)
+
     with open(os.path.join(solution.ROOT, "update.bat"), newline="") as f:
         bat = f.read()
     check("update.bat: update, then recompile the EAs (CRLF)",
