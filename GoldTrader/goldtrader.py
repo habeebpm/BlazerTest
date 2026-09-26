@@ -18,22 +18,30 @@ GoldTrader launcher - everything runs from this folder.
     python goldtrader.py scorecard      real demo/live results of both sources + verdict
     python goldtrader.py xtr-export [options] e.g. --check (VPS Drive upload test)
     python goldtrader.py dashboard-password   set the web dashboard's password (dashboard/)
+    python goldtrader.py update         download + install the latest version from GitHub (update.bat)
     python goldtrader.py drive-copy     copy the solution to Google Drive\MyTraderbyClaude\GoldTrader
                                         (also after every successful setup / update)
     python goldtrader.py test           every self-test
 
-Double-click versions: setup.bat, settings.bat, check.bat, start.bat, relay_login.bat.
+Double-click versions: setup.bat, settings.bat, check.bat, start.bat, relay_login.bat, update.bat.
 """
 from __future__ import annotations
 
 import argparse
 import filecmp
 import glob
+import hashlib
+import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
+import urllib.request
+import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.join(ROOT, "app")
@@ -172,6 +180,208 @@ def cmd_drive_copy(args) -> int:
     print(f"\nGoogle Drive copy: {os.path.join(dest, DRIVE_COPY_FOLDER)} - {copied} updated, "
           f"{unchanged} unchanged, {removed} removed (keys.txt, logins, passwords and logs stay on this PC).")
     return 0
+
+
+# --------------------------------------------------------------- update
+
+UPDATE_REPO = "habeebpm/BlazerTest"
+UPDATE_BRANCH = "claude/telegram-copier-verifier-j794ck"
+UPDATE_STATE = os.path.join(ROOT, "logs", "update_state.json")
+UPDATE_BACKUPS = os.path.join(ROOT, "logs", "update_backup")
+# Yours to edit: an update never overwrites your changed copy - the new one
+# is saved next to it as <name>.new instead.
+USER_FILES = {"start.bat", "start_btc.bat", "settings.ini"}
+
+
+def _sha256(path: str) -> str:
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def _http(url: str, timeout: float = 30.0) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "GoldTrader-updater",
+                                               "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def latest_commit(repo: str = UPDATE_REPO, branch: str = UPDATE_BRANCH, fetch=_http, timeout: float = 15.0):
+    """(sha, first line of its message) of the branch's newest commit."""
+    data = json.loads(fetch(f"https://api.github.com/repos/{repo}/commits/{branch}", timeout))
+    return data["sha"], (data.get("commit", {}).get("message") or "").splitlines()[0]
+
+
+def changes_since(old_sha: str, new_sha: str, repo: str = UPDATE_REPO, fetch=_http) -> list:
+    """First lines of the commit messages between two versions (best effort)."""
+    try:
+        data = json.loads(fetch(f"https://api.github.com/repos/{repo}/compare/{old_sha}...{new_sha}", 15.0))
+        return [(c.get("commit", {}).get("message") or "").splitlines()[0] for c in data.get("commits", [])]
+    except Exception:
+        return []
+
+
+def load_update_state(path: str = UPDATE_STATE) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_update_state(state: dict, path: str = UPDATE_STATE) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=1)
+    os.replace(tmp, path)
+
+
+def extract_package(zip_bytes: bytes, dest: str) -> tuple[str, str]:
+    """Unpacks GitHub's branch zip into `dest`; returns (its GoldTrader
+    folder, the commit sha GitHub records as the zip comment)."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        sha = z.comment.decode("ascii", "ignore").strip()
+        marker = [n for n in z.namelist() if n.endswith("GoldTrader/goldtrader.py")]
+        if not marker:
+            raise ValueError("the download has no GoldTrader/goldtrader.py")
+        z.extractall(dest)
+    return os.path.join(dest, *marker[0].split("/")[:-1]), sha
+
+
+def instance_running(root: str = ROOT, now: float | None = None) -> str:
+    """The instance whose status.json was written in the last 3 minutes
+    (start.bat / start_btc.bat still open), else ""."""
+    now = time.time() if now is None else now
+    for name, rel in (("start.bat", ("logs", "status.json")), ("start_btc.bat", ("logs", "btc", "status.json"))):
+        try:
+            if now - os.path.getmtime(os.path.join(root, *rel)) < 180:
+                return name
+        except OSError:
+            pass
+    return ""
+
+
+def apply_update(new_root: str, root: str = ROOT, state: dict | None = None,
+                 backup_dir: str | None = None) -> dict:
+    """Copies the new version's solution files over `root`. Your files are
+    never touched: keys.txt, *.session, the dashboard password, logs\\ (not
+    solution files), and a start.bat / start_btc.bat / settings.ini you
+    changed (the new one goes to <name>.new). Files the previous version
+    shipped but this one does not are removed. Everything replaced or
+    removed is kept in backup_dir for rollback_update()."""
+    state = state or {}
+    shipped = state.get("shipped", {})
+    backup_dir = backup_dir or os.path.join(UPDATE_BACKUPS, time.strftime("%Y%m%d-%H%M%S"))
+    report = {"changed": [], "added": [], "kept": [], "removed": [], "backup": backup_dir, "shipped": {}}
+
+    def backup(rel):
+        dst = os.path.join(backup_dir, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(os.path.join(root, rel), dst)
+
+    new_files = solution_files(new_root)
+    for rel in new_files:
+        src, dst = os.path.join(new_root, rel), os.path.join(root, rel)
+        report["shipped"][rel] = _sha256(src)
+        exists = os.path.exists(dst)
+        if exists and filecmp.cmp(src, dst, shallow=False):
+            continue
+        if exists and rel in USER_FILES and shipped.get(rel) != _sha256(dst):
+            shutil.copyfile(src, dst + ".new")          # you changed it (or it predates the updater)
+            report["kept"].append(rel)
+            continue
+        if exists:
+            backup(rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + ".tmp"
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+        report["changed" if exists else "added"].append(rel)
+    new_set = {os.path.normcase(r) for r in new_files}
+    for rel in shipped:
+        path = os.path.join(root, rel)
+        if os.path.normcase(rel) not in new_set and os.path.exists(path) and rel not in USER_FILES:
+            backup(rel)
+            os.remove(path)
+            report["removed"].append(rel)
+    return report
+
+
+def rollback_update(report: dict, root: str = ROOT) -> None:
+    """Puts back exactly what apply_update() changed."""
+    for rel in report["added"]:
+        try:
+            os.remove(os.path.join(root, rel))
+        except OSError:
+            pass
+    for rel in report["changed"] + report["removed"]:
+        src = os.path.join(report["backup"], rel)
+        dst = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+
+
+def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
+    branch = getattr(args, "branch", None) or UPDATE_BRANCH
+    state_path = os.path.join(root, "logs", "update_state.json")
+    running = instance_running(root)
+    if running and not getattr(args, "force", False):
+        print(f"\n{running} is still running - close its window first (open trades stay managed by the "
+              "EA), then run update.bat again.")
+        return 1
+    state = load_update_state(state_path)
+    try:
+        sha, headline = latest_commit(branch=branch, fetch=fetch)
+    except Exception as exc:
+        print(f"\nCould not reach GitHub ({exc}) - check the internet connection and try again.")
+        return 1
+    if sha == state.get("sha") and not getattr(args, "force", False):
+        print(f"\nGoldTrader is up to date ({sha[:7]}: {headline}).")
+        return 0
+    print(f"\nDownloading GoldTrader {sha[:7]} ({headline}) from github.com/{UPDATE_REPO} ...")
+    if state.get("sha"):
+        for line in changes_since(state["sha"], sha, fetch=fetch):
+            print(f"  - {line}")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            data = fetch(f"https://codeload.github.com/{UPDATE_REPO}/zip/refs/heads/{branch}", 120.0)
+            new_root, zip_sha = extract_package(data, tmp)
+        except Exception as exc:
+            print(f"\nDownload failed ({exc}) - nothing was changed. Try again later.")
+            return 1
+        report = apply_update(new_root, root, state, os.path.join(
+            root, "logs", "update_backup", time.strftime("%Y%m%d-%H%M%S")))
+    sha = zip_sha or sha
+    n = len(report["changed"]) + len(report["added"]) + len(report["removed"])
+    print(f"\n{n} file(s) updated: {len(report['changed'])} changed, {len(report['added'])} new, "
+          f"{len(report['removed'])} removed. keys.txt, logins, passwords and logs untouched.")
+    for rel in report["kept"]:
+        print(f"  KEPT your {rel} - the new version is saved as {rel}.new (compare and copy what you need).")
+    if n:
+        rc = (setup or cmd_setup)(None)                  # packages, every self-test, Drive copy
+        if rc != 0:
+            rollback_update(report, root)
+            print("\nThe new version FAILED its self-tests - your previous version was put back. "
+                  "Nothing else changed; tell Claude what the test output says.")
+            return rc
+    save_update_state({"sha": sha, "branch": branch,
+                       "installed_utc": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()),
+                       "shipped": report["shipped"]}, state_path)
+    print(f"\nGoldTrader updated to {sha[:7]}. Next: the EAs are recompiled (update.bat does it), then start "
+          "start.bat (and start_btc.bat). New EA inputs, if any, are listed in docs\\DEPLOYMENT.md section 11.")
+    return 0
+
+
+def update_notice(fetch=_http) -> str:
+    """One line for start.bat when GitHub has a newer version, else ""."""
+    state = load_update_state()
+    try:
+        sha, headline = latest_commit(branch=state.get("branch") or UPDATE_BRANCH, fetch=fetch, timeout=5.0)
+    except Exception:
+        return ""
+    if not state.get("sha") or sha == state["sha"]:
+        return ""
+    return f"An update is available ({sha[:7]}: {headline}) - close this window and double-click update.bat."
 
 
 # --------------------------------------------------------------- MT5 install
@@ -361,6 +571,9 @@ def main(argv=None) -> int:
         if argv[0] == "start" and not any(a in ("-h", "--help", "--once", "--check", "--setup")
                                           for a in argv[1:]):
             disable_quick_edit()
+            notice = update_notice()
+            if notice:
+                print(f"\n*** {notice} ***\n", flush=True)
             return run_forever(cwd, script, argv[1:])
         return py(cwd, script, *argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -375,6 +588,9 @@ def main(argv=None) -> int:
     p.add_argument("--no-compile", action="store_true", dest="no_compile")
     sub.add_parser("settings")
     sub.add_parser("dashboard-password")
+    p = sub.add_parser("update")
+    p.add_argument("--branch", help="GitHub branch to install (default: the solution's own)")
+    p.add_argument("--force", action="store_true", help="reinstall even if up to date / an instance runs")
     p = sub.add_parser("drive-copy")
     p.add_argument("--to", help="your Google Drive 'My Drive' folder (default: found automatically, G: first)")
     for name in ("check", "test-alert", "test-feeds", "relay-login", "once"):
@@ -394,6 +610,8 @@ def main(argv=None) -> int:
         return cmd_install_mt5(args)
     if args.cmd == "settings":
         return py(APP_DIR, "main.py", "--setup")
+    if args.cmd == "update":
+        return cmd_update(args)
     if args.cmd == "drive-copy":
         return cmd_drive_copy(args)
     if args.cmd == "dashboard-password":

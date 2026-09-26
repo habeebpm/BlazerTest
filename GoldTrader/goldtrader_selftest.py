@@ -137,6 +137,110 @@ def main() -> int:
               and not os.path.exists(os.path.join(target, "docs", "BTC.md")), again)
         check("no temp files left behind",
               not any(n.endswith(".tmp") for _, _, fs in os.walk(target) for n in fs))
+    # One-click update from GitHub (update.bat)
+    import hashlib
+    import io
+    import json
+    import zipfile
+
+    def write(base, rel, text):
+        path = os.path.join(base, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def read(base, rel):
+        with open(os.path.join(base, *rel.split("/")), encoding="utf-8") as f:
+            return f.read()
+
+    def make_zip(files, sha):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for rel, text in files.items():
+                z.writestr(f"BlazerTest-branch/GoldTrader/{rel}", text)
+            z.writestr("BlazerTest-branch/README.md", "repo root")
+            z.comment = sha.encode()
+        return buf.getvalue()
+
+    old_ver = {"goldtrader.py": "v1", "app/main.py": "main v1", "app/old.py": "old", "start.bat": "start v1",
+               "start_btc.bat": "btc v1", "settings.ini": "ini v1"}
+    new_ver = {"goldtrader.py": "v2", "app/main.py": "main v2", "app/new.py": "new", "start.bat": "start v1",
+               "start_btc.bat": "btc v2", "settings.ini": "ini v2", "update.bat": "upd"}
+    with tempfile.TemporaryDirectory() as home:
+        for rel, text in old_ver.items():
+            write(home, rel, text)
+        write(home, "start_btc.bat", "btc v1 --symbol BTCUSDm")          # you edited it
+        mine = {"keys.txt": "KEY", "relay/tg_relay_bridge.session": "LOGIN", "logs/trades.csv": "HISTORY",
+                "dashboard/App_Data/password.txt": "HASH", "docs/my_notes.md": "notes"}
+        for rel, text in mine.items():
+            write(home, rel, text)
+        shipped = {rel: solution._sha256(os.path.join(home, *rel.split("/"))) for rel in old_ver}
+        shipped["start_btc.bat"] = hashlib.sha256(b"btc v1").hexdigest()   # what v1 shipped (you edited it since)
+        solution.save_update_state({"sha": "a" * 40, "shipped": shipped},
+                                   os.path.join(home, "logs", "update_state.json"))
+        zip_bytes = make_zip(new_ver, "b" * 40)
+        calls = []
+
+        def fetch(url, timeout=0):
+            calls.append(url)
+            if "/commits/" in url:
+                return json.dumps({"sha": "b" * 40, "commit": {"message": "New feature\n\nbody"}}).encode()
+            if "/compare/" in url:
+                return json.dumps({"commits": [{"commit": {"message": "New feature"}}]}).encode()
+            return zip_bytes
+        setups = []
+        rc = solution.cmd_update(None, fetch=fetch, setup=lambda _a: setups.append(1) or 0, root=home)
+        state = solution.load_update_state(os.path.join(home, "logs", "update_state.json"))
+        check("update: downloads the branch zip, installs the new version, runs setup, remembers the version",
+              rc == 0 and setups == [1] and state["sha"] == "b" * 40 and read(home, "goldtrader.py") == "v2"
+              and read(home, "app/main.py") == "main v2" and read(home, "app/new.py") == "new"
+              and read(home, "update.bat") == "upd" and any("codeload.github.com" in u for u in calls), calls)
+        check("update never touches keys.txt, the Telegram login, logs, the dashboard password or your own files",
+              all(read(home, rel) == text for rel, text in mine.items()))
+        check("your edited start_btc.bat is KEPT (new one saved as .new); unedited settings.ini is updated",
+              read(home, "start_btc.bat") == "btc v1 --symbol BTCUSDm" and read(home, "start_btc.bat.new") == "btc v2"
+              and read(home, "settings.ini") == "ini v2")
+        check("a file the new version dropped is removed (kept in the backup)",
+              not os.path.exists(os.path.join(home, "app", "old.py"))
+              and any("old.py" in fs for _, _, fs in os.walk(os.path.join(home, "logs", "update_backup"))))
+        calls.clear()
+        rc2 = solution.cmd_update(None, fetch=fetch, setup=lambda _a: 1 / 0, root=home)
+        check("already up to date -> no download, no setup", rc2 == 0 and not any("codeload" in u for u in calls))
+        write(home, "logs/status.json", "{}")
+        check("refuses while start.bat is running (status.json fresh)",
+              solution.cmd_update(None, fetch=fetch, root=home) == 1)
+        os.remove(os.path.join(home, "logs", "status.json"))
+
+        # A new version that fails its self-tests is rolled back completely.
+        solution.save_update_state({"sha": "b" * 40, "shipped": state["shipped"]},
+                                   os.path.join(home, "logs", "update_state.json"))
+        before = {rel: read(home, rel) for rel in ("goldtrader.py", "app/main.py", "app/new.py", "settings.ini")}
+        zip_bytes = make_zip({"goldtrader.py": "v3 broken", "app/main.py": "main v3", "app/extra.py": "x",
+                              "settings.ini": "ini v2"}, "c" * 40)
+
+        def fetch3(url, timeout=0):
+            if "/commits/" in url:
+                return json.dumps({"sha": "c" * 40, "commit": {"message": "Broken"}}).encode()
+            if "/compare/" in url:
+                return b"{}"
+            return zip_bytes
+        rc3 = solution.cmd_update(None, fetch=fetch3, setup=lambda _a: 1, root=home)
+        after = {rel: read(home, rel) for rel in before}
+        check("failed self-tests -> the previous version is put back exactly, version not recorded",
+              rc3 == 1 and after == before and not os.path.exists(os.path.join(home, "app", "extra.py"))
+              and solution.load_update_state(os.path.join(home, "logs", "update_state.json"))["sha"] == "b" * 40,
+              (after, before))
+
+        def offline(url, timeout=0):
+            raise OSError("no internet")
+        check("no internet -> clear message, nothing changed", solution.cmd_update(None, fetch=offline, root=home) == 1
+              and read(home, "goldtrader.py") == "v2")
+    check("start.bat notice only when GitHub has a newer version than the installed one",
+          solution.update_notice(fetch=lambda u, t=0: b"not json") == "")
+    with open(os.path.join(solution.ROOT, "update.bat"), newline="") as f:
+        bat = f.read()
+    check("update.bat: update, then recompile the EAs (CRLF)",
+          "python goldtrader.py update && python goldtrader.py install-mt5" in bat and "\r\n" in bat)
     check("finds Google Drive for Desktop's My Drive (G: first)",
           solution.find_drive_root(isdir=lambda p: p in ("G:\\My Drive", "H:\\My Drive")) == "G:\\My Drive"
           and solution.find_drive_root(isdir=lambda p: p == "E:\\MyDrive") == "E:\\MyDrive"

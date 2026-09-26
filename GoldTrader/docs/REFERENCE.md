@@ -383,7 +383,11 @@ without the tactics. Results on a year of real prices:
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
 once | start | backtest | replay-signals | scorecard | xtr-export | dashboard-password |
-drive-copy | test`. `drive-copy` (also run by `setup.bat` after its tests pass)
+update | drive-copy | test`. `update` (= `update.bat`) installs the newest
+version of the solution's GitHub branch: your keys, logins, logs and edited
+start/settings files are kept, a version that fails its self-tests is rolled
+back (backups in `logs\update_backup\`), and the installed version is
+remembered in `logs\update_state.json`. `drive-copy` (also run by `setup.bat` after its tests pass)
 mirrors the solution to `G:\My Drive\MyTraderbyClaude\GoldTrader` - code,
 EAs, presets, launchers, docs, `settings.ini`; never `keys.txt`, `*.session`,
 the dashboard password or `logs\`. `--to <folder>` if Drive is elsewhere.

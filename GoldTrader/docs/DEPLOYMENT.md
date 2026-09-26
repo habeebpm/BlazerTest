@@ -187,18 +187,28 @@ one good week.
 
 ## 11. Updating to a new version
 
-1. Close the `start.bat` window (open trades stay managed by the EA).
-2. Copy the new files over the GoldTrader folder. Keep these - they are
-   yours and not part of an update:
-   - `keys.txt`
-   - `logs\` (history, day state, ML model)
-   - `relay\*.session` (the relay's Telegram login)
-   - `dashboard\App_Data\password.txt`
-   - your changes in `start.bat` / `settings.ini`, if any
-3. Close MetaEditor, run `setup.bat` (tests + EA compile) -> `ALL SELF-TESTS PASSED`
-   and `0 error(s)`. Once the tests pass it also overwrites the copy of the
-   solution in Google Drive: `Google Drive copy: G:\My Drive\MyTraderbyClaude\GoldTrader
-   - N updated ...` (a failed update never replaces the good copy).
+`start.bat` says so when there is one: `*** An update is available (...) -
+close this window and double-click update.bat. ***`
+
+1. Close the `start.bat` (and `start_btc.bat`) window - open trades stay
+   managed by the EAs. `update.bat` refuses while one is still running.
+2. Close MetaEditor, double-click **`update.bat`**. It downloads the latest
+   version from GitHub and installs it:
+   - lists what changed, then `N file(s) updated`;
+   - never touches `keys.txt`, `logs\`, `relay\*.session`,
+     `dashboard\App_Data\password.txt` or files of your own;
+   - `start.bat` / `start_btc.bat` / `settings.ini`: if you changed one, yours
+     is KEPT and the new one saved next to it as `<name>.new`;
+   - runs every self-test -> `ALL SELF-TESTS PASSED`; if a test fails, the
+     previous version is put back automatically;
+   - overwrites the copy in Google Drive (`Google Drive copy:
+     G:\My Drive\MyTraderbyClaude\GoldTrader - N updated ...`);
+   - recompiles the EAs in MT5 -> `0 error(s)` (MT5 reloads them on the
+     charts by itself).
+   `GoldTrader is up to date` = nothing to do.
+
+   Without internet access to GitHub, the old way still works: copy the new
+   files over the folder (keep the files listed above) and run `setup.bat`.
 4. In MT5, re-open the EA's inputs and check your values are still there
    (`InpBotToken`, `InpControlChatId`, `InpChannelId1` = the relay group id,
    `InpChannelId2`/`3` = 0, `InpDryRun`). New inputs of an update start at the

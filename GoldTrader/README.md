@@ -11,6 +11,7 @@ the same steps with what to check after each one, plus updating and going live.
 | `check.bat` | First time: asks your settings. Later: checks everything |
 | `start.bat` | Runs the system - leave its window open |
 | `settings.bat` | Change a setting later |
+| `update.bat` | Installs the latest version from GitHub - no downloading by hand (close `start.bat` first) |
 | `relay_login.bat` | Telegram login for the relay (only if you skipped it in Step 2) |
 | `keys.txt` | All your keys and ids in one private file (made by `setup.bat`) |
 | `dashboard_setup.bat` | Optional: your reports on your phone (run as administrator) |
