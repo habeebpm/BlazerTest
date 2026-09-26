@@ -5179,6 +5179,13 @@ def test_claude_split() -> bool:
                 and not legs.split_entry(AdvisorConfig(claude_split=False))
                 and legs.split_entry(AdvisorConfig(exit_style="breakeven_r_decay")))
 
+    parsed = main_mod.build_config(main_mod.build_parser().parse_args(["--claude-tp1-dollars", "5"]))
+    off = main_mod.build_config(main_mod.build_parser().parse_args(["--no-claude-split"]))
+    ok &= check("start.bat options: --claude-tp1-dollars sets leg 1's take-profit (default 4), "
+                "--no-claude-split one position; legs 2-3 keep break-even at tp1_dollars (6)",
+                parsed.claude_leg1_tp_dollars == 5.0 and parsed.tp1_dollars == 6.0
+                and not legs.split_entry(off) and AdvisorConfig().claude_leg1_tp_dollars == 4.0)
+
     class LegGateway(FakeGateway):
         def __init__(self, refuse=(), **kw):
             super().__init__(**kw)
@@ -5206,8 +5213,8 @@ def test_claude_split() -> bool:
         ok &= check("a 0.33-lot entry goes out as 3 x 0.11: the SAME total lot and $6 stop (2% risk) as one position",
                     d.executed and [o[1] for o in sent] == [0.11, 0.11, 0.11] and abs(plan_lots - 0.33) < 1e-9
                     and all(abs(o[2] - 2344.2) < 1e-9 for o in sent), sent)
-        ok &= check("leg 1 carries the broker take-profit at entry +$6; legs 2-3 have none",
-                    abs(sent[0][3] - 2356.2) < 1e-9 and sent[1][3] == 0.0 and sent[2][3] == 0.0, sent)
+        ok &= check("leg 1 carries the broker take-profit at entry +$4 (claude_leg1_tp_dollars); legs 2-3 have none",
+                    abs(sent[0][3] - 2354.2) < 1e-9 and AdvisorConfig().claude_leg1_tp_dollars == 4.0 and sent[1][3] == 0.0 and sent[2][3] == 0.0, sent)
         ok &= check("legs 2-3 are tagged in the order comment (the EA's break-even rule and the cap read it)",
                     g.comments == ["Claude_Sig", "Claude_Sig|L2", "Claude_Sig|L3"], g.comments)
         with open(os.path.join(tmp, "trades.csv")) as f:
@@ -5217,7 +5224,7 @@ def test_claude_split() -> bool:
         ok &= check("one decision (leg 1's ticket - the calibration/ML join) and one trades.csv row per leg",
                     d.ticket == "1001" and d.tickets == ["1001", "1002", "1003"] and len(decisions) == 1
                     and decisions[0]["ticket"] == "1001" and [t["ticket"] for t in trades] == ["1001", "1002", "1003"]
-                    and trades[0]["tp"] == "2356.2" and trades[1]["tp"] == "0.0", (d, trades))
+                    and trades[0]["tp"] == "2354.2" and trades[1]["tp"] == "0.0", (d, trades))
         ok &= check("the daily budget and margin guard see the WHOLE entry's risk, not one leg's",
                     abs(d.plan.risk_money - 0.33 * 6.0 * 100) < 1e-6, d.plan.risk_money)
 
@@ -5267,7 +5274,7 @@ def test_claude_split() -> bool:
     t0 = pd.Timestamp("2026-09-23 14:00", tz="UTC")
     bt_cfg = AdvisorConfig(dry_run=True, exit_style="sl_to_tp1")
     g = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
-    for i, (tp, c) in enumerate(((2356.0, "Claude_Sig"), (0.0, "Claude_Sig|L2"), (0.0, "Claude_Sig|L3"))):
+    for i, (tp, c) in enumerate(((2354.0, "Claude_Sig"), (0.0, "Claude_Sig|L2"), (0.0, "Claude_Sig|L3"))):
         g.place_market_order(spec, "buy", 0.11, 2344.0, tp, 1, c, 0, True)
     single = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
     single.place_market_order(spec, "buy", 0.33, 2344.0, 0.0, 1, "Claude_Sig", 0, True)
@@ -5280,15 +5287,15 @@ def test_claude_split() -> bool:
                                       "close": [2351.0]})
         gg.manage_positions(bt_cfg)
     res = sorted((t.leg, t.exit_reason, round(t.exit_price, 2)) for t in g.closed_trades)
-    ok &= check("backtest, +7 then back: leg 1 takes profit at +6, legs 2-3 exit at break-even+trail "
+    ok &= check("backtest, +7 then back: leg 1 takes profit at +4, legs 2-3 exit at break-even+trail "
                 "(+7 - 3 = +4) in the same bar",
-                res == [(1, "tp", 2356.0), (2, "trail", 2354.0), (3, "trail", 2354.0)], res)
+                res == [(1, "tp", 2354.0), (2, "trail", 2354.0), (3, "trail", 2354.0)], res)
     ok &= check("...the single position on the same path locks +6 and exits there",
                 [(t.exit_reason, round(t.exit_price, 2)) for t in single.closed_trades] == [("trail", 2356.0)],
                 single.closed_trades)
     total_split = sum(t.pnl_dollars for t in g.closed_trades)
-    ok &= check("...so on a +7 run the split books less (+$154 vs +$198): the legs give back up to $3 "
-                "for the chance to run further", abs(total_split - (0.11 * 600 + 0.22 * 400)) < 1e-6
+    ok &= check("...so on a +7 run the split books less (+$132 vs +$198): the legs give back up to $3 "
+                "for the chance to run further", abs(total_split - (0.11 * 400 + 0.22 * 400)) < 1e-6
                 and abs(single.closed_trades[0].pnl_dollars - 198.0) < 1e-6, total_split)
     g2 = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
     g2.place_market_order(spec, "buy", 0.11, 2344.0, 0.0, 1, "Claude_Sig|L2", 0, True)
@@ -5304,6 +5311,19 @@ def test_claude_split() -> bool:
     g3.manage_positions(bt_cfg)
     ok &= check("backtest: a leg that never reaches +6 keeps the $6 stop (no early break-even)",
                 not g3.closed_trades and g3.sim_positions[0].sl == 2344.0 and not g3.sim_positions[0].armed)
+
+    rc = g.recent_closed_trades("XAUUSD", 1, 10)
+    ok &= check("backtest history (Claude's context, XTR stand-down): the 3 closed legs are ONE trade under "
+                "leg 1's ticket", len(rc) == 1 and rc[0]["ticket"] == 1
+                and abs(rc[0]["pnl_dollars"] - total_split) < 1e-6, rc)
+    g4 = bars_gateway([(t0, 2350.0, 2350.0, 2350.0, 2350.0)])
+    for tp, c in ((2354.0, "Claude_Sig"), (0.0, "Claude_Sig|L2")):
+        g4.place_market_order(spec, "buy", 0.11, 2344.0, tp, 1, c, 0, True)
+    g4.bars["M15"] = pd.DataFrame({"time": [t0], "open": [2350.0], "high": [2354.5], "low": [2349.0],
+                                  "close": [2354.2]})
+    g4.manage_positions(bt_cfg)
+    ok &= check("...and leg 1's +$4 is not reported while leg 2 is still open",
+                len(g4.closed_trades) == 1 and g4.recent_closed_trades("XAUUSD", 1, 10) == [], g4.closed_trades)
 
     # --- walking the M15 bar through its M5 bars ---
     m15_row = [(t0, 2350.0, 2357.0, 2343.0, 2352.0)]           # an up bar: O -> L -> H -> C on M15 alone
@@ -5356,16 +5376,29 @@ def test_claude_split() -> bool:
                 and abs(first.get("volume", 0) - 0.33) < 1e-9 and first.get("legs") == 3
                 and [r["ticket"] for r in rows] == [201, 204, 205], rows)
 
+    fake.positions_get = lambda symbol=None: [type("P", (), {"time": 1001, "magic": 20260921, "type": 0,
+                                                              "comment": "Claude_Sig|L3"})()]
+    fake.POSITION_TYPE_BUY = 0
+    gw._mt5 = fake
+    try:
+        rows_open = gw.closed_trades("XAUUSD", [20260921])
+    finally:
+        gw._mt5 = None
+    ok &= check("closed_trades: an entry whose leg 1 took profit while leg 3 is still open is not reported "
+                "yet (it could still end as a loss); the other trades are",
+                [r["ticket"] for r in rows_open] == [204, 205], rows_open)
+
     # --- alert, journal, status ---
     cfg_alert = AdvisorConfig(dry_run=True, use_risk_percent=False, fixed_lot=0.03)
     plan = executor.build_plan(FakeGateway(), cfg_alert, spec, "buy")
     verdict = make_verdict("buy", 3, "full")
     verdict.take_profit_targets = [2361.5]
     msg = telegram_alert.format_full_conviction_message("XAUUSD", verdict, True, plan=plan)
-    ok &= check("the alert spells out the legs: leg 1 takes profit at +6, the other 2 go to break-even and trail",
+    ok &= check("the alert spells out the legs: leg 1 takes profit at +4, the other 2 go to break-even at +6 "
+                "and trail",
                 "Entry: 2350.20 (market, 0.03 lot in 3 positions)" in msg
-                and "TP1: 2356.20 - leg 1 (0.01 lot) takes profit here" in msg
-                and "Other 2 leg(s) (0.02 lot): stop to break-even at TP1, then trails 3.00 behind price" in msg
+                and "TP1: 2354.20 - leg 1 (0.01 lot) takes profit here" in msg
+                and "Other 2 leg(s) (0.02 lot): stop to break-even at 2356.20, then trails 3.00 behind price" in msg
                 and "TP2: 2361.50" in msg, msg)
     rows = trade_journal.trade_rows(
         [{"ticket": 7, "magic": 20260921, "direction": "buy", "volume": 0.11, "entry_price": 2350.0,

@@ -399,8 +399,9 @@
                   + N(G(r, "signal_sl_max")).ToString("0.##", Inv) + " away)";
         string tp1 = N(G(r, "tp1_dollars")).ToString("0.##", Inv), trail = N(G(r, "trail_dollars")).ToString("0.##", Inv);
         string claude = B(G(r, "claude_split"))
-            ? "Claude: " + N(G(r, "claude_legs")).ToString("0", Inv) + " legs - one closes at +$" + tp1
-              + ", the rest to break-even there then $" + trail + " trail"
+            ? "Claude: " + N(G(r, "claude_legs")).ToString("0", Inv) + " legs - one closes at +$"
+              + (G(r, "claude_leg1_tp") != null ? N(G(r, "claude_leg1_tp")) : N(G(r, "tp1_dollars"))).ToString("0.##", Inv)
+              + ", the rest to break-even at +$" + tp1 + " then $" + trail + " trail"
             : "Claude $" + tp1 + " lock · $" + trail + " trail";
         string exits = B(G(r, "telegram_split"))
             ? claude + " · Telegram: half closes at +$" + N(G(r, "telegram_tp1")).ToString("0.##", Inv)

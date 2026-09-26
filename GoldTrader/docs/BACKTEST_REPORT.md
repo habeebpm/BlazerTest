@@ -51,7 +51,10 @@ Same year, same data, same mechanical verdicts (230 entries), live defaults
 |---|---|---|---|---|---|---|
 | One position, lock +$6, trail $3 (old simulator, for reference) | 43.7 | +0.14 | +57% | 27% | +0.17 / +0.16 / +0.04 | 9% |
 | **One position, lock +$6, trail $3** (fixed simulator) | 50.0 | **+0.25** | +174% | 23% | +0.22 / +0.30 / +0.17 | 0.4% |
-| **Three legs** (leg 1 take-profit +$6; legs 2-3 break-even at +$6, then $3 trail) - live since 26 Sep 2026 | 50.0 | **+0.16** | +85% | 24% | +0.13 / +0.20 / +0.11 | 3% |
+| Three legs, leg 1 take-profit +$6 (legs 2-3 break-even at +$6, then $3 trail) | 50.0 | +0.16 | +85% | 24% | +0.13 / +0.20 / +0.11 | 3% |
+| **Three legs, leg 1 take-profit +$4** (legs 2-3 break-even at +$6, then $3 trail) - **live** | 50.4 | **+0.14** | +74% | 24% | +0.11 / +0.17 / +0.13 | 3.5% |
+| Three legs, leg 1 +$4 and legs 2-3 break-even at +$4 (reference only) | 56.4 | +0.09 | +43% | 23% | +0.08 / +0.08 / +0.15 | 9.5% |
+| Three legs, leg 1 +$4, double spread | 48.7 | +0.08 | +34% | 24% | +0.10 / +0.10 / +0.03 | 13% |
 | One position, double spread (50 points) | 48.2 | +0.18 | +103% | 23% | +0.19 / +0.22 / +0.06 | 2% |
 | Three legs, double spread | 48.2 | +0.10 | +39% | 24% | +0.11 / +0.12 / -0.01 | 12% |
 | One position, M15 bars only (no M5 walk) | 48.7 | +0.38 | +365% | 19% | +0.44 / +0.38 / +0.26 | <0.1% |
@@ -72,6 +75,12 @@ Same year, same data, same mechanical verdicts (230 entries), live defaults
 - Coarser bars flatter the trail: M15 bars alone give +0.38R, M5 bars
   +0.25R. Ticks would likely give less again, so treat +0.25R / +0.16R as
   upper estimates and the old +0.14R as a floor for the single position.
+- Leg 1 at +$4 instead of +$6: it takes profit on 130 of 232 entries
+  instead of 115, but every winner's first third is now worth +$4, not
+  +$6, and 15 more entries bank +$4 on leg 1 and then lose -$6 on legs
+  2-3 (-0.44R instead of -1R). Net: +0.14R against +0.16R with +$6.
+  Moving legs 2-3 to break-even at +$4 too raises the win rate to 56% but
+  cuts the result to +0.09R - it stops the runners out too early.
 - This is still the mechanical stand-in, not Claude's judgment.
 
 ## Oman trading hours (tested for Claude, not used for Claude)

@@ -161,7 +161,7 @@ class AdvisorConfig:
     # Claude's gold entries (requested 2026-09-26): every entry is sent as
     # claude_split_legs positions sharing the lot (the total lot, the $6 stop
     # and the 2% risk are unchanged). Leg 1 has a broker take-profit at
-    # +tp1_dollars ($6); the other legs have none - once price reaches
+    # +claude_leg1_tp_dollars ($4, below); the other legs have none - once price reaches
     # +tp1_dollars their stop goes to break-even (the entry) and trails
     # trail_dollars ($3) behind price, tightening only, so it sits at +$3 the
     # moment +$6 is reached. UnifiedTrader_EA manages them (legs 2+ are
@@ -171,6 +171,10 @@ class AdvisorConfig:
     # BTC profile keeps its R-based lock.
     claude_split: bool = True
     claude_split_legs: int = 3
+    # Leg 1's take-profit (requested 2026-09-26: +$4, not +$6 - at
+    # reference_lot, a fixed price distance). Legs 2+ keep their break-even
+    # trigger at +tp1_dollars ($6) and the trail_dollars ($3) trail.
+    claude_leg1_tp_dollars: float = 4.0
     display_timezone: str = "Asia/Muscat"             # the owner's clock, for the dashboard (Oman)
     # Trade journal (trade_journal.py): every closed trade of both sources, Claude's
     # decisions and the Telegram signal log as CSV files, copied into this folder

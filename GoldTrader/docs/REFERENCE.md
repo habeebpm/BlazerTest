@@ -29,7 +29,7 @@ in the window cannot freeze it.
 | Risk per trade | 2% of equity (lot sized from it) |
 | Stop loss | $6 at the 0.01 reference lot (a fixed price distance). **Telegram trades:** the signal's own stop when it is on the right side and $3-$20 from the entry (EA `InpTelegramUseSignalSl`, `InpSignalSlMinDistance`, `InpSignalSlMaxDistance`); otherwise, or with no stop in the signal, the $6 stop |
 | Lot | sized so the stop risks 2% of equity - a wider signal stop gives a smaller lot (e.g. $14 stop: 0.71 lot at $50,000 instead of 1.66), so every trade still risks 2% |
-| Claude exits | every entry is **three legs** with the same stop and together the same lot (2% risk): leg 1 has a broker take-profit at +$6; legs 2-3 have none - at +$6 their stop goes to break-even and then trails $3 behind price, tightening only (so it is at +$3 the moment +$6 is reached). A lot too small for three legs uses two (0.02) or one (0.01, the take-profit leg). `--no-claude-split` / `claude_split = False`: one position whose SL is locked at +$6, then trailed $3 |
+| Claude exits | every entry is **three legs** with the same stop and together the same lot (2% risk): leg 1 has a broker take-profit at +$4 (`claude_leg1_tp_dollars`, `--claude-tp1-dollars`); legs 2-3 have none - at +$6 their stop goes to break-even and then trails $3 behind price, tightening only (so it is at +$3 the moment +$6 is reached). A lot too small for three legs uses two (0.02) or one (0.01, the take-profit leg). `--no-claude-split` / `claude_split = False`: one position whose SL is locked at +$6, then trailed $3 |
 | Positions per direction | max 5 **trades**, shared by both sources - the legs of a split entry (Claude's three, Telegram's two halves) count as one trade |
 | Daily loss cap | 10% of the day's starting equity - no new entries after it; each entry must also fit the remaining 10% budget including open risk. The day is the broker's server day (17:00 New York at most gold brokers) for both the EA and Python |
 | Margin guard | An entry is skipped if, after it, the free margin could not cover every open stop plus its own (both sources) - so a losing run reaches the stops, not the broker's margin call |
@@ -375,9 +375,9 @@ without the tactics. Results on a year of real prices:
   three periods - the best result, not proof. With the corrected simulator
   (26 Sep 2026, docs/BACKTEST_REPORT.md): one position +0.25R an entry
   (+174%, worst drawdown 23%); the three-leg split that is live now
-  +0.16R (+85%, drawdown 24%); at double spread +0.18R and +0.10R. The
-  split keeps about two thirds of the single position's edge: leg 1 is
-  always closed at +$6 while the average winner runs to +$9.
+  (leg 1 +$4) +0.14R (+74%, drawdown 24%); at double spread +0.18R and
+  +0.08R. The split keeps a little over half of the single position's
+  edge: leg 1 is always closed at +$4 while the average winner runs to +$9.
 - Very cost-sensitive: the $6 stop is about one M15 ATR - use a broker with
   gold spread of 25 points or less.
 - The backtest is bar-level, not tick-level: exits are walked through the

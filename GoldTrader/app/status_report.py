@@ -167,6 +167,7 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
                   "telegram_signal_sl": cfg.telegram_use_signal_sl and cfg.instrument == "gold",
                   "signal_sl_min": cfg.signal_sl_min_distance, "signal_sl_max": cfg.signal_sl_max_distance,
                   "claude_split": legs.split_entry(cfg), "claude_legs": cfg.claude_split_legs,
+                  "claude_leg1_tp": cfg.claude_leg1_tp_dollars,
                   "telegram_split": cfg.telegram_split and cfg.instrument == "gold",
                   "telegram_tp1": cfg.telegram_tp1_dollars, "telegram_trail": cfg.telegram_trail_dollars,
                   "weekend_max_daily_loss_pct": cfg.weekend_max_daily_loss_pct,

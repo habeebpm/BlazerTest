@@ -36,7 +36,8 @@
 //|                                                                    |
 //| CLAUDE SPLIT ENTRIES (app/config.py claude_split, default): main.py |
 //| sends each entry as three legs sharing the lot and the stop. Leg 1 |
-//| carries a broker take-profit at +InpTp1Dollars and is left alone;  |
+//| carries a broker take-profit (+$4, app/config.py                   |
+//| claude_leg1_tp_dollars) and is left alone;                         |
 //| legs 2-3 ("|L2"/"|L3" in the order comment, see LEG_MARK) have none|
 //| - from +InpTp1Dollars their stop goes to break-even and trails     |
 //| InpTrailDollars behind price, tightening only. Read from each      |
@@ -676,10 +677,11 @@ int OnInit()
       PrintFormat("UnifiedTrader_EA: Telegram entries split in two halves - half A takes profit at +$%.2f, "
                   "half B goes to break-even there and trails $%.2f.",
                   InpTelegramTp1Dollars, InpTelegramTrailDollars);
-   PrintFormat("UnifiedTrader_EA: Claude split entries (sent by main.py) - leg 1 closes at its take-profit "
-               "(+$%.2f), legs 2+ (\"%s\" in the comment) go to break-even at +$%.2f and trail $%.2f; "
-               "a single Claude position keeps the $%.2f lock / $%.2f trail.",
-               InpTp1Dollars, LEG_MARK, InpTp1Dollars, InpTrailDollars, InpTp1Dollars, InpTrailDollars);
+   PrintFormat("UnifiedTrader_EA: Claude split entries (sent by main.py) - leg 1 closes at the broker "
+               "take-profit main.py sets (+$4 by default), legs 2+ (\"%s\" in the comment) go to "
+               "break-even at +$%.2f and trail $%.2f; a single Claude position keeps the $%.2f lock / "
+               "$%.2f trail.",
+               LEG_MARK, InpTp1Dollars, InpTrailDollars, InpTp1Dollars, InpTrailDollars);
 
    return(INIT_SUCCEEDED);
 }

@@ -97,6 +97,8 @@ def build_config(args: argparse.Namespace) -> AdvisorConfig:
         cfg.exit_style = args.exit_style
     if getattr(args, "no_claude_split", False):
         cfg.claude_split = False
+    if getattr(args, "claude_tp1_dollars", None) is not None:
+        cfg.claude_leg1_tp_dollars = args.claude_tp1_dollars
     if args.breakeven_atr_mult is not None:
         cfg.breakeven_atr_mult = args.breakeven_atr_mult
     if args.breakeven_atr_period is not None:
@@ -827,8 +829,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "--compare, not in the EA")
     parser.add_argument("--no-claude-split", action="store_true", dest="no_claude_split",
                         help="send each Claude entry as ONE position ($6 lock, $3 trail) instead of the "
-                             "default three legs (leg 1 takes profit at +$6, legs 2-3 go to break-even "
-                             "there and trail $3) - config.py claude_split")
+                             "default three legs (leg 1 takes profit at +$4, legs 2-3 go to break-even "
+                             "at +$6 and trail $3) - config.py claude_split")
+    parser.add_argument("--claude-tp1-dollars", type=float, dest="claude_tp1_dollars",
+                        help="leg 1's take-profit of a split Claude entry in USD at the 0.01 reference lot "
+                             "(default 4) - legs 2-3 keep break-even at --tp-dollars (6)")
     parser.add_argument("--breakeven-atr-mult", type=float, dest="breakeven_atr_mult",
                         help="exit_style=breakeven_r_decay only: move SL to breakeven once profit "
                              "reaches this x the position's own M5 ATR (default 0.5) - enforced by "

@@ -471,7 +471,10 @@ def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str) -> TradePlan:
     if split_entry(cfg):
         # Same total lot, stop and risk - only shared out over the legs.
         leg_lots = legs.split_lots(lots, spec.volume_min, spec.volume_step, cfg.claude_split_legs)
-        leg_tp = entry_price + sign * tp1_dist
+        # Leg 1's own take-profit (claude_leg1_tp_dollars, $4) - legs 2+
+        # go to break-even at tp1_dist ($6) in the EA.
+        leg_tp = entry_price + sign * gateway.price_distance_for_dollars(
+            spec, cfg.claude_leg1_tp_dollars, cfg.reference_lot)
 
     money_per_price = spec.tick_value / spec.tick_size if spec.tick_size > 0 else 0.0
     return TradePlan(
@@ -576,8 +579,8 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
     lock_desc = f"+{cfg.lock_r:g}R" if cfg.lock_mode == "r" else f"${cfg.tp1_dollars:g}"
     if len(leg_lots) > 1 or plan.leg_tp:
         exit_desc = (f"{len(sent)} leg(s) {'/'.join(f'{x[0]:.2f}' for x in sent)} - leg 1 tp="
-                     f"{plan.leg_tp:.2f}, the rest break-even at +${cfg.tp1_dollars:g} then "
-                     f"${cfg.trail_dollars:g} trail")
+                     f"{plan.leg_tp:.2f} (+${cfg.claude_leg1_tp_dollars:g}), the rest break-even at "
+                     f"+${cfg.tp1_dollars:g} then ${cfg.trail_dollars:g} trail")
     elif plan.broker_tp:
         exit_desc = f"tp={plan.broker_tp:.2f}"
     else:

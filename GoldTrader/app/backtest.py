@@ -353,9 +353,23 @@ class HistoricalGateway:
         as it closes, before the next evaluation), so this is exactly the
         information a live run would have had at that same point in time too.
         """
-        out = [{"direction": t.direction, "pnl_dollars": t.pnl_dollars, "ticket": t.ticket,
-                "time": t.exit_time} for t in self.closed_trades]
-        out.reverse()  # closed_trades is oldest-first; recent_closed_trades() is newest-first
+        # One row per ENTRY, as mt5_gateway.closed_trades() reports it: a
+        # split entry's legs summed under leg 1's ticket, and left out while
+        # any of its legs is still open.
+        still_open = {p.group or p.ticket for p in self.sim_positions}
+        by_group = {}
+        for t in self.closed_trades:
+            key = t.group or t.ticket
+            if key in still_open:
+                continue
+            row = by_group.get(key)
+            if row is None:
+                by_group[key] = {"direction": t.direction, "pnl_dollars": t.pnl_dollars, "ticket": key,
+                                 "time": t.exit_time}
+            else:
+                row["pnl_dollars"] += t.pnl_dollars
+                row["time"] = max(row["time"], t.exit_time)
+        out = sorted(by_group.values(), key=lambda r: r["time"], reverse=True)   # newest first
         return out[:count]
 
     def account_equity(self) -> float:
@@ -1207,8 +1221,8 @@ def publish_to_drive(cfg, args, summary: dict, bars: dict) -> None:
              f"stop {cfg.sl_mode} x{cfg.sl_atr_mult:g}" + (f" ({cfg.sl_pct_min:g}%-{cfg.sl_pct_max:g}% of price)"
                                                            if cfg.sl_pct_min or cfg.sl_pct_max else "")
              + (f", lock +{cfg.lock_r:g}R, trail {cfg.trail_r:g}R" if cfg.lock_mode == "r" else
-                f", {cfg.claude_split_legs} legs: leg 1 take-profit +${cfg.tp1_dollars:g}, the rest break-even "
-                f"there then ${cfg.trail_dollars:g} trail" if legs.split_entry(cfg) else
+                f", {cfg.claude_split_legs} legs: leg 1 take-profit +${cfg.claude_leg1_tp_dollars:g}, the rest "
+                f"break-even at +${cfg.tp1_dollars:g} then ${cfg.trail_dollars:g} trail" if legs.split_entry(cfg) else
                 f", lock ${cfg.tp1_dollars:g}, trail ${cfg.trail_dollars:g}")
              + f", risk {cfg.risk_percent:g}%, spread {args.spread_points} points", ""]
     lines += [f"{k}: {v}" for k, v in summary.items()]

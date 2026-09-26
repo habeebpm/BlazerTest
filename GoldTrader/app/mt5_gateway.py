@@ -513,7 +513,35 @@ def closed_trades(symbol: str, magics, lookback_days: int = 14) -> list[dict]:
     for pid, stop in _first_stops(m, start, end, set(by_position)).items():
         if entries.get(pid):
             by_position[pid]["risk_distance"] = abs(entries[pid] - stop)
-    return sorted(group_legs(by_position, opened).values(), key=lambda r: r["time"])
+    rows = group_legs(by_position, opened)
+    return sorted(drop_unfinished(rows, opened, _open_followers(m, symbol)).values(), key=lambda r: r["time"])
+
+
+def _open_followers(m, symbol: str) -> list:
+    """[(open time, magic, direction)] of every still-open leg 2+ on
+    `symbol` (legs.LEG_MARK in its comment), on the same server clock as the
+    history deals. Empty when the terminal cannot say."""
+    try:
+        positions = m.positions_get(symbol=symbol) or []
+    except Exception:
+        return []
+    buy = getattr(m, "POSITION_TYPE_BUY", 0)
+    return [(int(getattr(p, "time", 0) or 0), int(p.magic), "buy" if p.type == buy else "sell")
+            for p in positions if legs.is_follower(getattr(p, "comment", ""))]
+
+
+def drop_unfinished(rows: dict, opened: dict, open_followers: list) -> dict:
+    """Leaves out an entry whose leg 1 closed while its legs 2+ are still
+    open (leg 1's +$4 take-profit comes first): it is not a finished trade
+    yet - reporting leg 1 alone would book it as a win that the legs could
+    still turn into a loss (the XTR stand-down reads each ticket once)."""
+    out = dict(rows)
+    for pid, row in rows.items():
+        t = opened.get(pid, (0, ""))[0]
+        if any(row["magic"] == mg and row["direction"] == d and -5 <= ft - t <= LEG_GROUP_SECONDS
+               for ft, mg, d in open_followers):
+            del out[pid]
+    return out
 
 
 LEG_GROUP_SECONDS = 120

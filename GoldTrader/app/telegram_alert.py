@@ -79,12 +79,13 @@ def format_full_conviction_message(symbol: str, verdict, executed: bool,
         lines.append(f"SL: {f(plan.sl_price)} (risk ${plan.risk_money:,.2f})")
         leg_lots = plan.legs() if hasattr(plan, "legs") else [plan.lots]
         if getattr(plan, "leg_tp", 0.0):
-            # Split entry: leg 1 takes profit at TP1, the rest go to break-even there and trail.
+            # Split entry: leg 1 takes profit at its own TP1; the rest go to
+            # break-even at the lock level (tp1_price) and trail.
             lines.append(f"TP1: {f(plan.leg_tp)} - leg 1 ({leg_lots[0]:.2f} lot) takes profit here")
             if len(leg_lots) > 1:
                 rest = sum(leg_lots[1:])
                 lines.append(f"Other {len(leg_lots) - 1} leg(s) ({rest:.2f} lot): stop to break-even "
-                             f"at TP1, then trails {f(plan.trail_distance)} behind price")
+                             f"at {f(plan.tp1_price)}, then trails {f(plan.trail_distance)} behind price")
                 for i, target in enumerate(structure_targets(plan, verdict.take_profit_targets), start=2):
                     lines.append(f"TP{i}: {f(target)} (Claude's structure target - the trail decides the exit)")
         elif plan.broker_tp:
