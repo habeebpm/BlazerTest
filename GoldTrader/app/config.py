@@ -161,6 +161,9 @@ class AdvisorConfig:
     # start the settings.ini companions (relay, ML retrain, scorecard...) -
     # off for a second instance such as the BTC one (one relay per login)
     run_companions: bool = True
+    # only the periodic jobs (ML retrain, calibration report, scorecard) for
+    # this instance's own magic and logs - never a second relay / price export
+    companion_jobs_only: bool = False
     friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this New York time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
     max_spread_pct: float = 0.0       # when > 0: no entry while the spread is above this % of price (BTC)
@@ -408,6 +411,9 @@ class AdvisorConfig:
     sweep_recent_bars: int = 20
     sweep_ref_bars: int = 30
     sweep_min_pierce_pips: float = 3.0
+    # when > 0: the minimum pierce is this x the primary ATR14 instead of pips
+    # (BTC - a few pips of a $100,000 price is noise, not a sweep)
+    sweep_min_pierce_atr: float = 0.0
 
     # --- SMC structure (market structure / order blocks / fair value gaps) ---
     structure_swing_order: int = 3               # bars confirmed each side of a swing point (fractal)

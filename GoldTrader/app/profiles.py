@@ -19,6 +19,8 @@ blackout, the breaking-news check (crypto feeds), the ML advisor, the
 daily cap and budget, the margin guard, the scorecard and the journal -
 in their own files (logs\\btc\\, BTC_ journal files, own magic number and
 pause switch), so the gold instance never sees BTC and the other way round.
+Its own ML retrain, conviction report and weekly scorecard run from
+start_btc.bat; the Telegram relay and price export stay with gold.
 
 Profile values are applied BEFORE any start-up option, so start_btc.bat can
 still change one (e.g. --symbol BTCUSDm for a broker with a suffix).
@@ -69,8 +71,9 @@ PROFILES = {
         "lock_mode": "r",
         "lock_r": 1.0,
         "trail_r": 0.5,
-        # risk: 2% a trade like gold; its own 5% daily cap and 3 per direction,
-        # so gold (10%) + BTC (5%) can never lose more than 15% in one day
+        # risk: 2% a trade like gold; its own 5% daily cap and 3 per direction.
+        # Both caps read the shared account's equity: BTC stops opening once
+        # the account is 5% down on the day (either market), gold at 10%.
         "risk_percent": 2.0,
         "max_daily_loss_pct": 5.0,
         "max_open_positions_per_direction": 3,
@@ -80,13 +83,19 @@ PROFILES = {
         "friday_cutoff_ny": "",
         "max_spread_points": 0,
         "max_spread_pct": 0.06,
+        # price-scaled thresholds: a sweep must pierce 5% of an M15 ATR (gold's
+        # 3 pips = about 5% of its ATR); market orders may fill up to 2000
+        # points ($20, 0.02% at $100,000) from the requested price
+        "sweep_min_pierce_atr": 0.05,
+        "deviation_points": 2000,
         "news_feeds": BTC_NEWS_FEEDS,
         "news_keywords": BTC_NEWS_KEYWORDS,
         # its own files and switches
         "claude_pause_filename": "claudesmc_btc_pause.txt",
         "last_verdict_filename": "claudesmc_btc_last_verdict.txt",
         "journal_prefix": "BTC_",
-        "run_companions": False,
+        "run_companions": True,
+        "companion_jobs_only": True,          # BTC's own ML retrain, calibration and weekly scorecard
     },
 }
 

@@ -1025,10 +1025,10 @@ def main(argv: list | None = None) -> int:
         return 0
 
     if cfg.run_companions:
-        start_companions(cfg, args.preset, force_relay=args.relay)
+        start_companions(cfg, args.preset, force_relay=args.relay and not cfg.companion_jobs_only,
+                         jobs_only=cfg.companion_jobs_only)
     else:
-        log.info("Companion programs: not started by this instance (profile %s) - the gold start.bat "
-                 "runs them", cfg.instrument)
+        log.info("Companion programs: not started (--no-companions)")
     log.info("Profile %s: %s, magic %d, logs %s", cfg.instrument, cfg.symbol, cfg.magic, cfg.log_dir)
     log.info("Entry filters: XTR gate %s; %s (lot, SL, TP and trail unchanged)",
              cfg.xtr_gate, tactics.describe(cfg))

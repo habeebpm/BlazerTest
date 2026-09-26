@@ -157,6 +157,19 @@ def stochastic(df: pd.DataFrame, k: int = 14, d: int = 3, smooth: int = 3):
 # --------------------------------------------------------------------------- #
 # SMC structure
 # --------------------------------------------------------------------------- #
+def sweep_min_pierce(cfg, spec, closed: pd.DataFrame) -> float:
+    """How far past the old high/low a wick must reach to count as a sweep.
+    Gold: a fixed sweep_min_pierce_pips. With sweep_min_pierce_atr > 0 (BTC)
+    it is that fraction of the M15 ATR, so it scales with the price."""
+    fixed = cfg.sweep_min_pierce_pips * spec.point * 10
+    mult = getattr(cfg, "sweep_min_pierce_atr", 0.0)
+    if mult > 0 and len(closed) > 15:
+        value = float(atr(closed).iloc[-1])
+        if value == value and value > 0:         # not NaN
+            return value * mult
+    return fixed
+
+
 def detect_liquidity_sweep(closed: pd.DataFrame, recent_bars: int, ref_bars: int,
                             min_pierce_price: float) -> dict:
     """A stop-hunt-then-reclaim within the last `recent_bars` closed bars:
@@ -591,7 +604,7 @@ def build_feature_snapshot(gateway, cfg: AdvisorConfig) -> dict:
     spec = gateway.symbol_spec(cfg.symbol)
 
     sweep = detect_liquidity_sweep(primary_closed, cfg.sweep_recent_bars, cfg.sweep_ref_bars,
-                                    cfg.sweep_min_pierce_pips * spec.point * 10)
+                                   sweep_min_pierce(cfg, spec, primary_closed))
     zone = premium_discount_zone(primary_closed, cfg.sweep_recent_bars + cfg.sweep_ref_bars)
     structure = market_structure(primary_closed, cfg.structure_swing_order)
     order_blocks = detect_order_blocks(primary_closed, cfg.order_block_lookback_bars,

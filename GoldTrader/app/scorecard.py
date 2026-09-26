@@ -107,7 +107,8 @@ def build(trades: list, magics: dict, per_price: float, sl_dist: float) -> dict:
     out = {}
     for name, magic in magics.items():
         out[name] = summarize([t for t in trades if t["magic"] == magic], per_price, sl_dist)
-    out["Combined"] = summarize([t for t in trades if t["magic"] in magics.values()], per_price, sl_dist)
+    if len(magics) > 1:          # one source (the BTC instance): Combined would only repeat it
+        out["Combined"] = summarize([t for t in trades if t["magic"] in magics.values()], per_price, sl_dist)
     return out
 
 
@@ -118,7 +119,7 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--days", type=int, default=120, help="history to include (default 120)")
     ap.add_argument("--magic", type=int, default=AdvisorConfig().magic, help="Claude's magic number")
     ap.add_argument("--telegram-magic", type=int, default=20260922, dest="telegram_magic",
-                    help="the EA's Telegram magic number")
+                    help="the EA's Telegram magic number (0 = no Telegram side, e.g. the BTC instance)")
     ap.add_argument("--no-telegram", action="store_true", dest="no_telegram",
                     help="print only, do not send to Telegram")
     args = ap.parse_args(argv)
@@ -133,7 +134,9 @@ def main(argv: list | None = None) -> int:
         gw.connect()
         spec = gw.symbol_spec(args.symbol)
         gw.server_utc_offset_seconds(args.symbol)
-        magics = {"Claude": args.magic, "Telegram signals": args.telegram_magic}
+        magics = {"Claude": args.magic}
+        if args.telegram_magic:
+            magics["Telegram signals"] = args.telegram_magic
         trades = gw.closed_trades(args.symbol, list(magics.values()), lookback_days=args.days)
     except RuntimeError as exc:
         log.error("Cannot read MT5 history: %s - start MT5 and try again.", exc)

@@ -4625,14 +4625,14 @@ def test_btc_profile() -> bool:
     ok = True
     gold, btc = AdvisorConfig(), profiles.apply(AdvisorConfig(), "btc")
     ok &= check("the gold profile changes nothing", profiles.apply(AdvisorConfig(), "gold") == gold)
-    ok &= check("btc: BTCUSD, own magic/log folder/pause/verdict files/journal prefix, no companions, "
+    ok &= check("btc: BTCUSD, own magic/log folder/pause/verdict files/journal prefix, companion jobs only, "
                 "no Telegram shared cap",
                 btc.symbol == "BTCUSD" and btc.magic == profiles.BTC_MAGIC != gold.magic
                 and btc.log_dir.endswith(os.path.join("logs", "btc"))
                 and btc.claude_pause_filename != gold.claude_pause_filename
                 and btc.last_verdict_filename != gold.last_verdict_filename
-                and btc.journal_prefix == "BTC_" and not btc.run_companions
-                and btc.shared_cap_magic_numbers == [], btc)
+                and btc.journal_prefix == "BTC_" and btc.run_companions and btc.companion_jobs_only
+                and not gold.companion_jobs_only and btc.shared_cap_magic_numbers == [], btc)
     ok &= check("btc rules: stop 1x M15 ATR (0.20%-2.0%), lock +1R, trail 0.5R, 2% risk, 5% daily cap, "
                 "3 per direction, 24/7, spread limit 0.06% of price",
                 (btc.sl_mode, btc.sl_atr_mult, btc.sl_atr_timeframe, btc.sl_pct_min, btc.sl_pct_max) ==
@@ -4650,7 +4650,7 @@ def test_btc_profile() -> bool:
     ok &= check("start --profile btc applies the profile first; start options still win (--symbol, "
                 "--max-daily-loss)",
                 c.instrument == "btc" and c.symbol == "BTCUSDm" and c.max_daily_loss_pct == 4.0
-                and c.magic == profiles.BTC_MAGIC and not c.run_companions)
+                and c.magic == profiles.BTC_MAGIC and c.companion_jobs_only)
     ok &= check("gold start (no --profile) is the unchanged default",
                 main_mod.build_config(main_mod.build_parser().parse_args([])).instrument == "gold")
 
@@ -4678,6 +4678,75 @@ def test_btc_profile() -> bool:
     d = executor.execute(wide, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("spread above 0.06% of price blocks the entry", not d.executed and "% of price" in d.reject_reason,
                 d.reject_reason)
+
+    # --- deep debug: price-scaled thresholds, account-wide margin guard, companion jobs ---
+    ok &= check("market orders may fill 2000 points ($20) away for BTC; gold keeps its 30",
+                btc.deviation_points == 2000 and gold.deviation_points == 30, (btc.deviation_points,))
+    gspec = gw.SymbolSpec(name="XAUUSD", point=0.01, digits=2, stops_level_points=0, spread_points=25,
+                          volume_min=0.01, volume_max=5.0, volume_step=0.01, tick_value=1.0, tick_size=0.01)
+    closed = bars.iloc[:-1].reset_index(drop=True)
+    ok &= check("sweep threshold: BTC = 5% of the M15 ATR (scales with price); gold = its fixed pips",
+                abs(market_intel.sweep_min_pierce(btc, spec, closed)
+                    - 0.05 * float(market_intel.atr(closed).iloc[-1])) < 1e-9
+                and abs(market_intel.sweep_min_pierce(gold, gspec, closed)
+                        - gold.sweep_min_pierce_pips * 0.1) < 1e-9
+                and abs(market_intel.sweep_min_pierce(btc, spec, closed.iloc[:5]) - btc.sweep_min_pierce_pips * 0.1) < 1e-9)
+
+    class AccountGw(FakeGateway):
+        def __init__(self, other_risk, **kw):
+            super().__init__(**kw)
+            self.other_risk = other_risk
+
+        def margin_status(self, spec, direction, lots):
+            return 50.0, 600.0                  # $550 free after the trade
+
+        def account_open_risk(self):
+            return self.other_risk              # gold's open stops on the same account
+    mcfg = dataclasses.replace(cfg, margin_guard=True)
+    quiet = AccountGw(0.0, bid=100000.0, ask=100010.0, bars_df=bars, equity=10000.0)
+    d = executor.execute(quiet, mcfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("margin guard: nothing open elsewhere -> the BTC entry goes through", d.executed, d.reject_reason)
+    busy = AccountGw(500.0, bid=100000.0, ask=100010.0, bars_df=bars, equity=10000.0)
+    d = executor.execute(busy, mcfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("margin guard counts the whole account: $500 of gold stops + this trade > $550 free -> refused",
+                not d.executed and "margin guard" in d.reject_reason and busy.orders_sent == [], d.reject_reason)
+
+    import services
+    started = []
+
+    class Sup:
+        def __init__(self, name, command, cwd, fatal=None, on_fatal=None):
+            self.name, self.command = name, command
+
+        def start(self):
+            started.append(self)
+
+    class Job(Sup):
+        def __init__(self, name, command, cwd, every_days, state_path, log_path):
+            super().__init__(name, command, cwd)
+    with _tempfile.TemporaryDirectory() as tmp:
+        ini = os.path.join(tmp, "p.ini")
+        with open(ini, "w") as f:
+            f.write("[relay_bridge]\nenabled = true\n[xtr_export]\nenabled = true\n"
+                    "[ml_retrain]\nenabled = true\n[calibration_report]\nenabled = true\n"
+                    "[scorecard]\nenabled = true\n")
+        pre = services.load_preset(ini)
+        bcfg = dataclasses.replace(btc, log_dir=os.path.join(tmp, "btc"))
+        services.start_services(bcfg, pre, force_relay=True, supervisor_cls=Sup, job_cls=Job, jobs_only=True)
+        got = {x.name: x.command for x in started}
+        sc = got.get("scorecard", [])
+        ok &= check("BTC companions: ML retrain, calibration and scorecard on BTCUSD / its magic / logs\\btc; "
+                    "no second Telegram relay or price export",
+                    set(got) == {"ml_retrain", "calibration_report", "scorecard"}
+                    and all("BTCUSD" in cmd and str(profiles.BTC_MAGIC) in cmd for cmd in got.values())
+                    and os.path.join(tmp, "btc") in got["ml_retrain"]
+                    and sc[sc.index("--telegram-magic") + 1] == "0", got)
+    import scorecard
+    one = scorecard.build([{"magic": profiles.BTC_MAGIC, "pnl_dollars": 10.0, "volume": 0.1, "risk_distance": 500.0}],
+                          {"Claude": profiles.BTC_MAGIC}, 0.01, 500.0)
+    two = scorecard.build([], {"Claude": 1, "Telegram signals": 2}, 1.0, 6.0)
+    ok &= check("scorecard: one source (BTC) has no duplicate Combined line; gold keeps it",
+                set(one) == {"Claude"} and "Combined" in two, (list(one), list(two)))
 
     # --- backtest: R-based lock and trail ---
     pos = backtest.SimPosition(ticket=1, direction="buy", lots=0.1, entry_time=pd.Timestamp("2026-01-01", tz="UTC"),

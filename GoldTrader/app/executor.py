@@ -352,7 +352,18 @@ def margin_guard_reason(gateway, cfg: AdvisorConfig, spec, direction: str, lots:
     if not status:
         return ""
     need, free = status
-    worst = open_risk_dollars(gateway, cfg, spec) + new_trade_risk
+    # Every open stop on the ACCOUNT (gold and BTC share it), when the gateway
+    # can see all symbols; the backtest / test doubles only have this symbol.
+    open_risk = None
+    account_fn = getattr(gateway, "account_open_risk", None)
+    if account_fn is not None:
+        try:
+            open_risk = float(account_fn())
+        except Exception:
+            open_risk = None
+    if open_risk is None:
+        open_risk = open_risk_dollars(gateway, cfg, spec)
+    worst = open_risk + new_trade_risk
     if free - need < worst:
         return (f"margin guard: free margin after this trade {free - need:.2f} would not cover "
                 f"{worst:.2f} if every open stop and this one were hit - use higher leverage or "

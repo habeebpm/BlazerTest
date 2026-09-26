@@ -321,6 +321,40 @@ def symbol_positions(symbol: str) -> list:
             for p, t in zip(positions, times)]
 
 
+def account_open_risk() -> float:
+    """What every open position and pending order on ANY symbol could still
+    lose to its stop, in account money - the margin guard's worst case when
+    gold and BTC share one account (the broker's margin call is account-wide).
+    Positions/orders without a stop, or symbols MT5 cannot price, add 0."""
+    m = mt5()
+    priced = {}
+
+    def per_price(symbol):
+        if symbol not in priced:
+            info, tick = m.symbol_info(symbol), m.symbol_info_tick(symbol)
+            size = getattr(info, "trade_tick_size", 0.0) if info is not None else 0.0
+            value = getattr(info, "trade_tick_value", 0.0) if info is not None else 0.0
+            priced[symbol] = (value / size if size > 0 and value > 0 else 0.0, tick)
+        return priced[symbol]
+
+    total = 0.0
+    for p in m.positions_get() or []:
+        if p.sl <= 0:
+            continue
+        pp, tick = per_price(p.symbol)
+        if not pp or tick is None:
+            continue
+        dist = (tick.bid - p.sl) if p.type == m.POSITION_TYPE_BUY else (p.sl - tick.ask)
+        if dist > 0:
+            total += dist * pp * p.volume
+    for o in m.orders_get() or []:
+        if o.sl <= 0:
+            continue
+        pp, _ = per_price(o.symbol)
+        total += abs(o.price_open - o.sl) * pp * o.volume_current
+    return total
+
+
 def pending_orders(symbol: str) -> list:
     """Every pending (limit/stop) order on `symbol`, any magic. Their risk
     counts toward the daily budget, and orders under counted magics toward

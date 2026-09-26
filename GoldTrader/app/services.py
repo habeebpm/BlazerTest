@@ -197,7 +197,8 @@ class PeriodicJob:
 
 
 def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
-                   supervisor_cls=relay_supervisor.ChildSupervisor, job_cls=PeriodicJob) -> list:
+                   supervisor_cls=relay_supervisor.ChildSupervisor, job_cls=PeriodicJob,
+                   jobs_only: bool = False) -> list:
     """Starts every enabled service; returns the started objects.
     alert(text) is called when a continuous service stops for good."""
     for err in preset.errors:
@@ -212,7 +213,7 @@ def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
         return _cb
 
     relay = preset.relay_bridge
-    if relay.enabled or force_relay:
+    if (relay.enabled or force_relay) and not jobs_only:     # one relay per Telegram login (the gold instance)
         if os.path.exists(relay_supervisor.bridge_path()):
             sup = supervisor_cls("Telegram relay bridge", relay_supervisor.relay_command(relay.args),
                                  relay_supervisor.BRIDGE_DIR, fatal=relay_supervisor.RELAY_FATAL,
@@ -223,7 +224,7 @@ def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
             log.error("relay_bridge: %s not found.", relay_supervisor.bridge_path())
 
     xtr = preset.xtr_export
-    if xtr.enabled:
+    if xtr.enabled and not jobs_only:
         script = os.path.join(XTR_EXPORT_DIR, "xtr_export.py")
         if os.path.exists(script):
             sup = supervisor_cls("XTR price export", [py, "xtr_export.py", *xtr.args], XTR_EXPORT_DIR,
@@ -243,7 +244,8 @@ def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
             ("scorecard", "scorecard.py",
              ["--magic", str(cfg.magic)]
              + (["--telegram-magic", str(cfg.shared_cap_magic_numbers[0])]
-                if cfg.shared_cap_magic_numbers else []))):
+                if cfg.shared_cap_magic_numbers else
+                (["--telegram-magic", "0"] if getattr(cfg, "instrument", "gold") != "gold" else [])))):
         s = getattr(preset, name)
         if not s.enabled:
             continue
@@ -253,7 +255,9 @@ def start_services(cfg, preset: Preset, alert=None, force_relay: bool = False,
         started.append(job)
 
     names = preset.enabled_names()
-    if force_relay and "relay_bridge" not in names:
+    if jobs_only:
+        names = [n for n in names if n not in ("relay_bridge", "xtr_export")]
+    if force_relay and not jobs_only and "relay_bridge" not in names:
         names.append("relay_bridge (--relay)")
     log.info("Companion programs: %s", ", ".join(names) if names else "none (see settings.ini)")
     return started

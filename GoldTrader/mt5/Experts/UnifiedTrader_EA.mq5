@@ -274,6 +274,7 @@ double   DollarsToPrice(double dollars, double volume);
 double   FixedSlDistance();
 double   PositionSizeLots(double slDist = 0.0);
 double   OpenRiskMoney();
+double   AccountOpenRiskMoney();
 string   DailyRiskBudgetReason(double newLots, double slDist = 0.0);
 string   MarginGuardReason(bool isBuy, double newLots, double slDist = 0.0);
 bool     ParseHHMM(string s, int &minutes);
@@ -1190,6 +1191,44 @@ string DailyRiskBudgetReason(double newLots, double slDist = 0.0)
 }
 
 //+------------------------------------------------------------------+
+//| What every open position and pending order on ANY symbol could    |
+//| still lose to its stop - the margin guard's worst case: gold and   |
+//| the BTC instance share one account and one margin call.            |
+//+------------------------------------------------------------------+
+double AccountOpenRiskMoney()
+{
+   double total = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      double sl = PositionGetDouble(POSITION_SL);
+      if(sl <= 0.0) continue;
+      string sym = PositionGetString(POSITION_SYMBOL);
+      double tv  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+      double ts  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+      MqlTick tk;
+      if(tv <= 0.0 || ts <= 0.0 || !SymbolInfoTick(sym, tk)) continue;
+      double dist = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? tk.bid - sl : sl - tk.ask;
+      if(dist > 0.0)
+         total += dist / ts * tv * PositionGetDouble(POSITION_VOLUME);
+   }
+   for(int j = OrdersTotal() - 1; j >= 0; j--)
+   {
+      ulong oticket = OrderGetTicket(j);
+      if(oticket == 0) continue;
+      double osl = OrderGetDouble(ORDER_SL);
+      if(osl <= 0.0) continue;
+      string osym = OrderGetString(ORDER_SYMBOL);
+      double otv  = SymbolInfoDouble(osym, SYMBOL_TRADE_TICK_VALUE);
+      double ots  = SymbolInfoDouble(osym, SYMBOL_TRADE_TICK_SIZE);
+      if(otv <= 0.0 || ots <= 0.0) continue;
+      total += MathAbs(OrderGetDouble(ORDER_PRICE_OPEN) - osl) / ots * otv * OrderGetDouble(ORDER_VOLUME_CURRENT);
+   }
+   return(total);
+}
+
+//+------------------------------------------------------------------+
 //| Small accounts on high leverage: "" if, after this entry, the free |
 //| margin still covers what every open stop plus this one could lose, |
 //| else the reason to skip - so a run of losses reaches the stops, not |
@@ -1210,7 +1249,7 @@ string MarginGuardReason(bool isBuy, double newLots, double slDist = 0.0)
       slDist = FixedSlDistance();
    if(tickValue <= 0.0 || tickSize <= 0.0 || slDist <= 0.0)
       return("");
-   double worst = OpenRiskMoney() + slDist / tickSize * tickValue * newLots;
+   double worst = AccountOpenRiskMoney() + slDist / tickSize * tickValue * newLots;
    double freeAfter = AccountInfoDouble(ACCOUNT_MARGIN_FREE) - need;
    if(freeAfter < worst)
       return(StringFormat("margin guard: free margin after this trade %.2f would not cover %.2f if every "

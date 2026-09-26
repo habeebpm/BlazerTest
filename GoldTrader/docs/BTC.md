@@ -28,11 +28,23 @@ dollars, so it works at any BTC price:
 | Lock | at +1R the stop moves there (R = the trade's own stop) | +$6 |
 | Trail | 0.5R behind price after the lock | $3 |
 | Risk per trade | 2% of equity (lot sized from the stop) | 2% |
-| Daily loss cap | **5%** - gold 10% + BTC 5% = at most 15% in one day | 10% |
+| Daily loss cap | **5%** of the account's day-start equity (see below) | 10% |
 | Positions per direction | 3 (the 5% budget allows about 2 at once) | 5 |
 | Trading hours | around the clock, 7 days (no Friday cutoff) | New York windows |
 | Spread limit | 0.06% of the price (thin weekend / news spreads) | 50 points |
 | Lot cap | 5 lots | 5 lots |
+
+**Both daily caps read the whole account.** Gold and BTC share one MT5
+account, so each cap measures the account's equity, not its own trades: BTC
+stops opening once the account is 5% down on the day (from either market),
+gold (Claude and Telegram) at 10%. Neither closes open trades; each also
+refuses an entry whose stop would take the day past its cap. A bad BTC day
+therefore also counts toward gold's 10%. The margin guard counts every open
+stop on the account (gold and BTC) before any new entry.
+
+Also scaled to Bitcoin's price: a liquidity sweep must pierce 5% of an M15
+ATR (gold: 3 pips), and a market order may fill up to 2000 points ($20) from
+the requested price (gold: 30 points).
 
 These are a principled starting point, **not yet backtested on real BTC
 prices** (see "Test it" below). Change one in `start_btc.bat` `GT_ARGS`, e.g.
@@ -73,6 +85,10 @@ SEC / ETF decisions, crypto bans, large holders moving coins.
 - Telegram: `PauseBtcHab` closes BTC trades and stops new ones,
   `ResumeBtcHab` restarts; `PauseHab` / `ResumeHab` now cover BTC too.
 - Journal in Drive: `BTC_trades.csv`, `BTC_claude_decisions.csv`.
+- `start_btc.bat` runs BTC's own scheduled jobs from `settings.ini` (ML
+  retrain, conviction report, weekly scorecard - Claude only, in
+  `logs\btc\`); the Telegram relay and price export run only from
+  `start.bat`.
 - Claude cost: Bitcoin is evaluated 24/7 (168 hours a week vs gold's 52), so
   expect roughly 2-3 times gold's call count; the log shows the real tokens
   per call (`Claude call: ... tokens`).
