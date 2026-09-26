@@ -251,6 +251,11 @@ class AdvisorConfig:
     #     never closes anything itself, only executor.gate() refusing new
     #     signals. Set to 0 to disable the check entirely.
     max_daily_loss_pct: float = 10.0       # stop new entries once the account is down this many pct on the trading day
+    # While GOLD's market is closed (Friday 17:00 - Sunday 18:00 New York) the
+    # BTC instance may use the allowance gold uses on weekdays - see
+    # tactics.effective_limits(). 0 = no change (gold: always 0).
+    weekend_max_daily_loss_pct: float = 0.0
+    weekend_max_positions_per_direction: int = 0
     margin_guard: bool = True              # refuse an entry whose worst case (all stops hit) the free margin can't cover
     use_daily_target: bool = False         # also stop new entries once daily_target_pct is reached
     daily_target_pct: float = 2.0

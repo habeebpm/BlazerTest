@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import types
 import json
 import logging
 import os
@@ -4747,6 +4748,45 @@ def test_btc_profile() -> bool:
     two = scorecard.build([], {"Claude": 1, "Telegram signals": 2}, 1.0, 6.0)
     ok &= check("scorecard: one source (BTC) has no duplicate Combined line; gold keeps it",
                 set(one) == {"Claude"} and "Combined" in two, (list(one), list(two)))
+
+    # --- weekends: gold closed -> BTC gets gold's weekday allowance ---
+    U = lambda x: pd.Timestamp(x, tz="UTC")            # noqa: E731
+    closed = tactics.gold_market_closed
+    ok &= check("gold closed = Friday 17:00 to Sunday 18:00 New York (summer and winter time)",
+                not closed(U("2026-09-25 20:59")) and closed(U("2026-09-25 21:00"))      # Fri, EDT
+                and closed(U("2026-09-26 12:00")) and closed(U("2026-09-27 21:59"))     # Sat, Sun
+                and not closed(U("2026-09-27 22:00")) and not closed(U("2026-09-28 12:00"))
+                and not closed(U("2026-12-04 21:59")) and closed(U("2026-12-04 22:00"))  # Fri, EST
+                and closed(U("2026-12-06 22:59")) and not closed(U("2026-12-06 23:00")))
+    sat, wed = U("2026-09-26 12:00"), U("2026-09-23 12:00")
+    we, wd = tactics.effective_limits(btc, sat), tactics.effective_limits(btc, wed)
+    ok &= check("BTC on Saturday/Sunday: 10% daily cap, 5 per direction (gold's weekday allowance); "
+                "weekdays 5% / 3; risk per trade, stop, lock, trail unchanged",
+                (we.max_daily_loss_pct, we.max_open_positions_per_direction) == (10.0, 5)
+                and (wd.max_daily_loss_pct, wd.max_open_positions_per_direction) == (5.0, 3)
+                and (we.risk_percent, we.sl_atr_mult, we.lock_r, we.trail_r) == (2.0, 1.0, 1.0, 0.5)
+                and wd is btc and btc.max_daily_loss_pct == 5.0,
+                (we.max_daily_loss_pct, we.max_open_positions_per_direction))
+    ok &= check("gold never changes (no weekend allowance)",
+                tactics.effective_limits(gold, sat) is gold and not tactics.weekend_mode(gold, sat))
+    down6 = FakeGateway(bid=100000.0, ask=100010.0, bars_df=bars, equity=9400.0)   # 6% down on the day
+    ok &= check("daily budget, account 6% down: a 2% BTC entry fits on Saturday (10%), refused on a weekday (5%)",
+                executor.daily_risk_budget_reason(down6, dataclasses.replace(we, log_dir=cfg.log_dir), spec,
+                                                  10000.0, 200.0) == ""
+                and "daily loss budget" in executor.daily_risk_budget_reason(down6, wd, spec, 10000.0, 200.0))
+    real_gw = main_mod.gw
+    try:
+        main_mod.gw = types.SimpleNamespace(now=lambda: sat.to_pydatetime())
+        live_sat = main_mod.weekend_limits(btc)
+        main_mod.gw = types.SimpleNamespace(now=lambda: wed.to_pydatetime())
+        live_wed = main_mod.weekend_limits(btc)
+    finally:
+        main_mod.gw = real_gw
+    ok &= check("start_btc.bat applies it each cycle (and switches back when gold reopens)",
+                live_sat.max_daily_loss_pct == 10.0 and live_wed is btc)
+    bsrc = open(os.path.join(paths.APP_DIR, "backtest.py"), encoding="utf-8").read()
+    ok &= check("the backtest replays the same weekend limits",
+                "tactics.effective_limits(cfgs[s], g.current_time)" in bsrc)
 
     # --- backtest: R-based lock and trail ---
     pos = backtest.SimPosition(ticket=1, direction="buy", lots=0.1, entry_time=pd.Timestamp("2026-01-01", tz="UTC"),

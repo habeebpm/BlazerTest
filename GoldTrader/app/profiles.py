@@ -77,6 +77,11 @@ PROFILES = {
         "risk_percent": 2.0,
         "max_daily_loss_pct": 5.0,
         "max_open_positions_per_direction": 3,
+        # Saturday / Sunday (gold closed, Fri 17:00 - Sun 18:00 New York): BTC
+        # gets the allowance gold uses on weekdays - 10% daily cap, 5 per
+        # direction; risk per trade stays 2%
+        "weekend_max_daily_loss_pct": 10.0,
+        "weekend_max_positions_per_direction": 5,
         # 24/7 market: no hours, no Friday cutoff; spread limit in % of price
         "trade_windows": "",
         "trade_days": "Mon-Sun",

@@ -502,7 +502,30 @@ def skip_cycle(cfg: AdvisorConfig, reason: str) -> None:
             log.debug("Could not update the last-verdict file.", exc_info=True)
 
 
+_weekend_logged = None
+
+
+def weekend_limits(cfg: AdvisorConfig) -> AdvisorConfig:
+    """cfg for this cycle: BTC's weekend daily cap / positions while gold is
+    closed (tactics.effective_limits), logged once each time it switches."""
+    global _weekend_logged
+    now_fn = getattr(gw, "now", None)
+    now = now_fn() if now_fn is not None else datetime.now(timezone.utc)
+    active = tactics.weekend_mode(cfg, now)
+    if active != _weekend_logged and (active or _weekend_logged is not None):
+        if active:
+            log.info("Gold market closed: weekend allowance on - %g%% daily cap, %d per direction "
+                     "(risk per trade unchanged).", cfg.weekend_max_daily_loss_pct or cfg.max_daily_loss_pct,
+                     cfg.weekend_max_positions_per_direction or cfg.max_open_positions_per_direction)
+        else:
+            log.info("Gold market open: back to %g%% daily cap, %d per direction.",
+                     cfg.max_daily_loss_pct, cfg.max_open_positions_per_direction)
+    _weekend_logged = active
+    return tactics.effective_limits(cfg, now)
+
+
 def run_once(client, cfg: AdvisorConfig, spec, day: DayRoll, xtr_state=None) -> None:
+    cfg = weekend_limits(cfg)
     equity = gw.account_equity()
     offset_fn = getattr(gw, "server_utc_offset_seconds", None)
     if offset_fn is not None:

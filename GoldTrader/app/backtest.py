@@ -759,7 +759,8 @@ def run_backtest_compare(gateways: dict, cfgs: dict, client, mechanical: bool) -
         evaluated += 1
 
         for s in styles:
-            g, cfg = gateways[s], cfgs[s]
+            g = gateways[s]
+            cfg = tactics.effective_limits(cfgs[s], g.current_time)    # BTC's weekend allowance
             day = tactics.trading_day(g.current_time)
             trades_today = day_trades[s].get(day, 0)
             block_reason = (day_states[s].block_reason(g, cfg) or tactics.regime_block(cfg, features)

@@ -387,7 +387,12 @@
             return N(G(r, "risk_percent")).ToString("0.##", Inv) + "% risk · stop " + N(G(r, "sl_atr_mult")).ToString("0.##", Inv)
                  + "x M15 ATR (1R) · lock +" + N(G(r, "lock_r")).ToString("0.##", Inv) + "R · trail "
                  + N(G(r, "trail_r")).ToString("0.##", Inv) + "R · " + N(G(r, "max_per_direction")).ToString("0", Inv)
-                 + " per direction · " + N(G(r, "max_daily_loss_pct")).ToString("0.##", Inv) + "% daily cap";
+                 + " per direction · " + N(G(r, "max_daily_loss_pct")).ToString("0.##", Inv) + "% daily cap"
+                 + (N(G(r, "weekend_max_daily_loss_pct")) > 0
+                    ? " (while gold is closed, Sat-Sun: " + N(G(r, "weekend_max_daily_loss_pct")).ToString("0.##", Inv)
+                      + "% daily cap, " + N(G(r, "weekend_max_per_direction")).ToString("0", Inv) + " per direction"
+                      + (B(G(r, "weekend_active")) ? " - ON NOW" : "") + ")"
+                    : "");
         string stop = "$" + N(G(r, "sl_dollars")).ToString("0.##", Inv) + " stop";
         if (B(G(r, "telegram_signal_sl")))
             stop += " (Telegram: the signal's stop if $" + N(G(r, "signal_sl_min")).ToString("0.##", Inv) + "-$"

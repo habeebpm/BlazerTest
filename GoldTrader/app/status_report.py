@@ -164,7 +164,10 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
                   "instrument": cfg.instrument, "lock_mode": cfg.lock_mode,
                   "lock_r": cfg.lock_r, "trail_r": cfg.trail_r, "sl_atr_mult": cfg.sl_atr_mult,
                   "telegram_signal_sl": cfg.telegram_use_signal_sl and cfg.instrument == "gold",
-                  "signal_sl_min": cfg.signal_sl_min_distance, "signal_sl_max": cfg.signal_sl_max_distance},
+                  "signal_sl_min": cfg.signal_sl_min_distance, "signal_sl_max": cfg.signal_sl_max_distance,
+                  "weekend_max_daily_loss_pct": cfg.weekend_max_daily_loss_pct,
+                  "weekend_max_per_direction": cfg.weekend_max_positions_per_direction,
+                  "weekend_active": tactics.weekend_mode(cfg, datetime.fromtimestamp(now, timezone.utc))},
     }
 
     def part(key, fn):

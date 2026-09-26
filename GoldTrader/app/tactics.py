@@ -25,6 +25,7 @@ the snapshot, still before the Claude call - a blocked bar costs nothing.
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -247,6 +248,39 @@ def trading_day(now, server_offset_seconds: int | None = None):
     return (utc.astimezone(NEW_YORK) + timedelta(hours=7)).date()
 
 
+GOLD_CLOSE_NY, GOLD_REOPEN_NY = 17 * 60, 18 * 60     # Friday close / Sunday reopen, New York
+
+
+def gold_market_closed(now) -> bool:
+    """True from gold's Friday 17:00 close to its Sunday 18:00 reopen (New
+    York; Saturday 01:00 - Monday 02:00 Oman time)."""
+    ny = _as_utc(now).astimezone(NEW_YORK)
+    minute, day = ny.hour * 60 + ny.minute, ny.weekday()
+    return (day == 4 and minute >= GOLD_CLOSE_NY) or day == 5 or (day == 6 and minute < GOLD_REOPEN_NY)
+
+
+def weekend_mode(cfg, now) -> bool:
+    """The BTC weekend allowance is in force: gold is closed and the profile
+    sets a weekend daily cap or position limit."""
+    return bool((cfg.weekend_max_daily_loss_pct > 0 or cfg.weekend_max_positions_per_direction > 0)
+                and gold_market_closed(now))
+
+
+def effective_limits(cfg, now):
+    """`cfg` with the weekend daily cap and positions per direction applied
+    while gold is closed (BTC: the allowance gold uses on weekdays - the
+    account trades only Bitcoin then); `cfg` itself otherwise. Risk per
+    trade, stop, lock and trail never change."""
+    if not weekend_mode(cfg, now):
+        return cfg
+    changes = {}
+    if cfg.weekend_max_daily_loss_pct > 0:
+        changes["max_daily_loss_pct"] = cfg.weekend_max_daily_loss_pct
+    if cfg.weekend_max_positions_per_direction > 0:
+        changes["max_open_positions_per_direction"] = cfg.weekend_max_positions_per_direction
+    return dataclasses.replace(cfg, **changes)
+
+
 def describe(cfg) -> str:
     """One line for the start-up log."""
     parts = [f"hours {cfg.trade_windows} {zone_label(cfg)} time" if cfg.trade_windows else "any hour"]
@@ -260,4 +294,8 @@ def describe(cfg) -> str:
         parts.append(f"spread <= {cfg.max_spread_pct:g}% of price")
     if cfg.min_adx:
         parts.append(f"ADX >= {cfg.min_adx:g}")
+    if cfg.weekend_max_daily_loss_pct > 0 or cfg.weekend_max_positions_per_direction > 0:
+        parts.append(f"while gold is closed: {cfg.weekend_max_daily_loss_pct or cfg.max_daily_loss_pct:g}% "
+                     f"daily cap, {cfg.weekend_max_positions_per_direction or cfg.max_open_positions_per_direction}"
+                     f" per direction")
     return ", ".join(parts)

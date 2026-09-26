@@ -137,7 +137,7 @@ reference. Results go to Google Drive (`GoldTrader_replay_*`); ask Claude
 to analyse them. Nothing is traded.
 
 **Bitcoin (BTCUSD):** the same brain with Bitcoin's own rules (stop 1x M15
-ATR, lock +1R, trail 0.5R, 24/7, 5% daily cap), no Telegram signals:
+ATR, lock +1R, trail 0.5R, 24/7, 5% daily cap - 10% on weekends while gold is closed), no Telegram signals:
 **BTCTrader_EA** on a BTCUSD chart + `start_btc.bat`. Set-up, rules and
 testing: [`docs/BTC.md`](docs/BTC.md).
 

@@ -247,7 +247,8 @@ Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 files, no Telegram side; its own ML retrain, conviction report and scorecard
 jobs (no relay or price export). Stop 1.0 x M15 ATR14 within
 0.20%-2.0% of price; **BTCTrader_EA** locks at +1R and trails 0.5R, where R is
-each trade's own opening stop; 2% risk, 5% daily cap, 3 per direction, 24/7,
+each trade's own opening stop; 2% risk, 5% daily cap, 3 per direction (while
+gold is closed, Friday 17:00 - Sunday 18:00 New York: 10% and 5), 24/7,
 spread limit 0.06% of price. Claude and the news check get Bitcoin-specific
 wording and crypto feeds; gold's prompts are unchanged. Telegram:
 `PauseBtcHab` / `ResumeBtcHab` (UnifiedTrader_EA inputs `InpBtcMagicNumber`,

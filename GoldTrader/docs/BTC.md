@@ -28,11 +28,22 @@ dollars, so it works at any BTC price:
 | Lock | at +1R the stop moves there (R = the trade's own stop) | +$6 |
 | Trail | 0.5R behind price after the lock | $3 |
 | Risk per trade | 2% of equity (lot sized from the stop) | 2% |
-| Daily loss cap | **5%** of the account's day-start equity (see below) | 10% |
-| Positions per direction | 3 (the 5% budget allows about 2 at once) | 5 |
+| Daily loss cap | **5%** of the account's day-start equity (see below); **10% while gold is closed** | 10% |
+| Positions per direction | 3 (the 5% budget allows about 2 at once); **5 while gold is closed** | 5 |
 | Trading hours | around the clock, 7 days (no Friday cutoff) | New York windows |
 | Spread limit | 0.06% of the price (thin weekend / news spreads) | 50 points |
 | Lot cap | 5 lots | 5 lots |
+
+**Saturday and Sunday: Bitcoin at full allowance.** From gold's Friday close
+(17:00 New York = Saturday 01:00 Oman) to its Sunday reopen (18:00 New York =
+Monday 02:00 Oman) the account trades only Bitcoin, so BTC gets the allowance
+gold uses on weekdays: **10% daily cap and 5 positions per direction**. Risk
+per trade (2%), stop, lock and trail stay the same. The log says `Gold market
+closed: weekend allowance on` / `Gold market open: back to 5% daily cap`; the
+dashboard's rules line shows `ON NOW`. Positions opened at the weekend keep
+running after gold reopens; the weekday 5% budget then simply allows no new
+BTC entry until their risk fits. Change it in `app/profiles.py`
+(`weekend_max_daily_loss_pct`, `weekend_max_positions_per_direction`; 0 = off).
 
 **Both daily caps read the whole account.** Gold and BTC share one MT5
 account, so each cap measures the account's equity, not its own trades: BTC
