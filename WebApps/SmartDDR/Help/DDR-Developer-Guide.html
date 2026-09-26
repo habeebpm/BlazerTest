@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DDR Developer Guide</title>
+<style>
+:root{
+  --bg:#F6FAF9; --surface:#FFFFFF; --sunk:#EAF4F2; --ink:#10201F; --muted:#4F6462; --line:#D5E4E1;
+  --accent:#0F766E; --accent-2:#14B8A6; --accent-ink:#FFFFFF; --tint:#DDF5F0;
+  --warn:#A15C07; --warn-bg:#FFF6E5; --warn-line:#F2D29B;
+  --bad:#B42318; --bad-bg:#FDEEEC; --ok:#15803D;
+  --code-bg:#E8F1EF;
+  --sans:"IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --shadow:0 1px 2px rgba(16,32,31,.06), 0 8px 24px rgba(16,32,31,.07);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0B1514; --surface:#111E1D; --sunk:#0E1A19; --ink:#E3EFED; --muted:#9DB3B0; --line:#23413D;
+    --accent:#2DD4BF; --accent-2:#14B8A6; --accent-ink:#06201D; --tint:#123230;
+    --warn:#F4B860; --warn-bg:#2A2011; --warn-line:#5A4318;
+    --bad:#F97066; --bad-bg:#2C1413; --ok:#4ADE80; --code-bg:#16292A;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0B1514; --surface:#111E1D; --sunk:#0E1A19; --ink:#E3EFED; --muted:#9DB3B0; --line:#23413D;
+  --accent:#2DD4BF; --accent-2:#14B8A6; --accent-ink:#06201D; --tint:#123230;
+  --warn:#F4B860; --warn-bg:#2A2011; --warn-line:#5A4318;
+  --bad:#F97066; --bad-bg:#2C1413; --ok:#4ADE80; --code-bg:#16292A;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.62;padding-inline:16px;padding-block:0 64px}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+h1,h2,h3{line-height:1.2;text-wrap:balance;margin:0}
+h2{font-size:1.6rem;font-weight:700;letter-spacing:-.01em}
+h3{font-size:1.12rem;font-weight:600;margin-top:28px}
+p{margin:12px 0}
+code,kbd,.mono{font-family:var(--mono);font-size:.88em}
+code{background:var(--code-bg);padding:1px 6px;border-radius:5px;overflow-wrap:anywhere}
+kbd{border:1px solid var(--line);border-bottom-width:2px;background:var(--surface);padding:0 6px;border-radius:5px}
+.btnname{font-weight:600;white-space:nowrap}
+
+/* header */
+.masthead{max-width:1180px;margin:0 auto;padding-block:40px 28px;display:grid;gap:18px}
+.eyebrow{font-size:.78rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.masthead h1{font-size:clamp(2rem,4.6vw,3.1rem);font-weight:700;letter-spacing:-.02em}
+.lede{font-size:1.12rem;color:var(--muted);max-width:66ch;margin:0}
+.meta{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-size:.82rem;background:var(--tint);color:var(--ink);border-radius:999px;padding:3px 12px}
+
+/* layout */
+.shell{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr);gap:40px}
+@media (min-width:1000px){.shell{grid-template-columns:230px minmax(0,1fr)}}
+.toc{display:none}
+@media (min-width:1000px){
+  .toc{display:block;position:sticky;top:calc(env(safe-area-inset-top,0px) + 20px);align-self:start;max-height:calc(100vh - 40px);overflow:auto;padding-right:6px}
+}
+.toc h4{margin:0 0 10px;font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;counter-reset:t}
+.toc a{display:flex;gap:10px;color:var(--ink);text-decoration:none;font-size:.9rem;padding:5px 8px;border-radius:7px}
+.toc a:hover{background:var(--tint)}
+.toc a.on{background:var(--tint);color:var(--accent);font-weight:600}
+.toc .n{font-family:var(--mono);font-size:.8rem;color:var(--muted);min-width:1.4em}
+.toc-inline{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:14px 16px}
+.toc-inline summary{cursor:pointer;font-weight:600}
+.toc-inline ol{margin:10px 0 0;padding-left:22px;columns:2 180px}
+@media (min-width:1000px){.toc-inline{display:none}}
+
+main{min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:56px}
+section{scroll-margin-top:20px}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.sec-no{font-family:var(--mono);font-size:.9rem;color:var(--accent);font-weight:500}
+.prose{max-width:70ch}
+
+/* quick start */
+.quick{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:var(--shadow)}
+.quick ol{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));counter-reset:q}
+.quick li{counter-increment:q;display:grid;grid-template-columns:32px 1fr;gap:10px;align-items:start}
+.quick li::before{content:counter(q);width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:.9rem}
+.quick b{display:block}
+.quick span{color:var(--muted);font-size:.93rem}
+
+/* figures */
+figure{margin:22px 0;display:grid;gap:10px}
+.shot{position:relative;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);background:#fff}
+.shot img{display:block;width:100%;height:auto}
+figcaption{font-size:.9rem;color:var(--muted)}
+.pin{position:absolute;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:#E11D48;color:#fff;font-weight:700;font-size:.8rem;display:grid;place-items:center;box-shadow:0 0 0 3px #fff,0 3px 8px rgba(0,0,0,.35)}
+@media (max-width:640px){.pin{width:20px;height:20px;font-size:.66rem;box-shadow:0 0 0 2px #fff}}
+.legend{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.legend li{display:grid;grid-template-columns:26px 1fr;gap:10px;align-items:start;font-size:.95rem}
+.legend .dot{width:24px;height:24px;border-radius:50%;background:#E11D48;color:#fff;font-weight:700;font-size:.78rem;display:grid;place-items:center;margin-top:1px}
+.split{display:grid;gap:22px;align-items:start}
+@media (min-width:760px){.split{grid-template-columns:minmax(0,1fr) 190px}}
+
+/* steps */
+.steps{list-style:none;counter-reset:s;margin:14px 0;padding:0;display:grid;gap:10px;max-width:72ch}
+.steps>li{counter-increment:s;display:grid;grid-template-columns:30px 1fr;gap:10px}
+.steps>li::before{content:counter(s);font-family:var(--mono);font-weight:500;color:var(--accent);border:1.5px solid var(--accent);border-radius:8px;width:26px;height:26px;display:grid;place-items:center;font-size:.85rem;margin-top:1px}
+
+/* callouts */
+.note,.warn,.tip{border-radius:12px;padding:12px 16px;margin:16px 0;max-width:72ch;border:1px solid}
+.note{background:var(--tint);border-color:transparent}
+.tip{background:var(--sunk);border-color:var(--line)}
+.warn{background:var(--warn-bg);border-color:var(--warn-line)}
+.note b:first-child,.warn b:first-child,.tip b:first-child{display:block;margin-bottom:2px}
+.warn b:first-child{color:var(--warn)}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin:16px 0}
+table{border-collapse:collapse;width:100%;font-size:.93rem}
+th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}
+th{font-size:.76rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--sunk);font-weight:600;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td:first-child{white-space:nowrap}
+.req{font-size:.75rem;font-weight:600;border-radius:999px;padding:1px 8px;white-space:nowrap}
+.req.y{background:var(--bad-bg);color:var(--bad)}
+.req.n{background:var(--sunk);color:var(--muted)}
+.req.a{background:var(--tint);color:var(--accent)}
+.kind{font-size:.75rem;font-weight:600;border-radius:999px;padding:1px 9px;white-space:nowrap}
+.kind.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+.kind.err{background:var(--bad-bg);color:var(--bad)}
+.kind.info{background:var(--tint);color:var(--accent)}
+
+/* worked example */
+.calc{font-family:var(--mono);font-size:.9rem;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-x:auto;max-width:72ch;line-height:1.7}
+.calc .hl{color:var(--accent);font-weight:500}
+
+.two{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin:16px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card h4{margin:0 0 6px;font-size:1rem}
+.card p{margin:6px 0;font-size:.95rem}
+
+details.faq{border-bottom:1px solid var(--line);padding:12px 0;max-width:72ch}
+details.faq summary{cursor:pointer;font-weight:600;list-style-position:outside}
+details.faq p{margin:8px 0 0;color:var(--ink)}
+.embedded .masthead{padding-block:20px 10px}
+.embedded .masthead h1{font-size:2rem}
+footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88rem;border-top:1px solid var(--line);padding-top:18px}
+</style>
+</head>
+<body>
+
+
+<header class="masthead">
+  <div class="eyebrow">SmartDDR · User guide</div>
+  <h1>DDR Developer</h1>
+  <p class="lede">How to turn a CTD deliverable into DDR lines on the DDR Developer page: adding document and activity lines, picking PLIPs, balancing hours against the CTD, copying rows, importing from CSV and saving.</p>
+  <div class="meta"><span class="chip">Page: DDR_DeveloperV3.aspx</span><span class="chip">For engineers and document controllers</span><span class="chip">Screens show sample data</span></div>
+</header>
+
+<div class="shell">
+  <nav class="toc" aria-label="Contents">
+    <h4>Contents</h4>
+    <ol id="toc">
+      <li><a href="#quick"><span class="n">—</span>Quick start</a></li>
+      <li><a href="#tour"><span class="n">1</span>The screen</a></li>
+      <li><a href="#open"><span class="n">2</span>Open a CTD</a></li>
+      <li><a href="#add"><span class="n">3</span>Add DDR lines</a></li>
+      <li><a href="#fields"><span class="n">4</span>Fill in a line</a></li>
+      <li><a href="#plip"><span class="n">5</span>Pick a PLIP</a></li>
+      <li><a href="#hours"><span class="n">6</span>Balance the hours</a></li>
+      <li><a href="#copy"><span class="n">7</span>Copy lines</a></li>
+      <li><a href="#save"><span class="n">8</span>Save your work</a></li>
+      <li><a href="#delete"><span class="n">9</span>Delete a line</a></li>
+      <li><a href="#csv"><span class="n">10</span>Import from CSV</a></li>
+      <li><a href="#messages"><span class="n">11</span>Messages</a></li>
+      <li><a href="#faq"><span class="n">12</span>Questions</a></li>
+      <li><a href="#limits"><span class="n">13</span>Known limitations</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <details class="toc-inline">
+      <summary>Contents</summary>
+      <ol>
+        <li><a href="#quick">Quick start</a></li><li><a href="#tour">The screen</a></li><li><a href="#open">Open a CTD</a></li>
+        <li><a href="#add">Add DDR lines</a></li><li><a href="#fields">Fill in a line</a></li><li><a href="#plip">Pick a PLIP</a></li>
+        <li><a href="#hours">Balance the hours</a></li><li><a href="#copy">Copy lines</a></li><li><a href="#save">Save your work</a></li>
+        <li><a href="#delete">Delete a line</a></li><li><a href="#csv">Import from CSV</a></li><li><a href="#messages">Messages</a></li>
+        <li><a href="#faq">Questions</a></li><li><a href="#limits">Known limitations</a></li>
+      </ol>
+    </details>
+
+    <section id="quick" class="quick">
+      <h2>Quick start</h2>
+      <p class="prose" style="margin-bottom:0">The usual way to build the DDR for one CTD. Each step links to the full instructions.</p>
+      <ol>
+        <li><div><b><a href="#open">Open the CTD</a></b><span>From its link, the CTD search, or Previous / Next.</span></div></li>
+        <li><div><b><a href="#add">Add lines</a></b><span><span class="btnname">Add DDR Line</span>, <span class="btnname">DDR + Activity</span>, or a CSV upload.</span></div></li>
+        <li><div><b><a href="#plip">Pick a PLIP</a></b><span>Critical?, PLIP_HO and AFC/APP fill in for you.</span></div></li>
+        <li><div><b><a href="#fields">Check each line</a></b><span>RAMZ ID, document number, title and hours.</span></div></li>
+        <li><div><b><a href="#hours">Balance the hours</a></b><span>Until Match status shows ✅ Balanced.</span></div></li>
+        <li><div><b><a href="#save">Save All</a></b><span>Nothing is stored until you do.</span></div></li>
+      </ol>
+    </section>
+
+    <section id="tour">
+      <div class="sec-head"><span class="sec-no">01</span><h2>The screen</h2></div>
+      <p class="prose">Everything for one CTD is on one page. The numbers on the picture match the list below it.</p>
+      <figure>
+        <div class="shot">
+          <img src="img/main.jpg" alt="The DDR Developer page with the sidebar on the left, the context bar and KPI tiles across the top, the CTD reference, and the DDR line items grid." width="1600" height="833">
+          <span class="pin" style="left:12.5%;top:22%">1</span>
+          <span class="pin" style="left:12.5%;top:36%">2</span>
+          <span class="pin" style="left:95.6%;top:4.4%">3</span>
+          <span class="pin" style="left:28%;top:10.5%">4</span>
+          <span class="pin" style="left:25.2%;top:27.3%">5</span>
+          <span class="pin" style="left:35%;top:37.8%">6</span>
+          <span class="pin" style="left:62%;top:44.5%">7</span>
+        </div>
+        <ul class="legend">
+          <li><span class="dot">1</span><div><b>CTD / DDR hours check.</b> The CTD's hours next to the DDR hours already saved, with ✅ when they match and 🚩 when they don't.</div></li>
+          <li><span class="dot">2</span><div><b>Sidebar actions.</b> Back, Home, <span class="btnname">Allocate Hours</span>, <span class="btnname">PLIP Search</span>, <span class="btnname">DDR Multiplier</span>, <span class="btnname">CSV Template</span>, <span class="btnname">Upload CSV</span> and <span class="btnname">User Guide</span>.</div></li>
+          <li><span class="dot">3</span><div><b>Context bar.</b> Project, discipline and deliverable reference of the open CTD, with <kbd>?</kbd> to open this guide and the Previous ‹ and Next › CTD buttons.</div></li>
+          <li><span class="dot">4</span><div><b>Scorecard.</b> CTD hours, DDR hours, variance, number of lines and match status. It updates as you work, before you save.</div></li>
+          <li><span class="dot">5</span><div><b>CTD reference.</b> The CTD you are working on. The 🔍 next to its ID opens the CTD search.</div></li>
+          <li><span class="dot">6</span><div><b>Line toolbar.</b> <span class="btnname">Add DDR Line</span>, <span class="btnname">Save All</span> and <span class="btnname">DDR + Activity</span>.</div></li>
+          <li><span class="dot">7</span><div><b>DDR line items.</b> One row per document or activity. The grid scrolls sideways to show every column.</div></li>
+        </ul>
+      </figure>
+      <div class="note prose"><b>Two hours checks, two sources</b>The sidebar check (1) reads the hours saved in the database, so it changes only after <span class="btnname">Save All</span>. The scorecard (4) counts what is on screen now, including lines you have not saved yet.</div>
+      <h3>Open this guide from the page</h3>
+      <p class="prose">Click <span class="btnname">User Guide</span> in the sidebar, the <kbd>?</kbd> button in the context bar, or press <kbd>F1</kbd>. The guide opens in a panel over the left half of the screen, so you can follow the steps on the right while you work. It stays open, at the same place, when the page reloads after a button click. Close it with ✖ or <kbd>Esc</kbd>, or choose <b>Open in new tab</b> to read it full size.</p>
+      <p class="prose">On a narrow screen (below about 900 px) the sidebar is hidden. Tap <kbd>☰</kbd> at the top left to open it, or <kbd>?</kbd> at the top right for this guide, which then fills the screen. The page follows your computer's light or dark setting.</p>
+    </section>
+
+    <section id="open">
+      <div class="sec-head"><span class="sec-no">02</span><h2>Open a CTD</h2></div>
+      <p class="prose">The page always works on one CTD, named in the address as <code>DDR_DeveloperV3.aspx?CTD_ID=10542</code>. You normally arrive from a CTD link elsewhere in SmartDDR. To move to another CTD:</p>
+      <h3>Search for a CTD</h3>
+      <ol class="steps">
+        <li>Click 🔍 next to the CTD ID in the <b>CTD Reference</b> card.</li>
+        <li>The search lists every CTD in the same project and discipline, with CTD and DDR hours and quantities.</li>
+        <li>Click a CTD ID to open it.</li>
+      </ol>
+      <figure>
+        <div class="shot"><img src="img/ctd.jpg" alt="CTD Search panel listing CTDs with coloured rows." width="1600" height="833" loading="lazy"></div>
+        <figcaption>Row colours in the CTD search: green when CTD and DDR hours match, yellow when they differ, no colour when neither has hours yet.</figcaption>
+      </figure>
+      <h3>Step through CTDs</h3>
+      <p class="prose">Use ‹ and › at the right of the context bar to open the previous or next CTD by ID. When there are no more, the page says <i>No further CTD records in that direction.</i></p>
+      <div class="warn"><b>Previous / Next only covers one project for now</b>These buttons currently step through Process (13. Process) CTDs on project 40087 only. On any other project, use the CTD search instead.</div>
+      <div class="tip"><b>Opening another CTD discards unsaved lines</b>Moving to another CTD reloads the page. Press <span class="btnname">Save All</span> first if you have added or edited lines.</div>
+    </section>
+
+    <section id="add">
+      <div class="sec-head"><span class="sec-no">03</span><h2>Add DDR lines</h2></div>
+      <p class="prose">There are four ways to add lines. Lines added on screen are not stored until you press <span class="btnname">Save All</span>.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Button</th><th>What it adds</th></tr></thead>
+        <tbody>
+          <tr><td><span class="btnname">Add DDR Line</span></td><td>One document line, pre-filled with suggestions (see below).</td></tr>
+          <tr><td><span class="btnname">DDR + Activity</span></td><td>One document line and one activity line in a single click.</td></tr>
+          <tr><td><span class="btnname">×N</span> on a row, or <span class="btnname">DDR Multiplier</span></td><td>Copies of an existing line. See <a href="#copy">Copy lines</a>.</td></tr>
+          <tr><td><span class="btnname">Upload CSV</span></td><td>Many lines from a file, saved straight to the database. See <a href="#csv">Import from CSV</a>.</td></tr>
+        </tbody>
+      </table></div>
+      <h3>What a new line is pre-filled with</h3>
+      <p class="prose">To save typing, a new document line starts with the values most often used before:</p>
+      <ul class="prose">
+        <li><b>PLIP</b>: the PLIP used most often for this deliverable reference (for example <code>PR-DS-01</code>). Its Critical?, PLIP_HO and AFC/APP are filled in too.</li>
+        <li><b>Document Title</b> and <b>Software</b>: the ones used most often with that PLIP.</li>
+        <li><b>Document No</b>: the number pattern used most often with that PLIP on similar projects, with its fourth part replaced by the next dummy number (<code>DUM01</code>, <code>DUM02</code> …). If the CTD's Type contains <i>CHANGE</i>, the line is marked <b>EXISTING</b> and the fourth part becomes <code>MASTR</code> instead.</li>
+      </ul>
+      <p class="prose">Always check the suggestions. They are a starting point, not a decision.</p>
+      <h3>Area and the <code>AAA-UU</code> placeholder</h3>
+      <p class="prose">A document number starts with a 6-character area code such as <code>S10-U1</code>. When the page cannot work out the area, the suggested number starts with the placeholder <code>AAA-UU</code>. Type the 6-character area code in the row's <b>Area</b> box and the placeholder in the document number is replaced when you leave the box.</p>
+      <h3>Dummy numbers</h3>
+      <p class="prose">New document numbers use a running dummy sequence in their fourth part: <code>DUM01</code> to <code>DUM99</code>, then <code>DU100</code>, <code>DU101</code> and so on. The page looks at every line on screen, saved or not, and takes the next number after the highest one in use, so numbers never repeat within the CTD.</p>
+    </section>
+
+    <section id="fields">
+      <div class="sec-head"><span class="sec-no">04</span><h2>Fill in a line</h2></div>
+      <p class="prose">The grid is wider than most screens; scroll it sideways to reach Software, Remarks and the row actions.</p>
+      <figure>
+        <div class="shot"><img src="img/right.jpg" alt="The DDR grid scrolled right showing AFC/APP, Critical?, PLIP_HO, Software, Remarks and Action columns." width="1600" height="318" loading="lazy"></div>
+        <figcaption>The right-hand side of the grid: status columns, Software, Remarks, and the ×N (copy) and 🗑 (delete) actions.</figcaption>
+      </figure>
+      <div class="tbl"><table>
+        <thead><tr><th>Column</th><th>Needed to save</th><th>What to enter</th></tr></thead>
+        <tbody>
+          <tr><td>Type</td><td><span class="req n">Optional</span></td><td><b>NEW</b>, <b>EXISTING</b> or <b>ACTIVITY</b>. Shown only on lines that are not saved yet. Choosing ACTIVITY clears the PLIP, locks PLIP and Area, and sets Document No to <code>ACTIVITY</code>. Switching back clears the document number so you can enter one.</td></tr>
+          <tr><td>PLIP</td><td><span class="req n">Optional</span></td><td>The PLIP ID. Type it or use 🔍 on the row. See <a href="#plip">Pick a PLIP</a>. Not used on activity lines.</td></tr>
+          <tr><td>Area</td><td><span class="req n">Optional</span></td><td>The 6-character area code. Pick from the list or type it; typing replaces the <code>AAA-UU</code> placeholder in the document number.</td></tr>
+          <tr><td>RAMZ ID</td><td><span class="req y">Required</span></td><td>Pick from the RAMZ IDs set up for the project.</td></tr>
+          <tr><td>Document No</td><td><span class="req y">Required</span></td><td>The full document number. Activity lines use <code>ACTIVITY</code>.</td></tr>
+          <tr><td>Document Title</td><td><span class="req y">Required</span></td><td>The document or activity title.</td></tr>
+          <tr><td>Hours</td><td><span class="req n">Optional</span></td><td>Man-hours as a number, such as <code>38.5</code>. Left blank, it is saved as 0.</td></tr>
+          <tr><td>AFC/APP</td><td><span class="req a">Filled from PLIP</span></td><td>Handover status. Set to AFC when the PLIP's required handover status is ASB, otherwise APP. You can change it.</td></tr>
+          <tr><td>Critical?</td><td><span class="req a">Filled from PLIP</span></td><td>Whether the PLIP is critical documentation. Read-only.</td></tr>
+          <tr><td>PLIP_HO</td><td><span class="req a">Filled from PLIP</span></td><td>The PLIP's required handover status. Read-only.</td></tr>
+          <tr><td>Software</td><td><span class="req n">Optional</span></td><td>The authoring software, such as SmartPlant or Excel.</td></tr>
+          <tr><td>Remarks</td><td><span class="req n">Optional</span></td><td>Click <b>Show remarks</b> to open the box, and <b>Hide remarks</b> to fold it away.</td></tr>
+          <tr><td>Action</td><td>—</td><td><span class="btnname">×N</span> copies the line; 🗑 deletes it.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="plip">
+      <div class="sec-head"><span class="sec-no">05</span><h2>Pick a PLIP</h2></div>
+      <p class="prose">A PLIP can be typed straight into the row, or found with the search.</p>
+      <h3>Type it in</h3>
+      <p class="prose">Type the PLIP ID in the row's PLIP box and press <kbd>Tab</kbd>. The page looks it up and fills in Critical?, PLIP_HO and AFC/APP. A panel slides up from the bottom showing the PLIP's title, document type, critical flag, required handover status and DCAF. If the ID is not an active PLIP, the panel closes and those columns stay blank.</p>
+      <h3>Search for it</h3>
+      <ol class="steps">
+        <li>Click 🔍 next to the PLIP box on the row you want to fill.</li>
+        <li>Type part of a PLIP ID or description, for example <code>relief</code>, and press <kbd>Tab</kbd> or <kbd>Enter</kbd>. Only active PLIPs are listed.</li>
+        <li>Click the PLIP ID. It is written into that row, the status columns fill in, and the details panel opens.</li>
+      </ol>
+      <figure>
+        <div class="shot"><img src="img/plip.jpg" alt="PLIP Search panel with three results and the PLIP details panel open at the bottom of the page." width="1600" height="833" loading="lazy"></div>
+        <figcaption>PLIP search open under the row, with the PLIP details panel at the bottom. Close either with ✖.</figcaption>
+      </figure>
+      <div class="tip"><b>Use the row's 🔍 to apply a PLIP</b><span class="btnname">PLIP Search</span> in the sidebar opens the same search without choosing a row, so use it for looking PLIPs up. To put a PLIP on a line, open the search from that line's 🔍.</div>
+    </section>
+
+    <section id="hours">
+      <div class="sec-head"><span class="sec-no">06</span><h2>Balance the hours</h2></div>
+      <p class="prose">The DDR lines for a CTD should add up to the CTD's hours. The scorecard shows where you stand:</p>
+      <figure>
+        <div class="shot"><img src="img/top.jpg" alt="Context bar and KPI tiles showing CTD hours 193, DDR hours 193, variance 0, 5 lines, Balanced." width="1600" height="252" loading="lazy"></div>
+      </figure>
+      <div class="tbl"><table>
+        <thead><tr><th>Tile</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>CTD hours</td><td>Total hours on the CTD.</td></tr>
+          <tr><td>DDR hours</td><td>Sum of the Hours column for every line on screen.</td></tr>
+          <tr><td>Variance</td><td>CTD hours minus DDR hours. <b>+24</b> means 24 hours still to allocate; a negative number means the lines exceed the CTD.</td></tr>
+          <tr><td>DDR line items</td><td>Number of lines on screen, including activity lines.</td></tr>
+          <tr><td>Match status</td><td><b>✅ Balanced</b> when the variance is 0 and there is at least one line; otherwise <b>🚩 Out of balance</b>.</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Allocate Hours</h3>
+      <p class="prose"><span class="btnname">Allocate Hours</span> in the sidebar splits the CTD's hours evenly across every line on screen, rounded to two decimals. Any rounding difference goes to the first line so the total matches exactly.</p>
+      <div class="calc">CTD hours = 100, three lines<br>100 ÷ 3 = 33.33 each  → total 99.99, 0.01 left over<br>Line 1 = <span class="hl">33.34</span>   Line 2 = <span class="hl">33.33</span>   Line 3 = <span class="hl">33.33</span>   → total <span class="hl">100.00</span></div>
+      <div class="warn"><b>Allocate Hours overwrites every line</b>It replaces the hours on all lines, saved ones and activity lines included. If some lines need different hours, allocate first, then adjust those lines by hand and move the difference elsewhere. The result is stored only when you press <span class="btnname">Save All</span>.</div>
+    </section>
+
+    <section id="copy">
+      <div class="sec-head"><span class="sec-no">07</span><h2>Copy lines with the DDR Multiplier</h2></div>
+      <p class="prose">When a deliverable needs several similar documents, set up one line and copy it.</p>
+      <ol class="steps">
+        <li>Click <span class="btnname">×N</span> on the line to copy, or <span class="btnname">DDR Multiplier</span> in the sidebar.</li>
+        <li>Check <b>Row to multiply</b>. From ×N it is already set to that line; from the sidebar it starts on the first line.</li>
+        <li>Choose a <b>Mode</b> (below) and the <b>Number of copies</b>, from 1 to 50.</li>
+        <li>Click <span class="btnname">Create Copies</span>. The copies are added at the end of the grid; the original line is unchanged.</li>
+      </ol>
+      <figure>
+        <div class="shot"><img src="img/mult.jpg" alt="DDR Multiplier panel with row picker, mode A selected and 3 copies." width="1600" height="833" loading="lazy"></div>
+      </figure>
+      <div class="two">
+        <div class="card"><h4>Mode A: next dummy number</h4><p>Each copy gets the next dummy number in the fourth part of the document number.</p><p class="mono" style="font-size:.85rem">S10-U1-PR-DUM01-0001, 3 copies, DUM02 already used<br>→ …-<b>DUM03</b>-0001<br>→ …-<b>DUM04</b>-0001<br>→ …-<b>DUM05</b>-0001</p></div>
+        <div class="card"><h4>Mode B: next document number</h4><p>Each copy adds one to the number at the end of the document number, keeping leading zeros.</p><p class="mono" style="font-size:.85rem">S10-U1-PR-10001-0001, 3 copies<br>→ S10-U1-PR-10001-<b>0002</b><br>→ S10-U1-PR-10001-<b>0003</b><br>→ S10-U1-PR-10001-<b>0004</b></p></div>
+      </div>
+      <p class="prose">Every other field is copied as it is, including the hours, so the variance changes. Re-balance with <a href="#hours">Allocate Hours</a> or by hand, then <span class="btnname">Save All</span>.</p>
+      <div class="warn"><b>Check the numbers of the copies</b>Mode A needs a document number with at least four parts separated by hyphens; Mode B needs one that ends in digits. Otherwise the copies keep the same number as the original, and you must edit each copy before saving.</div>
+    </section>
+
+    <section id="save">
+      <div class="sec-head"><span class="sec-no">08</span><h2>Save your work</h2></div>
+      <p class="prose">Press <span class="btnname">Save All</span> in the line toolbar. New lines are added and changed lines are updated in one go: either everything is saved, or nothing is. When it works you see <i>DDR records saved successfully.</i>, the grid reloads from the database, and saved lines no longer show a Type box.</p>
+      <h3>When something is missing</h3>
+      <p class="prose">Before saving, the page checks every line. Document No, Document Title and RAMZ ID must be filled in, and Hours must be a number. Empty required boxes are outlined in red, and a panel above the CTD lists each problem by row number.</p>
+      <figure>
+        <div class="shot"><img src="img/invalid.jpg" alt="Validation panel listing Row 6 problems, with the empty RAMZ ID and Document Title boxes outlined in red, and the scorecard out of balance." width="1600" height="833" loading="lazy"></div>
+        <figcaption>Row 6 is missing its RAMZ ID and title, so nothing is saved. The scorecard also shows 24 hours still to allocate.</figcaption>
+      </figure>
+      <p class="prose">Fix the listed rows and press <span class="btnname">Save All</span> again. An out-of-balance variance does not stop you saving; it is a warning, not a rule.</p>
+      <div class="warn"><b>Unsaved lines are lost if you leave the page</b>Back, Home, Previous / Next, opening another CTD, deleting a saved line and uploading a CSV all reload the lines from the database. Save first.</div>
+    </section>
+
+    <section id="delete">
+      <div class="sec-head"><span class="sec-no">09</span><h2>Delete a line</h2></div>
+      <ol class="steps">
+        <li>Click 🗑 on the line.</li>
+        <li>Click <b>Confirm</b> in the <i>Delete this DDR item?</i> box, or <b>Cancel</b> to keep it.</li>
+      </ol>
+      <figure>
+        <div class="shot"><img src="img/confirm.jpg" alt="Confirmation box asking Delete this DDR item? with Cancel and Confirm buttons." width="1600" height="833" loading="lazy"></div>
+      </figure>
+      <div class="two">
+        <div class="card"><h4>A line not yet saved</h4><p>It is simply removed from the screen. Message: <i>Unsaved DDR line removed.</i></p></div>
+        <div class="card"><h4>A saved line</h4><p>It is deleted from the database <b>straight away</b>, without waiting for Save All, and the grid reloads. Message: <i>DDR line deleted.</i></p></div>
+      </div>
+      <div class="warn"><b>Save before deleting a saved line</b>Because the grid reloads after deleting a saved line, any lines you have added or edited but not saved are lost at the same time.</div>
+    </section>
+
+    <section id="csv">
+      <div class="sec-head"><span class="sec-no">10</span><h2>Import lines from CSV</h2></div>
+      <p class="prose">For many lines at once, fill in a CSV file in Excel and upload it.</p>
+      <ol class="steps">
+        <li>Click <span class="btnname">CSV Template</span> in the sidebar. You get <code>DDR_Import_Template_CTD_10542.csv</code> with just the column headings.</li>
+        <li>Fill in one line per row under the headings and save as CSV. Keep the columns in the same order.</li>
+        <li>Under <b>Import / Export</b>, click <b>Choose File</b> and pick your file.</li>
+        <li>Click <span class="btnname">Upload CSV</span>.</li>
+      </ol>
+      <div class="tbl"><table>
+        <thead><tr><th>Column</th><th>Needed</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td><code>CTD_ID</code></td><td><span class="req n">Optional</span></td><td>A whole number. Leave blank to use the CTD open on the page.</td></tr>
+          <tr><td><code>Ramz_ID</code></td><td><span class="req y">Required</span></td><td>The RAMZ ID.</td></tr>
+          <tr><td><code>PLIP_ID</code></td><td><span class="req n">Optional</span></td><td>The PLIP ID.</td></tr>
+          <tr><td><code>Document_No</code></td><td><span class="req y">Required</span></td><td>The full document number.</td></tr>
+          <tr><td><code>Document_Title</code></td><td><span class="req y">Required</span></td><td>Put the title in double quotes if it contains a comma.</td></tr>
+          <tr><td><code>Man_Hours</code></td><td><span class="req n">Optional</span></td><td>A number. Blank means 0.</td></tr>
+          <tr><td><code>HO_Status</code></td><td><span class="req n">Optional</span></td><td><code>AFC</code>, <code>APP</code> or blank (upper or lower case).</td></tr>
+        </tbody>
+      </table></div>
+      <div class="calc">CTD_ID,Ramz_ID,PLIP_ID,Document_No,Document_Title,Man_Hours,HO_Status<br>,RAMZ-PR-0150,PLIP-4480,S10-U1-PR-DUM04-0001,"Relief load calculation, HP flare",38.5,APP<br>,RAMZ-PR-0150,,ACTIVITY,Process safety review workshop support,24,</div>
+      <p class="prose">The file is checked in full first. If any row has a problem, <b>nothing</b> is imported and the panel lists each problem by the line number in your file, for example <i>Line 4: Man_Hours must be numeric.</i> Fix the file and upload it again. When it works you see <i>3 DDR line(s) imported from CSV.</i></p>
+      <div class="note prose"><b>What the CSV does not fill</b>Software, Remarks, Critical? and PLIP_HO are not part of the file. Imported lines are saved directly, so add Software and Remarks on screen afterwards and press <span class="btnname">Save All</span>.</div>
+      <div class="warn"><b>Uploading reloads the grid</b>Save any lines you are editing before you upload, or they are lost.</div>
+    </section>
+
+    <section id="messages">
+      <div class="sec-head"><span class="sec-no">11</span><h2>Messages</h2></div>
+      <p class="prose">Messages appear at the top right for five seconds. This is what each one means.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Message</th><th>Kind</th><th>What it means / what to do</th></tr></thead>
+        <tbody>
+          <tr><td>DDR records saved successfully.</td><td><span class="kind ok">Done</span></td><td>All lines are stored.</td></tr>
+          <tr><td>Added a document row and an activity row.</td><td><span class="kind ok">Done</span></td><td>From <span class="btnname">DDR + Activity</span>. Fill in both, then save.</td></tr>
+          <tr><td>PLIP … applied to the selected row.</td><td><span class="kind ok">Done</span></td><td>The PLIP was written into the row.</td></tr>
+          <tr><td>Allocated … hours across … row(s).</td><td><span class="kind ok">Done</span></td><td>Hours were split. Save to keep them.</td></tr>
+          <tr><td>… copy/copies created from row ….</td><td><span class="kind ok">Done</span></td><td>Copies added at the end. Check their numbers, then save.</td></tr>
+          <tr><td>… DDR line(s) imported from CSV.</td><td><span class="kind ok">Done</span></td><td>The lines are already saved.</td></tr>
+          <tr><td>DDR line deleted. / Unsaved DDR line removed.</td><td><span class="kind info">Info</span></td><td>See <a href="#delete">Delete a line</a>.</td></tr>
+          <tr><td>No further CTD records in that direction.</td><td><span class="kind info">Info</span></td><td>You are at the first or last CTD Previous / Next can reach.</td></tr>
+          <tr><td>Please complete Document No, Title and RAMZ ID on the highlighted rows.</td><td><span class="kind err">Fix</span></td><td>Fill in the red-outlined boxes, then save again.</td></tr>
+          <tr><td>… issue(s) need attention before saving.</td><td><span class="kind err">Fix</span></td><td>Read the list above the CTD card.</td></tr>
+          <tr><td>Save failed: …</td><td><span class="kind err">Fix</span></td><td>The database refused the save and nothing was stored. Try again; if it repeats, send the message text to the SmartDDR administrator.</td></tr>
+          <tr><td>Add DDR lines before allocating hours.</td><td><span class="kind err">Fix</span></td><td>There are no lines to split hours across.</td></tr>
+          <tr><td>This CTD has no hours to allocate.</td><td><span class="kind err">Fix</span></td><td>The CTD's hours are 0 or blank. Check the CTD.</td></tr>
+          <tr><td>Add a DDR line before multiplying.</td><td><span class="kind err">Fix</span></td><td>There is nothing to copy yet.</td></tr>
+          <tr><td>Number of copies must be between 1 and 50.</td><td><span class="kind err">Fix</span></td><td>Enter a whole number from 1 to 50.</td></tr>
+          <tr><td>Choose a row to multiply first. / That row no longer exists.</td><td><span class="kind err">Fix</span></td><td>Pick the row again in the Multiplier.</td></tr>
+          <tr><td>Choose a CSV file before uploading.</td><td><span class="kind err">Fix</span></td><td>Use <b>Choose File</b> first.</td></tr>
+          <tr><td>The CSV file has no data rows.</td><td><span class="kind err">Fix</span></td><td>The file has only the heading row.</td></tr>
+          <tr><td>CSV import failed: …</td><td><span class="kind err">Fix</span></td><td>The database refused the import; nothing was imported.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="faq">
+      <div class="sec-head"><span class="sec-no">12</span><h2>Questions</h2></div>
+      <details class="faq"><summary>Why has the Type box disappeared from some lines?</summary><p>Type is only shown on lines that are not saved yet. Once saved, the line's number shows whether it is a document or an activity.</p></details>
+      <details class="faq"><summary>The sidebar still shows 🚩 after I balanced the hours.</summary><p>The sidebar reads saved hours. Press <span class="btnname">Save All</span> and it updates. The scorecard at the top shows the unsaved position.</p></details>
+      <details class="faq"><summary>Can I save while the hours are out of balance?</summary><p>Yes. Balance is shown as a warning so you can save work in progress. Aim to finish each CTD with ✅ Balanced.</p></details>
+      <details class="faq"><summary>How do I turn a document line into an activity line?</summary><p>On an unsaved line, set Type to ACTIVITY. For a saved line, delete it and add an activity line with <span class="btnname">DDR + Activity</span>, or change its Document No to <code>ACTIVITY</code> and clear its PLIP.</p></details>
+      <details class="faq"><summary>My document number starts with AAA-UU.</summary><p>The page could not work out the area. Type the 6-character area code in the row's Area box and press <kbd>Tab</kbd>.</p></details>
+      <details class="faq"><summary>Does the CSV check for duplicate document numbers?</summary><p>No. Check the file for duplicates before uploading, and check the grid afterwards.</p></details>
+    </section>
+
+    <section id="limits">
+      <div class="sec-head"><span class="sec-no">13</span><h2>Known limitations</h2></div>
+      <ul class="prose">
+        <li>Previous / Next CTD only steps through <b>13. Process</b> CTDs on project <b>40087</b>. Use the CTD search on other projects.</li>
+        <li>Changing the PLIP on a line that is already saved updates the PLIP and AFC/APP when you save, but the stored Critical? and PLIP_HO values for that line keep their old values.</li>
+        <li>The CSV upload expects the template's column order; it does not match columns by heading.</li>
+        <li>CSV imports leave Software, Remarks, Critical? and PLIP_HO blank.</li>
+      </ul>
+    </section>
+  </main>
+</div>
+
+<footer class="end">DDR Developer guide · SmartDDR. Screens use sample data (project 40087, CTD 10542) and may differ slightly from your system.</footer>
+
+<script>
+if (window.self !== window.top) document.documentElement.classList.add("embedded");
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var map = {};
+  links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+  if (!('IntersectionObserver' in window)) return;
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting) {
+        links.forEach(function(a){ a.classList.remove('on'); });
+        var a = map[e.target.id]; if (a) a.classList.add('on');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  Object.keys(map).forEach(function(id){ var s = document.getElementById(id); if (s) io.observe(s); });
+})();
+</script>
+
+</body>
+</html>

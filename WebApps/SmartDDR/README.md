@@ -96,6 +96,21 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   triggering row and surrounding page stay visible while the drawer is
   open.
 
+- **User Guide drawer** — a **User Guide** button in a new sidebar "Help"
+  section (plus a `?` button in the context bar and in the mobile top bar,
+  and the **F1** key) opens `Help/DDR-Developer-Guide.html` in a drawer that
+  slides over the left half of the screen (full width below ~900px). It has
+  no overlay, so the grid on the right stays usable while following the
+  steps, and it sits below the PLIP/CTD/Multiplier popovers so those still
+  open on top. The guide is loaded into an `<iframe>` only on first open.
+  Because every WebForms postback reloads the page, the open/closed state
+  and the guide's scroll position are kept in `sessionStorage` (per browser
+  tab) and restored after each postback. Close with ✖ or **Esc**; "New tab"
+  opens the guide full size. Client-side only — no server controls or
+  code-behind changes. **Deployment:** include `Help/DDR-Developer-Guide.html`
+  and `Help/img/*.jpg` in the web project (Build Action = Content) so they
+  are published with the page.
+
 ## What changed vs. the original
 
 ### Bugs fixed

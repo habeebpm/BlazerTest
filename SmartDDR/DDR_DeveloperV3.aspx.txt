@@ -896,6 +896,99 @@ dialog.confirm-dialog::backdrop{
     color:var(--text-light);
     margin-bottom:2px;
 }
+/* ==========================
+   USER GUIDE DRAWER (left, half width)
+   Sits below the PLIP/CTD/Multiplier popovers (9999) and the PLIP footer
+   (9990) so those still work while the guide is open; no overlay, so the
+   page on the right stays usable for following the steps.
+========================== */
+
+.guide-drawer{
+    position:fixed;
+    top:0;
+    left:0;
+    bottom:0;
+    width:50vw;
+    min-width:min(420px,100vw);
+    background:var(--card);
+    border-right:1px solid var(--border);
+    box-shadow:12px 0 40px rgba(15,23,42,.22);
+    z-index:9980;
+    display:flex;
+    flex-direction:column;
+    transform:translateX(-102%);
+    visibility:hidden;
+    transition:transform .25s ease, visibility 0s linear .25s;
+}
+
+.guide-drawer.open{
+    transform:translateX(0);
+    visibility:visible;
+    transition:transform .25s ease;
+}
+
+.guide-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:10px 12px 10px 16px;
+    background:linear-gradient(135deg,var(--primary),var(--primary-light));
+    color:white;
+}
+
+.guide-header h3{
+    font-size:15px;
+    margin-right:auto;
+    min-width:0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.guide-header a,
+.guide-header button{
+    color:white;
+    background:rgba(255,255,255,.14);
+    border:1px solid rgba(255,255,255,.35);
+    border-radius:8px;
+    padding:5px 10px;
+    font-size:12px;
+    font-weight:600;
+    text-decoration:none;
+    white-space:nowrap;
+    cursor:pointer;
+}
+
+.guide-header a:hover,
+.guide-header button:hover{
+    background:rgba(255,255,255,.26);
+}
+
+.guide-frame{
+    flex:1;
+    width:100%;
+    border:0;
+    background:var(--bg);
+}
+
+.help-btn{
+    font-weight:700;
+    font-size:16px;
+}
+
+@media (max-width:900px){
+    .guide-drawer{
+        width:100vw;
+        min-width:0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce){
+    .guide-drawer,
+    .guide-drawer.open{
+        transition:none;
+    }
+}
     </style>
 
     <script>
@@ -1052,6 +1145,77 @@ dialog.confirm-dialog::backdrop{
             }
             return ok;
         }
+        // ---- User guide drawer -------------------------------------------
+        // WebForms postbacks reload the whole page, so the drawer remembers
+        // (per browser tab) whether it was open and where the guide was
+        // scrolled to, and reopens itself in the same place afterwards.
+        var GUIDE_KEY = "sddr.devguide";
+
+        function guideState() {
+            try { return JSON.parse(sessionStorage.getItem(GUIDE_KEY)) || {}; } catch (e) { return {}; }
+        }
+
+        function saveGuideState(open) {
+            var st = { open: open, y: 0 };
+            try {
+                var frame = document.getElementById("guideFrame");
+                if (open && frame && frame.contentWindow) st.y = frame.contentWindow.scrollY || 0;
+            } catch (e) { /* guide on another origin: keep position 0 */ }
+            try { sessionStorage.setItem(GUIDE_KEY, JSON.stringify(st)); } catch (e) { }
+        }
+
+        function openGuide(restoreY) {
+            var drawer = document.getElementById("guideDrawer");
+            var frame = document.getElementById("guideFrame");
+            if (!drawer || !frame) return;
+            if (!frame.getAttribute("src")) {
+                frame.addEventListener("load", function () {
+                    try { if (restoreY) frame.contentWindow.scrollTo(0, restoreY); } catch (e) { }
+                }, { once: true });
+                frame.setAttribute("src", frame.getAttribute("data-src"));
+            }
+            drawer.classList.add("open");
+            drawer.setAttribute("aria-hidden", "false");
+            document.querySelectorAll(".js-guide-toggle").forEach(function (b) { b.setAttribute("aria-expanded", "true"); });
+            document.querySelector(".sidebar").classList.remove("open");
+            saveGuideState(true);
+            var close = document.getElementById("guideCloseBtn");
+            if (close && !restoreY) close.focus();
+        }
+
+        function closeGuide() {
+            var drawer = document.getElementById("guideDrawer");
+            if (!drawer) return;
+            drawer.classList.remove("open");
+            drawer.setAttribute("aria-hidden", "true");
+            document.querySelectorAll(".js-guide-toggle").forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
+            saveGuideState(false);
+        }
+
+        function toggleGuide() {
+            var drawer = document.getElementById("guideDrawer");
+            if (drawer && drawer.classList.contains("open")) closeGuide(); else openGuide();
+        }
+
+        document.addEventListener("keydown", function (e) {
+            var drawer = document.getElementById("guideDrawer");
+            if (e.key === "Escape" && drawer && drawer.classList.contains("open")) {
+                closeGuide();
+            } else if (e.key === "F1") {
+                e.preventDefault();
+                toggleGuide();
+            }
+        });
+
+        window.addEventListener("pagehide", function () {
+            var drawer = document.getElementById("guideDrawer");
+            if (drawer && drawer.classList.contains("open")) saveGuideState(true);
+        });
+
+        document.addEventListener("DOMContentLoaded", function () {
+            var st = guideState();
+            if (st.open) openGuide(st.y || 1);
+        });
     </script>
 </head>
 
@@ -1065,7 +1229,7 @@ dialog.confirm-dialog::backdrop{
     <div class="mobile-topbar">
         <button type="button" class="hamburger" onclick="toggleSidebar();" aria-label="Toggle navigation">&#9776;</button>
         <strong>SmartDDR</strong>
-        <span></span>
+        <button type="button" class="hamburger help-btn js-guide-toggle" onclick="toggleGuide();" aria-label="Open the user guide" aria-controls="guideDrawer" aria-expanded="false" title="User guide (F1)">?</button>
     </div>
 
     <div id="toastStack" class="toast-stack" aria-live="polite"></div>
@@ -1189,6 +1353,14 @@ dialog.confirm-dialog::backdrop{
                         </asp:LinkButton>
                     </div>
                 </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Help</div>
+                    <button type="button" class="nav-item js-guide-toggle" onclick="toggleGuide();" aria-controls="guideDrawer" aria-expanded="false" title="Open the DDR Developer user guide (F1)">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" /><path d="M4 19V5" /><path d="M9 7h6M9 11h6" /></svg></span>
+                        <span>User Guide</span>
+                    </button>
+                </div>
             </nav>
 
             <div id="loaderOverlay" class="loader-overlay" role="status" aria-live="assertive">
@@ -1218,6 +1390,7 @@ dialog.confirm-dialog::backdrop{
                     <asp:Literal ID="litRef" runat="server" />
                 </div>
                 <div class="context-nav">
+                    <button type="button" class="circle-btn help-btn js-guide-toggle" onclick="toggleGuide();" aria-label="Open the user guide" aria-controls="guideDrawer" aria-expanded="false" title="User guide (F1)">?</button>
                     <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
                     </asp:LinkButton>
@@ -1744,6 +1917,16 @@ dialog.confirm-dialog::backdrop{
             <div class="footer-detail"><b>DCAF</b><asp:Literal ID="litFooterDcaf" runat="server" /></div>
         </div>
     </div>
+
+    <!-- User guide drawer: loads Help/DDR-Developer-Guide.html on first open -->
+    <aside id="guideDrawer" class="guide-drawer" role="complementary" aria-labelledby="guideTitle" aria-hidden="true">
+        <div class="guide-header">
+            <h3 id="guideTitle">DDR Developer &middot; User Guide</h3>
+            <a href="Help/DDR-Developer-Guide.html" target="_blank" rel="noopener" title="Open the guide in a new browser tab">New tab &#8599;</a>
+            <button type="button" id="guideCloseBtn" onclick="closeGuide()" aria-label="Close the user guide">&#10006;</button>
+        </div>
+        <iframe id="guideFrame" class="guide-frame" title="DDR Developer user guide" data-src="Help/DDR-Developer-Guide.html"></iframe>
+    </aside>
 </form>
 
 </body>
