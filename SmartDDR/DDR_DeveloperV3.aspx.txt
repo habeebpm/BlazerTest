@@ -1117,33 +1117,55 @@ dialog.confirm-dialog::backdrop{
             }, 5000);
         }
 
+        // Mirrors the server-side checks in btnSaveAll_Click (which remain the
+        // authority): Document No, Title and RAMZ ID on every row; on new
+        // document rows (data-new="1", not ACTIVITY) also a PLIP, no AAA-UU area
+        // placeholder, and dummy numbers in the DU pattern (not DUMMY / XXX).
+        var DUMMY_BAD_RE = /(^|-)DUMMY(-|$)|XXX/i;
+
+        function markField(el, bad) {
+            if (!el) return true;
+            el.classList.toggle("row-invalid", !!bad);
+            return !bad;
+        }
+
         function validateDdrRow(row) {
-            var docNo = row.querySelector("[id$='txtDocumentNo']");
-            var title = row.querySelector("[id$='txtTitle']");
-            var ramz = row.querySelector("[id$='ddlRamz']");
+            // Class hooks, not ID suffixes: with ASP.NET 4's default ClientIDMode a
+            // grid row's IDs end in the row index (grdDDREntry_txtTitle_0).
+            var docNo = row.querySelector(".js-docno");
+            var title = row.querySelector(".js-title");
+            var ramz = row.querySelector(".js-ramz");
+            var plip = row.querySelector(".js-plip");
+            var doc = docNo ? docNo.value.trim() : "";
+            var isActivity = doc.toUpperCase() === "ACTIVITY";
+            var isNewDoc = row.getAttribute("data-new") === "1" && !isActivity;
             var ok = true;
-            [docNo, title, ramz].forEach(function (el) {
-                if (el && !el.value) {
-                    el.classList.add("row-invalid");
-                    ok = false;
-                } else if (el) {
-                    el.classList.remove("row-invalid");
-                }
-            });
+            ok = markField(docNo, !doc || (isNewDoc && (/^AAA-UU/i.test(doc) || DUMMY_BAD_RE.test(doc)))) && ok;
+            ok = markField(title, !(title && title.value.trim())) && ok;
+            ok = markField(ramz, !(ramz && ramz.value)) && ok;
+            ok = markField(plip, isNewDoc && !(plip && plip.value.trim())) && ok;
             return ok;
         }
 
         function validateAllDdrRows() {
             var ok = true;
-            document.querySelectorAll(".gridview tbody tr").forEach(function (row) {
-                if (row.querySelector("[id$='txtDocumentNo']") && !validateDdrRow(row)) {
+            document.querySelectorAll(".gridview tr").forEach(function (row) {
+                if (row.querySelector(".js-docno") && !validateDdrRow(row)) {
                     ok = false;
                 }
             });
             if (!ok) {
-                showToast("error", "Please complete Document No, Title and RAMZ ID on the highlighted rows.");
+                showToast("error", "Fix the highlighted boxes: Document No, Title and RAMZ ID are required; new documents also need a PLIP, a real area code instead of AAA-UU, and a DU dummy number (e.g. DUM01) instead of DUMMY or XXX.");
             }
             return ok;
+        }
+
+        // The sidebar PLIP Search is for looking PLIPs up: clear any row target so
+        // a pick can't land on the row that was searched last.
+        function openGlobalPlipSearch(anchor) {
+            var hf = document.getElementById("hfSelectedRow");
+            if (hf) hf.value = "";
+            openPLIPDrawer(anchor);
         }
         // ---- User guide drawer -------------------------------------------
         // WebForms postbacks reload the whole page, so the drawer remembers
@@ -1253,12 +1275,12 @@ dialog.confirm-dialog::backdrop{
                 <small>DDR Developer</small>
             </div>
 
-            <div class="visually-hidden">
-                <asp:Label ID="lblProject" runat="server" Text="" />
-                <asp:Label ID="lblContext" runat="server" Text="" />
-                <asp:Label ID="lblRef" runat="server" Text="" />
-                <asp:Label ID="lblDiscipline" runat="server" Text="" />
-            </div>
+            <%-- Page state for the open CTD. Visible="false": kept in ViewState but never
+                 rendered, so raw database values can't reach the HTML. --%>
+            <asp:Label ID="lblProject" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblContext" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblRef" runat="server" Visible="false" Text="" />
+            <asp:Label ID="lblDiscipline" runat="server" Visible="false" Text="" />
             <asp:Label ID="lblDocMode" runat="server" Visible="false" Text="" />
 
             <nav class="side-nav">
@@ -1268,7 +1290,7 @@ dialog.confirm-dialog::backdrop{
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7" /></svg></span>
                         <span>Back</span>
                     </button>
-                    <asp:LinkButton ID="btnHome" runat="server" CssClass="nav-item" OnClick="Home_Go">
+                    <asp:LinkButton ID="btnHome" runat="server" CssClass="nav-item" OnClick="Home_Go" CausesValidation="False">
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 9.5 12 3l9 6.5" /><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" /></svg></span>
                         <span>Home</span>
                     </asp:LinkButton>
@@ -1320,7 +1342,7 @@ dialog.confirm-dialog::backdrop{
                     </asp:LinkButton>
                     <asp:LinkButton ID="Plip_Search" runat="server" CssClass="nav-item"
                         CausesValidation="False"
-                        OnClientClick="openPLIPDrawer(this); return false;">
+                        OnClientClick="openGlobalPlipSearch(this); return false;">
                         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" /></svg></span>
                         <span>PLIP Search</span>
                     </asp:LinkButton>
@@ -1363,17 +1385,18 @@ dialog.confirm-dialog::backdrop{
                 </div>
             </nav>
 
+        </div>
+
             <div id="loaderOverlay" class="loader-overlay" role="status" aria-live="assertive">
                 <div class="cmd-loader">
                     <span>C:\&gt;</span>
                     <span>Processing request&hellip;</span>
                 </div>
             </div>
-        </div>
 
         <!-- Main Content -->
         <div class="main">
-            <asp:HiddenField ID="hfSelectedRow" runat="server" />
+            <asp:HiddenField ID="hfSelectedRow" runat="server" ClientIDMode="Static" />
 
             <!-- Context bar -->
             <div class="context-bar">
@@ -1391,10 +1414,10 @@ dialog.confirm-dialog::backdrop{
                 </div>
                 <div class="context-nav">
                     <button type="button" class="circle-btn help-btn js-guide-toggle" onclick="toggleGuide();" aria-label="Open the user guide" aria-controls="guideDrawer" aria-expanded="false" title="User guide (F1)">?</button>
-                    <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev">
+                    <asp:LinkButton ID="btnCtdPrev" runat="server" CssClass="circle-btn" ToolTip="Previous CTD" OnClick="CTD_Prev" CausesValidation="False">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
                     </asp:LinkButton>
-                    <asp:LinkButton ID="btnCtdNext" runat="server" CssClass="circle-btn" ToolTip="Next CTD" OnClick="CTD_Next">
+                    <asp:LinkButton ID="btnCtdNext" runat="server" CssClass="circle-btn" ToolTip="Next CTD" OnClick="CTD_Next" CausesValidation="False">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
                     </asp:LinkButton>
                 </div>
@@ -1452,6 +1475,7 @@ dialog.confirm-dialog::backdrop{
                                     runat="server"
                                     Text="&#128269;"
                                     ToolTip="Search another CTD"
+                                    CausesValidation="False"
                                     OnClick="btnCTDSearch_Click" />
                             </ItemTemplate>
                             <ItemStyle HorizontalAlign="Center" VerticalAlign="Middle" Width="150px" Wrap="False" />
@@ -1521,7 +1545,7 @@ dialog.confirm-dialog::backdrop{
                         Text="Save All"
                         CssClass="btn-primary"
                         OnClick="btnSaveAll_Click"
-                        OnClientClick="return validateAllDdrRows();" />
+                        OnClientClick="if (!validateAllDdrRows()) return false;" />
 
                     <asp:Button ID="DDR1"
                         runat="server"
@@ -1566,10 +1590,11 @@ dialog.confirm-dialog::backdrop{
                             </ItemTemplate>
                         </asp:TemplateField>
 
-                        <asp:TemplateField HeaderText="PLIP">
+                        <asp:TemplateField HeaderText="PLIP *">
                             <ItemTemplate>
                                 <asp:TextBox ID="txtPLIP"
                                     runat="server"
+                                    CssClass="js-plip"
                                     Width="90px"
                                     AutoPostBack="True"
                                     OnTextChanged="txtPLIP_TextChanged"
@@ -1578,6 +1603,8 @@ dialog.confirm-dialog::backdrop{
                                 <asp:LinkButton ID="btnPLIPSearch"
                                     runat="server"
                                     Text="&#128269;"
+                                    ToolTip="Search PLIPs for this row"
+                                    CausesValidation="False"
                                     OnClick="btnPLIPSearch_Click"
                                     Enabled='<%# Not Eval("Document_No").ToString().ToUpper().Contains("ACTIVITY") %>' />
                             </ItemTemplate>
@@ -1588,9 +1615,9 @@ dialog.confirm-dialog::backdrop{
                                 <asp:DropDownList ID="ddlArea"
                                     runat="server"
                                     Width="50px"
-                                    DataSourceID="AreaSource"
-                                    DataTextField="AU_CODE"
-                                    DataValueField="AU_CODE">
+                                    AutoPostBack="True"
+                                    ToolTip="Pick an area code to apply it to the document number"
+                                    OnSelectedIndexChanged="ddlArea_SelectedIndexChanged">
                                 </asp:DropDownList>
 
                                 <asp:TextBox ID="txtArea"
@@ -1607,10 +1634,8 @@ dialog.confirm-dialog::backdrop{
                             <ItemTemplate>
                                 <asp:DropDownList ID="ddlRamz"
                                     runat="server"
-                                    Width="140px"
-                                    DataSourceID="RamzSource"
-                                    DataTextField="RAMZ_ID"
-                                    DataValueField="RAMZ_ID">
+                                    CssClass="js-ramz"
+                                    Width="140px">
                                 </asp:DropDownList>
                             </ItemTemplate>
                         </asp:TemplateField>
@@ -1619,6 +1644,7 @@ dialog.confirm-dialog::backdrop{
                             <ItemTemplate>
                                 <asp:TextBox ID="txtDocumentNo"
                                     runat="server"
+                                    CssClass="js-docno"
                                     Width="270px"
                                     Text='<%# Bind("Document_No") %>' />
                             </ItemTemplate>
@@ -1628,6 +1654,7 @@ dialog.confirm-dialog::backdrop{
                             <ItemTemplate>
                                 <asp:TextBox ID="txtTitle"
                                     runat="server"
+                                    CssClass="js-title"
                                     Width="300px"
                                     Text='<%# Bind("Document_Title") %>' />
                             </ItemTemplate>
@@ -1654,8 +1681,7 @@ dialog.confirm-dialog::backdrop{
                             <ItemTemplate>
                                 <asp:DropDownList ID="ddlStatus"
                                     runat="server"
-                                    Width="60px"
-                                    SelectedValue='<%# Bind("HO_STATUS") %>'>
+                                    Width="60px">
                                     <asp:ListItem Text="" Value="" />
                                     <asp:ListItem Text="AFC" Value="AFC" />
                                     <asp:ListItem Text="APP" Value="APP" />
@@ -1665,12 +1691,12 @@ dialog.confirm-dialog::backdrop{
 
                         <asp:TemplateField HeaderText="Critical?">
                             <ItemTemplate>
-                                <asp:Label ID="lblCriticality" runat="server" Text='<%# Eval("CRITICALITY") %>' />
+                                <asp:Label ID="lblCriticality" runat="server" Text='<%#: Eval("CRITICALITY") %>' />
                             </ItemTemplate>
                         </asp:TemplateField>
                         <asp:TemplateField HeaderText="PLIP_HO">
                             <ItemTemplate>
-                                <asp:Label ID="lblHoReq" runat="server" Text='<%# Eval("HO_REQ") %>' />
+                                <asp:Label ID="lblHoReq" runat="server" Text='<%#: Eval("HO_REQ") %>' />
                             </ItemTemplate>
                         </asp:TemplateField>
 
@@ -1713,6 +1739,8 @@ dialog.confirm-dialog::backdrop{
                                     CssClass="btn-danger"
                                     CommandName="DeleteDDR"
                                     CommandArgument='<%# Eval("DDR_ID") %>'
+                                    ToolTip="Delete this line"
+                                    CausesValidation="False"
                                     OnClientClick="return confirmAction(this, 'Delete this DDR item?');" />
                             </ItemTemplate>
                         </asp:TemplateField>
@@ -1733,25 +1761,7 @@ dialog.confirm-dialog::backdrop{
         </SelectParameters>
     </asp:SqlDataSource>
 
-    <asp:SqlDataSource
-        ID="RamzSource"
-        runat="server"
-        ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
-        SelectCommand="SELECT value AS RAMZ_ID FROM Project_Info CROSS APPLY STRING_SPLIT(RAMZ_ID, ',') WHERE PROJECT_NO = @PROJECT_NO">
-        <SelectParameters>
-            <asp:ControlParameter ControlID="lblProject" Name="PROJECT_NO" PropertyName="Text" />
-        </SelectParameters>
-    </asp:SqlDataSource>
 
-    <asp:SqlDataSource
-        ID="AreaSource"
-        runat="server"
-        ConnectionString="<%$ ConnectionStrings:ACAD_DATAConn1 %>"
-        SelectCommand="SELECT DISTINCT LEFT(TRIM(Document_No),6) AS AU_CODE FROM [ACAD_DATA].[dbo].[SMARTDDR01] WHERE Document_No NOT LIKE '%ACTIVITY%' AND Project_No=@PROJECT_NO ORDER BY LEFT(TRIM(Document_No),6)">
-        <SelectParameters>
-            <asp:ControlParameter ControlID="lblProject" Name="PROJECT_NO" PropertyName="Text" />
-        </SelectParameters>
-    </asp:SqlDataSource>
 
     <asp:SqlDataSource
         ID="PLIPSource"
@@ -1791,13 +1801,15 @@ dialog.confirm-dialog::backdrop{
                             AutoGenerateColumns="False"
                             DataSourceID="PLIPSource"
                             OnRowCommand="gvPLIPSearch_RowCommand"
+                            OnRowCreated="gvPLIPSearch_RowCreated"
                             ShowHeaderWhenEmpty="True">
                             <Columns>
                                 <asp:TemplateField HeaderText="PLIP ID">
                                     <ItemTemplate>
                                         <asp:LinkButton ID="lnkPLIP"
                                             runat="server"
-                                            Text='<%# Eval("PLIP_ID") %>'
+                                            CausesValidation="False"
+                                            Text='<%#: Eval("PLIP_ID") %>'
                                             CommandName="SelectPLIP"
                                             CommandArgument='<%# Eval("PLIP_ID") %>'
                                             CssClass="plip-link" />
@@ -1844,8 +1856,8 @@ dialog.confirm-dialog::backdrop{
                                 <asp:TemplateField HeaderText="CTD ID">
                                     <ItemTemplate>
                                         <asp:HyperLink ID="lnkCTD" runat="server"
-                                            Text='<%# Eval("CTD_ID") %>'
-                                            NavigateUrl='<%# "DDR_DeveloperV3.aspx?CTD_ID=" & Eval("CTD_ID") %>'>
+                                            Text='<%#: Eval("CTD_ID") %>'
+                                            NavigateUrl='<%# "DDR_DeveloperV3.aspx?CTD_ID=" & HttpUtility.UrlEncode(Convert.ToString(Eval("CTD_ID"))) %>'>
                                         </asp:HyperLink>
                                     </ItemTemplate>
                                 </asp:TemplateField>

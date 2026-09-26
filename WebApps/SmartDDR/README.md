@@ -323,14 +323,80 @@ the existing `SmarTagsASP` Web Forms application, which provides:
   Save All, since it acts on that grid specifically rather than being a
   page-global action.
 
+## Business rules (added)
+- **PLIP ID is mandatory for new documents.** Every unsaved, non-activity
+  line must carry a PLIP that is active in `SPO_PLIP` (`Active_YN='YES'`).
+  Enforced in `btnSaveAll_Click` (server, authoritative), in
+  `validateAllDdrRows()` (client, rows marked `data-new="1"`) and in
+  `CSV_Upload_Click` for every non-`ACTIVITY` row. Lines saved before the
+  rule are not blocked. Activity lines never need a PLIP.
+- **Dummy documents follow the `DU%` pattern.** A dummy serial is one
+  `-`-separated segment `DUM01`..`DUM99`, then `DU100`+
+  (`FormatDummySuffix`, `DummySerialRx`). New documents (Save All and CSV)
+  are rejected if their number still uses the legacy `DUMMY` segment or
+  `XXX` placeholders, or still starts with the `AAA-UU` area placeholder.
+  SmartDDR v3's *Dummy Serials* check lists `DU` serials (plus legacy
+  DUMMY/XXX) so they can be replaced later.
+- Document numbers must be unique across the lines of a CTD (Save All) and
+  within a CSV file.
+
+## Deep-debug fixes (this revision)
+- **Smart defaults no longer overwrite user input.** They used to run in
+  `grdDDREntry_RowDataBound` for *every* unsaved row on *every* rebind, so
+  clicking Add DDR Line reset the PLIP/title/document number already typed
+  on earlier unsaved rows and wiped Multiplier copies. Defaults are now
+  computed once, into the new row, in `AddBlankDdrRow`/`ApplyNewRowDefaults`;
+  an unsaved row's Type is kept in a `DocType` column.
+- **PLIP search picks now reach the grid.** `lnkPLIP` sat in an
+  UpdatePanel while the grid is outside it, so the pick never rendered and
+  was reverted on the next postback. `gvPLIPSearch_RowCreated` registers
+  each link as a full postback control.
+- **Dummy numbering found by segment, not position.** The default number is
+  `AAA-UU-` + a history pattern, so the DUM segment was not the 4th segment
+  of the full number; numbering restarted at DUM01 and Multiplier mode A
+  overwrote the discipline segment. `MaxDummyNumber` scans every segment;
+  `SetSerialSegment` writes into the existing DU/DUMMY/XXX/MASTR segment.
+- **CTD context is loaded before the grid binds** (`LoadCtdContext`), so
+  the RAMZ/Area lists and defaults use the right project; it is kept per
+  page in hidden labels instead of Session (two tabs no longer mix).
+- **RAMZ/Area lists** are loaded once per request and filled in code with a
+  blank first item (a new row no longer silently takes the first RAMZ; a
+  saved value outside the list no longer crashes). Picking an Area applies
+  it to the document number (`ddlArea_SelectedIndexChanged`).
+- **`ddlStatus`** no longer binds `SelectedValue` in markup (a value outside
+  "", AFC, APP crashed the page); set in code, tolerant of padding/case.
+- **Previous / Next CTD** now step through the open CTD's own project and
+  discipline (was hard-coded to 40087 / 13. Process).
+- **CSV Template** download no longer has the page HTML appended
+  (`Response.SuppressContent`).
+- **Save All** checks `Page.IsValid`, rejects negative hours and duplicate
+  document numbers; row buttons no longer trigger validators
+  (`CausesValidation="False"`), and the UPDATE now writes CRITICALITY/HO_REQ.
+- **Deleting a saved line / importing a CSV keeps unsaved work**
+  (`ReloadKeepingEdits`), and the sidebar CTD/DDR hours refresh after save,
+  delete and import.
+- **Sidebar PLIP Search** clears the target row first (browse only) and the
+  toast says when nothing was applied.
+- **CSV import**: header row optional; UTF-8 (with/without BOM) or
+  Windows-1252; CTD_ID must belong to the open project; RAMZ must be one of
+  the project's; PLIP and DU rules as above.
+- **Encoding / XSS**: context labels are `Visible="false"` (state only);
+  grid labels and search links use `<%#: %>`.
+- **Compile error**: `For Each err In errors` collided with VB's `Err`
+  object (BC30068); renamed.
+- **Client validation** found nothing in ASP.NET 4's default ClientIDMode
+  (`[id$='txtDocumentNo']` never matches `grdDDREntry_txtDocumentNo_0`);
+  it now uses class hooks (`js-docno`, `js-title`, `js-ramz`, `js-plip`).
+- `loaderOverlay` moved out of the sidebar (it was trapped off-screen by the
+  sidebar's transform on phones). `GetPlipStatus` reads `SPO_PLIP` like the
+  search, the footer and the active-PLIP rule.
+
 ## Known limitations / follow-ups worth doing next
-- `NavigateToAdjacentCtd` still hardcodes `Discipline = '13. Process'`
-  and `Project_No = '40087'`, exactly as the original did. That's almost
-  certainly meant to be parameterized by the current project/discipline
-  rather than pinned to one project — flagged here rather than guessed at,
-  since the correct scoping wasn't specified.
 - CSV upload assumes a fixed column order matching the template; a
   header-name-matched importer would be more forgiving of edited templates.
-- No automated tests are included (WebForms + SQL Server makes that
-  nontrivial without the real database); changes were reviewed by hand
-  against the original control/event graph, not compiled or run.
+  Quoted CSV values can't contain line breaks.
+- The default document number still comes from the most common pattern for
+  the PLIP on projects starting with the same character, as in the original.
+- Verified by compiling the code-behind against the .NET Framework 4.7.2
+  reference assemblies (Option Strict Off and On) and by unit tests of the
+  numbering / validation / CSV helpers; not run against the real database.

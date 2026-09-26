@@ -56,8 +56,6 @@ Partial Public Class DDR_DeveloperV3
     Protected WithEvents grdDDREntry As Global.System.Web.UI.WebControls.GridView
 
     Protected WithEvents CTD_Search_Source As Global.System.Web.UI.WebControls.SqlDataSource
-    Protected WithEvents RamzSource As Global.System.Web.UI.WebControls.SqlDataSource
-    Protected WithEvents AreaSource As Global.System.Web.UI.WebControls.SqlDataSource
     Protected WithEvents PLIPSource As Global.System.Web.UI.WebControls.SqlDataSource
 
     Protected WithEvents updPLIP As Global.System.Web.UI.UpdatePanel

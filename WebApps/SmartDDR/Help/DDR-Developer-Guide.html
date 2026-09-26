@@ -196,7 +196,7 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
       <ol>
         <li><div><b><a href="#open">Open the CTD</a></b><span>From its link, the CTD search, or Previous / Next.</span></div></li>
         <li><div><b><a href="#add">Add lines</a></b><span><span class="btnname">Add DDR Line</span>, <span class="btnname">DDR + Activity</span>, or a CSV upload.</span></div></li>
-        <li><div><b><a href="#plip">Pick a PLIP</a></b><span>Critical?, PLIP_HO and AFC/APP fill in for you.</span></div></li>
+        <li><div><b><a href="#plip">Pick a PLIP</a></b><span>Required on new documents. Critical?, PLIP_HO and AFC/APP fill in for you.</span></div></li>
         <li><div><b><a href="#fields">Check each line</a></b><span>RAMZ ID, document number, title and hours.</span></div></li>
         <li><div><b><a href="#hours">Balance the hours</a></b><span>Until Match status shows ✅ Balanced.</span></div></li>
         <li><div><b><a href="#save">Save All</a></b><span>Nothing is stored until you do.</span></div></li>
@@ -247,8 +247,7 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
         <figcaption>Row colours in the CTD search: green when CTD and DDR hours match, yellow when they differ, no colour when neither has hours yet.</figcaption>
       </figure>
       <h3>Step through CTDs</h3>
-      <p class="prose">Use ‹ and › at the right of the context bar to open the previous or next CTD by ID. When there are no more, the page says <i>No further CTD records in that direction.</i></p>
-      <div class="warn"><b>Previous / Next only covers one project for now</b>These buttons currently step through Process (13. Process) CTDs on project 40087 only. On any other project, use the CTD search instead.</div>
+      <p class="prose">Use ‹ and › at the right of the context bar to open the previous or next CTD, by ID, in the same project and discipline as the open one. When there are no more, the page says <i>No further CTD records in that direction.</i></p>
       <div class="tip"><b>Opening another CTD discards unsaved lines</b>Moving to another CTD reloads the page. Press <span class="btnname">Save All</span> first if you have added or edited lines.</div>
     </section>
 
@@ -273,9 +272,10 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
       </ul>
       <p class="prose">Always check the suggestions. They are a starting point, not a decision.</p>
       <h3>Area and the <code>AAA-UU</code> placeholder</h3>
-      <p class="prose">A document number starts with a 6-character area code such as <code>S10-U1</code>. When the page cannot work out the area, the suggested number starts with the placeholder <code>AAA-UU</code>. Type the 6-character area code in the row's <b>Area</b> box and the placeholder in the document number is replaced when you leave the box.</p>
+      <p class="prose">A document number starts with a 6-character area code such as <code>S10-U1</code>. When the page cannot work out the area, the suggested number starts with the placeholder <code>AAA-UU</code>. Pick the area from the row's <b>Area</b> list, or type the 6-character code in the box next to it, and the placeholder is replaced straight away. A new document can't be saved while its number still starts with <code>AAA-UU</code>.</p>
       <h3>Dummy numbers</h3>
-      <p class="prose">New document numbers use a running dummy sequence in their fourth part: <code>DUM01</code> to <code>DUM99</code>, then <code>DU100</code>, <code>DU101</code> and so on. The page looks at every line on screen, saved or not, and takes the next number after the highest one in use, so numbers never repeat within the CTD.</p>
+      <p class="prose">Dummy (placeholder) document numbers follow the <code>DU</code> pattern: one part of the number is <code>DUM01</code> to <code>DUM99</code>, then <code>DU100</code>, <code>DU101</code> and so on. The page looks at every line on screen, saved or not, and takes the next number after the highest one in use, so dummy numbers never repeat within the CTD. SmartDDR's <b>Dummy Serials</b> check report lists every document with a <code>DU</code> serial, so they are easy to replace with real numbers later.</p>
+      <div class="warn"><b>DUMMY and XXX are no longer accepted</b>A new document whose number uses the old placeholders <code>DUMMY</code> or <code>XXX</code> can't be saved or imported. Use the next <code>DU</code> serial instead; the suggested numbers and the Multiplier already do.</div>
     </section>
 
     <section id="fields">
@@ -289,12 +289,12 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
         <thead><tr><th>Column</th><th>Needed to save</th><th>What to enter</th></tr></thead>
         <tbody>
           <tr><td>Type</td><td><span class="req n">Optional</span></td><td><b>NEW</b>, <b>EXISTING</b> or <b>ACTIVITY</b>. Shown only on lines that are not saved yet. Choosing ACTIVITY clears the PLIP, locks PLIP and Area, and sets Document No to <code>ACTIVITY</code>. Switching back clears the document number so you can enter one.</td></tr>
-          <tr><td>PLIP</td><td><span class="req n">Optional</span></td><td>The PLIP ID. Type it or use 🔍 on the row. See <a href="#plip">Pick a PLIP</a>. Not used on activity lines.</td></tr>
-          <tr><td>Area</td><td><span class="req n">Optional</span></td><td>The 6-character area code. Pick from the list or type it; typing replaces the <code>AAA-UU</code> placeholder in the document number.</td></tr>
+          <tr><td>PLIP</td><td><span class="req y">New documents</span></td><td>The PLIP ID, which must be an active PLIP. Required on every new document line (the box shows <i>Required</i>); not used on activity lines. Type it or use 🔍 on the row. See <a href="#plip">Pick a PLIP</a>.</td></tr>
+          <tr><td>Area</td><td><span class="req n">Optional</span></td><td>The 6-character area code. Pick it from the list or type it; either way it is put at the start of the document number, replacing <code>AAA-UU</code> or the old area.</td></tr>
           <tr><td>RAMZ ID</td><td><span class="req y">Required</span></td><td>Pick from the RAMZ IDs set up for the project.</td></tr>
-          <tr><td>Document No</td><td><span class="req y">Required</span></td><td>The full document number. Activity lines use <code>ACTIVITY</code>.</td></tr>
+          <tr><td>Document No</td><td><span class="req y">Required</span></td><td>The full document number, used only once in the CTD. Activity lines use <code>ACTIVITY</code>. New documents need a real area code and, for placeholders, a <code>DU</code> serial.</td></tr>
           <tr><td>Document Title</td><td><span class="req y">Required</span></td><td>The document or activity title.</td></tr>
-          <tr><td>Hours</td><td><span class="req n">Optional</span></td><td>Man-hours as a number, such as <code>38.5</code>. Left blank, it is saved as 0.</td></tr>
+          <tr><td>Hours</td><td><span class="req n">Optional</span></td><td>Man-hours as a number of 0 or more, such as <code>38.5</code>. Left blank, it is saved as 0.</td></tr>
           <tr><td>AFC/APP</td><td><span class="req a">Filled from PLIP</span></td><td>Handover status. Set to AFC when the PLIP's required handover status is ASB, otherwise APP. You can change it.</td></tr>
           <tr><td>Critical?</td><td><span class="req a">Filled from PLIP</span></td><td>Whether the PLIP is critical documentation. Read-only.</td></tr>
           <tr><td>PLIP_HO</td><td><span class="req a">Filled from PLIP</span></td><td>The PLIP's required handover status. Read-only.</td></tr>
@@ -309,7 +309,7 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
       <div class="sec-head"><span class="sec-no">05</span><h2>Pick a PLIP</h2></div>
       <p class="prose">A PLIP can be typed straight into the row, or found with the search.</p>
       <h3>Type it in</h3>
-      <p class="prose">Type the PLIP ID in the row's PLIP box and press <kbd>Tab</kbd>. The page looks it up and fills in Critical?, PLIP_HO and AFC/APP. A panel slides up from the bottom showing the PLIP's title, document type, critical flag, required handover status and DCAF. If the ID is not an active PLIP, the panel closes and those columns stay blank.</p>
+      <p class="prose">Type the PLIP ID in the row's PLIP box and press <kbd>Tab</kbd>. The page looks it up and fills in Critical?, PLIP_HO and AFC/APP. A panel slides up from the bottom showing the PLIP's title, document type, critical flag, required handover status and DCAF. If the ID is not an active PLIP, the page says so, the panel closes and those columns stay blank; a new document can't be saved until it has an active PLIP.</p>
       <h3>Search for it</h3>
       <ol class="steps">
         <li>Click 🔍 next to the PLIP box on the row you want to fill.</li>
@@ -361,21 +361,27 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
         <div class="card"><h4>Mode A: next dummy number</h4><p>Each copy gets the next dummy number in the fourth part of the document number.</p><p class="mono" style="font-size:.85rem">S10-U1-PR-DUM01-0001, 3 copies, DUM02 already used<br>→ …-<b>DUM03</b>-0001<br>→ …-<b>DUM04</b>-0001<br>→ …-<b>DUM05</b>-0001</p></div>
         <div class="card"><h4>Mode B: next document number</h4><p>Each copy adds one to the number at the end of the document number, keeping leading zeros.</p><p class="mono" style="font-size:.85rem">S10-U1-PR-10001-0001, 3 copies<br>→ S10-U1-PR-10001-<b>0002</b><br>→ S10-U1-PR-10001-<b>0003</b><br>→ S10-U1-PR-10001-<b>0004</b></p></div>
       </div>
-      <p class="prose">Every other field is copied as it is, including the hours, so the variance changes. Re-balance with <a href="#hours">Allocate Hours</a> or by hand, then <span class="btnname">Save All</span>.</p>
-      <div class="warn"><b>Check the numbers of the copies</b>Mode A needs a document number with at least four parts separated by hyphens; Mode B needs one that ends in digits. Otherwise the copies keep the same number as the original, and you must edit each copy before saving.</div>
+      <p class="prose">Every other field is copied as it is, including the PLIP and the hours, so the variance changes. Activity lines can't be copied; use <span class="btnname">DDR + Activity</span> instead. Re-balance with <a href="#hours">Allocate Hours</a> or by hand, then <span class="btnname">Save All</span>.</p>
+      <div class="warn"><b>Check the numbers of the copies</b>Mode A writes the serial into the number's existing <code>DU</code> part (or <code>DUMMY</code>, <code>XXX</code> or <code>MASTR</code>), otherwise into its fourth part, and adds it at the end of a short number. Mode B needs a number that ends in digits; if it doesn't, the page tells you and the copies keep the original number, so edit them before saving.</div>
     </section>
 
     <section id="save">
       <div class="sec-head"><span class="sec-no">08</span><h2>Save your work</h2></div>
       <p class="prose">Press <span class="btnname">Save All</span> in the line toolbar. New lines are added and changed lines are updated in one go: either everything is saved, or nothing is. When it works you see <i>DDR records saved successfully.</i>, the grid reloads from the database, and saved lines no longer show a Type box.</p>
       <h3>When something is missing</h3>
-      <p class="prose">Before saving, the page checks every line. Document No, Document Title and RAMZ ID must be filled in, and Hours must be a number. Empty required boxes are outlined in red, and a panel above the CTD lists each problem by row number.</p>
+      <p class="prose">Before saving, the page checks every line:</p>
+      <ul class="prose">
+        <li>Document No, Document Title and RAMZ ID are filled in, and Hours is a number of 0 or more.</li>
+        <li>No document number is used twice.</li>
+        <li>Every <b>new document</b> has an active PLIP, a real area code instead of <code>AAA-UU</code>, and a <code>DU</code> serial rather than <code>DUMMY</code> or <code>XXX</code>.</li>
+      </ul>
+      <p class="prose">Problem boxes are outlined in red, and a panel above the CTD lists each problem by row number.</p>
       <figure>
         <div class="shot"><img src="img/invalid.jpg" alt="Validation panel listing Row 6 problems, with the empty RAMZ ID and Document Title boxes outlined in red, and the scorecard out of balance." width="1600" height="833" loading="lazy"></div>
         <figcaption>Row 6 is missing its RAMZ ID and title, so nothing is saved. The scorecard also shows 24 hours still to allocate.</figcaption>
       </figure>
       <p class="prose">Fix the listed rows and press <span class="btnname">Save All</span> again. An out-of-balance variance does not stop you saving; it is a warning, not a rule.</p>
-      <div class="warn"><b>Unsaved lines are lost if you leave the page</b>Back, Home, Previous / Next, opening another CTD, deleting a saved line and uploading a CSV all reload the lines from the database. Save first.</div>
+      <div class="warn"><b>Unsaved lines are lost if you leave the page</b>Back, Home, Previous / Next and opening another CTD load a fresh page. Save first. (Deleting a saved line and uploading a CSV keep your unsaved work.)</div>
     </section>
 
     <section id="delete">
@@ -389,9 +395,8 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
       </figure>
       <div class="two">
         <div class="card"><h4>A line not yet saved</h4><p>It is simply removed from the screen. Message: <i>Unsaved DDR line removed.</i></p></div>
-        <div class="card"><h4>A saved line</h4><p>It is deleted from the database <b>straight away</b>, without waiting for Save All, and the grid reloads. Message: <i>DDR line deleted.</i></p></div>
+        <div class="card"><h4>A saved line</h4><p>It is deleted from the database <b>straight away</b>, without waiting for Save All. Your other unsaved lines and edits stay on screen. Message: <i>DDR line deleted.</i></p></div>
       </div>
-      <div class="warn"><b>Save before deleting a saved line</b>Because the grid reloads after deleting a saved line, any lines you have added or edited but not saved are lost at the same time.</div>
     </section>
 
     <section id="csv">
@@ -406,19 +411,19 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
       <div class="tbl"><table>
         <thead><tr><th>Column</th><th>Needed</th><th>Rule</th></tr></thead>
         <tbody>
-          <tr><td><code>CTD_ID</code></td><td><span class="req n">Optional</span></td><td>A whole number. Leave blank to use the CTD open on the page.</td></tr>
-          <tr><td><code>Ramz_ID</code></td><td><span class="req y">Required</span></td><td>The RAMZ ID.</td></tr>
-          <tr><td><code>PLIP_ID</code></td><td><span class="req n">Optional</span></td><td>The PLIP ID.</td></tr>
-          <tr><td><code>Document_No</code></td><td><span class="req y">Required</span></td><td>The full document number.</td></tr>
+          <tr><td><code>CTD_ID</code></td><td><span class="req n">Optional</span></td><td>A CTD of the same project. Leave blank to use the CTD open on the page.</td></tr>
+          <tr><td><code>Ramz_ID</code></td><td><span class="req y">Required</span></td><td>One of the RAMZ IDs set up for the project.</td></tr>
+          <tr><td><code>PLIP_ID</code></td><td><span class="req y">Documents</span></td><td>An active PLIP. Required on every document row; leave blank on <code>ACTIVITY</code> rows.</td></tr>
+          <tr><td><code>Document_No</code></td><td><span class="req y">Required</span></td><td>The full document number, once per file, with a real area code and <code>DU</code> serials for placeholders (not <code>DUMMY</code> or <code>XXX</code>). <code>ACTIVITY</code> for activity rows.</td></tr>
           <tr><td><code>Document_Title</code></td><td><span class="req y">Required</span></td><td>Put the title in double quotes if it contains a comma.</td></tr>
-          <tr><td><code>Man_Hours</code></td><td><span class="req n">Optional</span></td><td>A number. Blank means 0.</td></tr>
+          <tr><td><code>Man_Hours</code></td><td><span class="req n">Optional</span></td><td>A number of 0 or more. Blank means 0.</td></tr>
           <tr><td><code>HO_Status</code></td><td><span class="req n">Optional</span></td><td><code>AFC</code>, <code>APP</code> or blank (upper or lower case).</td></tr>
         </tbody>
       </table></div>
       <div class="calc">CTD_ID,Ramz_ID,PLIP_ID,Document_No,Document_Title,Man_Hours,HO_Status<br>,RAMZ-PR-0150,PLIP-4480,S10-U1-PR-DUM04-0001,"Relief load calculation, HP flare",38.5,APP<br>,RAMZ-PR-0150,,ACTIVITY,Process safety review workshop support,24,</div>
-      <p class="prose">The file is checked in full first. If any row has a problem, <b>nothing</b> is imported and the panel lists each problem by the line number in your file, for example <i>Line 4: Man_Hours must be numeric.</i> Fix the file and upload it again. When it works you see <i>3 DDR line(s) imported from CSV.</i></p>
+      <p class="prose">The heading row is optional, and files saved by Excel as plain CSV or as CSV UTF-8 both work. The file is checked in full first. If any row has a problem, <b>nothing</b> is imported and the panel lists each problem by the line number in your file, for example <i>Line 4: Man_Hours must be numeric.</i> Fix the file and upload it again. When it works you see <i>3 DDR line(s) imported from CSV.</i></p>
       <div class="note prose"><b>What the CSV does not fill</b>Software, Remarks, Critical? and PLIP_HO are not part of the file. Imported lines are saved directly, so add Software and Remarks on screen afterwards and press <span class="btnname">Save All</span>.</div>
-      <div class="warn"><b>Uploading reloads the grid</b>Save any lines you are editing before you upload, or they are lost.</div>
+      <div class="tip"><b>Your unsaved work is kept</b>Imported lines are added to the grid; lines you are still editing stay on screen, ready for <span class="btnname">Save All</span>.</div>
     </section>
 
     <section id="messages">
@@ -435,7 +440,13 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
           <tr><td>… DDR line(s) imported from CSV.</td><td><span class="kind ok">Done</span></td><td>The lines are already saved.</td></tr>
           <tr><td>DDR line deleted. / Unsaved DDR line removed.</td><td><span class="kind info">Info</span></td><td>See <a href="#delete">Delete a line</a>.</td></tr>
           <tr><td>No further CTD records in that direction.</td><td><span class="kind info">Info</span></td><td>You are at the first or last CTD Previous / Next can reach.</td></tr>
-          <tr><td>Please complete Document No, Title and RAMZ ID on the highlighted rows.</td><td><span class="kind err">Fix</span></td><td>Fill in the red-outlined boxes, then save again.</td></tr>
+          <tr><td>Fix the highlighted boxes: …</td><td><span class="kind err">Fix</span></td><td>Fill in or correct the red-outlined boxes, then save again.</td></tr>
+          <tr><td>Row …: PLIP ID is required for new documents.</td><td><span class="kind err">Fix</span></td><td>Enter or search for the PLIP on that line.</td></tr>
+          <tr><td>… is not an active PLIP.</td><td><span class="kind err">Fix</span></td><td>Check the ID, or pick one with the line's 🔍.</td></tr>
+          <tr><td>Row …: replace the AAA-UU placeholder …</td><td><span class="kind err">Fix</span></td><td>Pick or type the area code on that line.</td></tr>
+          <tr><td>Row …: dummy document numbers must use a DU serial …</td><td><span class="kind err">Fix</span></td><td>Replace <code>DUMMY</code> or <code>XXX</code> with the next <code>DU</code> serial, such as <code>DUM03</code>.</td></tr>
+          <tr><td>Row …: Document Number … is already used on row ….</td><td><span class="kind err">Fix</span></td><td>Give one of the two lines a different number.</td></tr>
+          <tr><td>To put a PLIP on a line, open the search from that line's 🔍 button.</td><td><span class="kind info">Info</span></td><td>The sidebar search only looks PLIPs up.</td></tr>
           <tr><td>… issue(s) need attention before saving.</td><td><span class="kind err">Fix</span></td><td>Read the list above the CTD card.</td></tr>
           <tr><td>Save failed: …</td><td><span class="kind err">Fix</span></td><td>The database refused the save and nothing was stored. Try again; if it repeats, send the message text to the SmartDDR administrator.</td></tr>
           <tr><td>Add DDR lines before allocating hours.</td><td><span class="kind err">Fix</span></td><td>There are no lines to split hours across.</td></tr>
@@ -456,17 +467,17 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
       <details class="faq"><summary>The sidebar still shows 🚩 after I balanced the hours.</summary><p>The sidebar reads saved hours. Press <span class="btnname">Save All</span> and it updates. The scorecard at the top shows the unsaved position.</p></details>
       <details class="faq"><summary>Can I save while the hours are out of balance?</summary><p>Yes. Balance is shown as a warning so you can save work in progress. Aim to finish each CTD with ✅ Balanced.</p></details>
       <details class="faq"><summary>How do I turn a document line into an activity line?</summary><p>On an unsaved line, set Type to ACTIVITY. For a saved line, delete it and add an activity line with <span class="btnname">DDR + Activity</span>, or change its Document No to <code>ACTIVITY</code> and clear its PLIP.</p></details>
-      <details class="faq"><summary>My document number starts with AAA-UU.</summary><p>The page could not work out the area. Type the 6-character area code in the row's Area box and press <kbd>Tab</kbd>.</p></details>
-      <details class="faq"><summary>Does the CSV check for duplicate document numbers?</summary><p>No. Check the file for duplicates before uploading, and check the grid afterwards.</p></details>
+      <details class="faq"><summary>My document number starts with AAA-UU.</summary><p>The page could not work out the area. Pick it from the row's Area list, or type the 6-character code in the box next to it and press <kbd>Tab</kbd>.</p></details>
+      <details class="faq"><summary>Do saved lines need a PLIP too?</summary><p>The PLIP rule applies to new document lines. Lines saved before the rule came in can still be edited and saved without one, but add it when you can.</p></details>
+      <details class="faq"><summary>Does the CSV check for duplicate document numbers?</summary><p>Within the file, yes: a number used twice is reported and nothing is imported. It doesn't compare with lines already saved, so check the grid after importing; <span class="btnname">Save All</span> then reports any duplicates.</p></details>
     </section>
 
     <section id="limits">
       <div class="sec-head"><span class="sec-no">13</span><h2>Known limitations</h2></div>
       <ul class="prose">
-        <li>Previous / Next CTD only steps through <b>13. Process</b> CTDs on project <b>40087</b>. Use the CTD search on other projects.</li>
-        <li>Changing the PLIP on a line that is already saved updates the PLIP and AFC/APP when you save, but the stored Critical? and PLIP_HO values for that line keep their old values.</li>
         <li>The CSV upload expects the template's column order; it does not match columns by heading.</li>
         <li>CSV imports leave Software, Remarks, Critical? and PLIP_HO blank.</li>
+        <li>A quoted CSV value can't contain a line break.</li>
       </ul>
     </section>
   </main>
