@@ -140,6 +140,8 @@ td:first-child{white-space:nowrap}
 details.faq{border-bottom:1px solid var(--line);padding:12px 0;max-width:72ch}
 details.faq summary{cursor:pointer;font-weight:600;list-style-position:outside}
 details.faq p{margin:8px 0 0;color:var(--ink)}
+.embedded .masthead{padding-block:20px 10px}
+.embedded .masthead h1{font-size:2rem}
 footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88rem;border-top:1px solid var(--line);padding-top:18px}
 </style>
 
@@ -212,8 +214,8 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
         </div>
         <ul class="legend">
           <li><span class="dot">1</span><div><b>CTD / DDR hours check.</b> The CTD's hours next to the DDR hours already saved, with ✅ when they match and 🚩 when they don't.</div></li>
-          <li><span class="dot">2</span><div><b>Sidebar actions.</b> Back, Home, <span class="btnname">Allocate Hours</span>, <span class="btnname">PLIP Search</span>, <span class="btnname">DDR Multiplier</span>, <span class="btnname">CSV Template</span> and <span class="btnname">Upload CSV</span>.</div></li>
-          <li><span class="dot">3</span><div><b>Context bar.</b> Project, discipline and deliverable reference of the open CTD, with Previous ‹ and Next › CTD buttons.</div></li>
+          <li><span class="dot">2</span><div><b>Sidebar actions.</b> Back, Home, <span class="btnname">Allocate Hours</span>, <span class="btnname">PLIP Search</span>, <span class="btnname">DDR Multiplier</span>, <span class="btnname">CSV Template</span>, <span class="btnname">Upload CSV</span> and <span class="btnname">User Guide</span>.</div></li>
+          <li><span class="dot">3</span><div><b>Context bar.</b> Project, discipline and deliverable reference of the open CTD, with <kbd>?</kbd> to open this guide and the Previous ‹ and Next › CTD buttons.</div></li>
           <li><span class="dot">4</span><div><b>Scorecard.</b> CTD hours, DDR hours, variance, number of lines and match status. It updates as you work, before you save.</div></li>
           <li><span class="dot">5</span><div><b>CTD reference.</b> The CTD you are working on. The 🔍 next to its ID opens the CTD search.</div></li>
           <li><span class="dot">6</span><div><b>Line toolbar.</b> <span class="btnname">Add DDR Line</span>, <span class="btnname">Save All</span> and <span class="btnname">DDR + Activity</span>.</div></li>
@@ -221,7 +223,9 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
         </ul>
       </figure>
       <div class="note prose"><b>Two hours checks, two sources</b>The sidebar check (1) reads the hours saved in the database, so it changes only after <span class="btnname">Save All</span>. The scorecard (4) counts what is on screen now, including lines you have not saved yet.</div>
-      <p class="prose">On a narrow screen (below about 900 px) the sidebar is hidden. Tap <kbd>☰</kbd> at the top left to open it. The page follows your computer's light or dark setting.</p>
+      <h3>Open this guide from the page</h3>
+      <p class="prose">Click <span class="btnname">User Guide</span> in the sidebar, the <kbd>?</kbd> button in the context bar, or press <kbd>F1</kbd>. The guide opens in a panel over the left half of the screen, so you can follow the steps on the right while you work. It stays open, at the same place, when the page reloads after a button click. Close it with ✖ or <kbd>Esc</kbd>, or choose <b>Open in new tab</b> to read it full size.</p>
+      <p class="prose">On a narrow screen (below about 900 px) the sidebar is hidden. Tap <kbd>☰</kbd> at the top left to open it, or <kbd>?</kbd> at the top right for this guide, which then fills the screen. The page follows your computer's light or dark setting.</p>
     </section>
 
     <section id="open">
@@ -466,6 +470,7 @@ footer.end{max-width:1180px;margin:56px auto 0;color:var(--muted);font-size:.88r
 <footer class="end">DDR Developer guide · SmartDDR. Screens use sample data (project 40087, CTD 10542) and may differ slightly from your system.</footer>
 
 <script>
+if (window.self !== window.top) document.documentElement.classList.add("embedded");
 (function(){
   var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
   var map = {};
