@@ -196,7 +196,9 @@ one good week.
    - `dashboard\App_Data\password.txt`
    - your changes in `start.bat` / `settings.ini`, if any
 3. Close MetaEditor, run `setup.bat` (tests + EA compile) -> `ALL SELF-TESTS PASSED`
-   and `0 error(s)`.
+   and `0 error(s)`. Once the tests pass it also overwrites the copy of the
+   solution in Google Drive: `Google Drive copy: G:\My Drive\MyTraderbyClaude\GoldTrader
+   - N updated ...` (a failed update never replaces the good copy).
 4. In MT5, re-open the EA's inputs and check your values are still there
    (`InpBotToken`, `InpControlChatId`, `InpChannelId1` = the relay group id,
    `InpChannelId2`/`3` = 0, `InpDryRun`). New inputs of an update start at the
@@ -219,8 +221,10 @@ one good week.
 | `relay\tg_relay_bridge.session` | Your Telegram login for the relay |
 | `dashboard\App_Data\password.txt` | The dashboard password's hash |
 
-All three are in `.gitignore` and never uploaded. The dashboard site can
-read only the `dashboard` and `logs` folders.
+All three are in `.gitignore` and never uploaded - neither to GitHub nor to
+the Google Drive copy (`MyTraderbyClaude\GoldTrader` holds only code, EAs,
+presets, launchers, docs and `settings.ini`; `logs\` stays here too). The
+dashboard site can read only the `dashboard` and `logs` folders.
 
 ## 13. Stop everything
 

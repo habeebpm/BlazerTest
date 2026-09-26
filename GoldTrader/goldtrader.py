@@ -18,6 +18,8 @@ GoldTrader launcher - everything runs from this folder.
     python goldtrader.py scorecard      real demo/live results of both sources + verdict
     python goldtrader.py xtr-export [options] e.g. --check (VPS Drive upload test)
     python goldtrader.py dashboard-password   set the web dashboard's password (dashboard/)
+    python goldtrader.py drive-copy     copy the solution to Google Drive\MyTraderbyClaude\GoldTrader
+                                        (also after every successful setup / update)
     python goldtrader.py test           every self-test
 
 Double-click versions: setup.bat, settings.bat, check.bat, start.bat, relay_login.bat.
@@ -79,7 +81,12 @@ def cmd_setup(_args) -> int:
             print(f"\npip failed for {req} (exit {rc}).")
             return rc
     py(APP_DIR, "keys.py")          # keys.txt, ready to fill in (never overwritten)
-    return cmd_test(_args)
+    rc = cmd_test(_args)
+    if rc == 0:                     # only a version that passed its tests replaces the Drive copy
+        cmd_drive_copy(None)
+    else:
+        print("Google Drive copy not updated (self-tests failed) - it keeps the last good version.")
+    return rc
 
 
 def cmd_test(_args) -> int:
@@ -89,6 +96,82 @@ def cmd_test(_args) -> int:
             failed.append(os.path.relpath(os.path.join(cwd, script), ROOT))
     print("\n" + ("ALL SELF-TESTS PASSED" if not failed else "FAILED: " + ", ".join(failed)))
     return 1 if failed else 0
+
+
+# --------------------------------------------------------------- Drive copy
+
+DRIVE_COPY_FOLDER = os.path.join("MyTraderbyClaude", "GoldTrader")
+# Only the solution itself - code, EAs, presets, launchers, docs, settings.ini.
+# Never keys.txt, the relay's Telegram login (*.session), the dashboard
+# password, logs or caches: anything not listed here stays on this PC.
+COPY_EXTENSIONS = {".py", ".mq5", ".mqh", ".set", ".bat", ".md", ".ini", ".aspx", ".config"}
+COPY_NAMES = {"requirements.txt", "status.sample.json"}
+SKIP_DIRS = {"logs", "__pycache__", "venv", ".venv", "env", "node_modules"}
+
+
+def is_solution_file(name: str) -> bool:
+    return os.path.splitext(name)[1].lower() in COPY_EXTENSIONS or name in COPY_NAMES
+
+
+def solution_files(root: str = ROOT) -> list:
+    """Relative paths of every solution file under `root`."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        out += [os.path.relpath(os.path.join(dirpath, f), root) for f in sorted(filenames) if is_solution_file(f)]
+    return out
+
+
+def find_drive_root(isdir=os.path.isdir) -> str | None:
+    """Google Drive for Desktop's "My Drive" (G: first, then any letter)."""
+    for letter in "GHIJKLMNOPQRSTUVWXYZDEF":
+        for name in ("My Drive", "MyDrive"):
+            path = f"{letter}:\\{name}"
+            if isdir(path):
+                return path
+    return None
+
+
+def copy_to_drive(dest_root: str, root: str = ROOT) -> tuple[int, int, int]:
+    """Mirrors the solution into <dest_root>\\MyTraderbyClaude\\GoldTrader:
+    changed files overwritten (temp file + rename, so Drive never uploads a
+    half-written one), unchanged ones left alone (no re-upload), solution
+    files that no longer exist here removed. Returns (copied, unchanged, removed)."""
+    target = os.path.join(dest_root, DRIVE_COPY_FOLDER)
+    files = solution_files(root)
+    copied = unchanged = removed = 0
+    for rel in files:
+        src, dst = os.path.join(root, rel), os.path.join(target, rel)
+        if os.path.exists(dst) and filecmp.cmp(src, dst, shallow=False):
+            unchanged += 1
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + ".tmp"
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+        copied += 1
+    keep = {os.path.normcase(rel) for rel in files}
+    for rel in solution_files(target):
+        if os.path.normcase(rel) not in keep:
+            os.remove(os.path.join(target, rel))
+            removed += 1
+    return copied, unchanged, removed
+
+
+def cmd_drive_copy(args) -> int:
+    dest = getattr(args, "to", None) or find_drive_root()
+    if not dest:
+        print("\nGoogle Drive copy skipped: Google Drive for Desktop (G:\\My Drive) was not found. "
+              "Start Google Drive, or: python goldtrader.py drive-copy --to <your My Drive folder>")
+        return 1 if args is not None else 0
+    try:
+        copied, unchanged, removed = copy_to_drive(dest)
+    except OSError as exc:
+        print(f"\nGoogle Drive copy failed ({exc}) - trading is not affected; try again later.")
+        return 1 if args is not None else 0
+    print(f"\nGoogle Drive copy: {os.path.join(dest, DRIVE_COPY_FOLDER)} - {copied} updated, "
+          f"{unchanged} unchanged, {removed} removed (keys.txt, logins, passwords and logs stay on this PC).")
+    return 0
 
 
 # --------------------------------------------------------------- MT5 install
@@ -292,6 +375,8 @@ def main(argv=None) -> int:
     p.add_argument("--no-compile", action="store_true", dest="no_compile")
     sub.add_parser("settings")
     sub.add_parser("dashboard-password")
+    p = sub.add_parser("drive-copy")
+    p.add_argument("--to", help="your Google Drive 'My Drive' folder (default: found automatically, G: first)")
     for name in ("check", "test-alert", "test-feeds", "relay-login", "once"):
         sub.add_parser(name)
     p = sub.add_parser("test-news")
@@ -309,6 +394,8 @@ def main(argv=None) -> int:
         return cmd_install_mt5(args)
     if args.cmd == "settings":
         return py(APP_DIR, "main.py", "--setup")
+    if args.cmd == "drive-copy":
+        return cmd_drive_copy(args)
     if args.cmd == "dashboard-password":
         return py(APP_DIR, "dashboard_password.py")
     if args.cmd == "test-news":

@@ -101,6 +101,46 @@ def main() -> int:
           rc_cfg == solution.SETTINGS_ERROR and len(naps) == 2)
     rc = solution.main(["install-mt5", "--data-folder", os.path.join(solution.ROOT, "nope")])
     check("install-mt5 refuses a folder without MQL5", rc == 1)
+
+    # Google Drive copy (drive-copy / after every successful setup)
+    with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as drive:
+        def put(rel, text="x"):
+            path = os.path.join(src, *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        for rel in ("goldtrader.py", "start.bat", "settings.ini", "requirements.txt", "app/main.py",
+                    "mt5/Experts/A.mq5", "mt5/Presets/A.set", "docs/BTC.md", "dashboard/Default.aspx",
+                    "dashboard/Web.config", "dashboard/App_Data/status.sample.json"):
+            put(rel)
+        secrets = ("keys.txt", "relay/relay.session", "relay/relay.session-journal",
+                   "dashboard/App_Data/password.txt", "logs/trades.csv", "logs/btc/status.json",
+                   "app/__pycache__/main.cpython-312.pyc", ".git/config", "drive.json")
+        for rel in secrets:
+            put(rel, "SECRET")
+        first = solution.copy_to_drive(drive, root=src)
+        target = os.path.join(drive, "MyTraderbyClaude", "GoldTrader")
+        copied = set(solution.solution_files(target))
+        leaked = [rel for rel in secrets if os.path.exists(os.path.join(target, *rel.split("/")))]
+        check("drive-copy: code, EAs, presets, launchers, docs into MyTraderbyClaude\\GoldTrader",
+              first == (11, 0, 0) and len(copied) == 11, (first, sorted(copied)))
+        check("drive-copy never copies keys.txt, the Telegram login, passwords, logs or caches",
+              not leaked and not os.path.exists(os.path.join(target, "logs")), leaked)
+        check("running it again uploads nothing", solution.copy_to_drive(drive, root=src) == (0, 11, 0))
+        put("app/main.py", "new version")
+        os.remove(os.path.join(src, "docs", "BTC.md"))
+        again = solution.copy_to_drive(drive, root=src)
+        with open(os.path.join(target, "app", "main.py"), encoding="utf-8") as f:
+            now = f.read()
+        check("an update overwrites the changed file and removes one the update deleted",
+              again == (1, 9, 1) and now == "new version"
+              and not os.path.exists(os.path.join(target, "docs", "BTC.md")), again)
+        check("no temp files left behind",
+              not any(n.endswith(".tmp") for _, _, fs in os.walk(target) for n in fs))
+    check("finds Google Drive for Desktop's My Drive (G: first)",
+          solution.find_drive_root(isdir=lambda p: p in ("G:\\My Drive", "H:\\My Drive")) == "G:\\My Drive"
+          and solution.find_drive_root(isdir=lambda p: p == "E:\\MyDrive") == "E:\\MyDrive"
+          and solution.find_drive_root(isdir=lambda p: False) is None)
     ok = all(results)
     print("ALL PASS" if ok else "SOME CHECKS FAILED")
     return 0 if ok else 1

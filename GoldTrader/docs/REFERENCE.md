@@ -383,4 +383,7 @@ without the tactics. Results on a year of real prices:
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
 once | start | backtest | replay-signals | scorecard | xtr-export | dashboard-password |
-test`.
+drive-copy | test`. `drive-copy` (also run by `setup.bat` after its tests pass)
+mirrors the solution to `G:\My Drive\MyTraderbyClaude\GoldTrader` - code,
+EAs, presets, launchers, docs, `settings.ini`; never `keys.txt`, `*.session`,
+the dashboard password or `logs\`. `--to <folder>` if Drive is elsewhere.
