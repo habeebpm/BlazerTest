@@ -295,7 +295,8 @@ def open_risk_dollars(gateway, cfg: AdvisorConfig, spec) -> float:
     stop already locked beyond the current price (profit protected)
     contributes 0; positions/orders with no stop can't be priced and are
     skipped - every order this solution places carries one. Mirrors
-    UnifiedTrader_EA.mq5's OpenRiskMoney().
+    UnifiedTrader_EA.mq5's OpenRiskMoney(). The caps use total_open_risk()
+    (every symbol, when the gateway can see them).
     """
     if spec.tick_size <= 0 or spec.tick_value <= 0:
         return 0.0
@@ -315,6 +316,20 @@ def open_risk_dollars(gateway, cfg: AdvisorConfig, spec) -> float:
     return total
 
 
+def total_open_risk(gateway, cfg: AdvisorConfig, spec) -> float:
+    """Every open stop on the ACCOUNT - gold and the BTC instance share it,
+    and both caps and the margin call are account-wide - when the gateway can
+    see all symbols (mt5_gateway.account_open_risk); the backtest / test
+    doubles only hold this symbol, so open_risk_dollars() there."""
+    account_fn = getattr(gateway, "account_open_risk", None)
+    if account_fn is not None:
+        try:
+            return float(account_fn())
+        except Exception:
+            log.debug("account_open_risk failed - counting %s only.", cfg.symbol, exc_info=True)
+    return open_risk_dollars(gateway, cfg, spec)
+
+
 def daily_risk_budget_reason(gateway, cfg: AdvisorConfig, spec, day_start_equity: float,
                              new_trade_risk: float) -> str:
     """Makes max_daily_loss_pct a real cap, not just a stop-new-entries
@@ -330,7 +345,7 @@ def daily_risk_budget_reason(gateway, cfg: AdvisorConfig, spec, day_start_equity
         return ""
     budget = day_start_equity * cfg.max_daily_loss_pct / 100.0
     drawdown = max(0.0, day_start_equity - gateway.account_equity())
-    committed = drawdown + open_risk_dollars(gateway, cfg, spec) + new_trade_risk
+    committed = drawdown + total_open_risk(gateway, cfg, spec) + new_trade_risk
     if committed > budget + 1e-9:
         return (f"daily loss budget: today's drawdown + open risk + this trade would total "
                 f"${committed:.2f}, over the {cfg.max_daily_loss_pct:g}% cap (${budget:.2f})")
@@ -352,18 +367,7 @@ def margin_guard_reason(gateway, cfg: AdvisorConfig, spec, direction: str, lots:
     if not status:
         return ""
     need, free = status
-    # Every open stop on the ACCOUNT (gold and BTC share it), when the gateway
-    # can see all symbols; the backtest / test doubles only have this symbol.
-    open_risk = None
-    account_fn = getattr(gateway, "account_open_risk", None)
-    if account_fn is not None:
-        try:
-            open_risk = float(account_fn())
-        except Exception:
-            open_risk = None
-    if open_risk is None:
-        open_risk = open_risk_dollars(gateway, cfg, spec)
-    worst = open_risk + new_trade_risk
+    worst = total_open_risk(gateway, cfg, spec) + new_trade_risk
     if free - need < worst:
         return (f"margin guard: free margin after this trade {free - need:.2f} would not cover "
                 f"{worst:.2f} if every open stop and this one were hit - use higher leverage or "

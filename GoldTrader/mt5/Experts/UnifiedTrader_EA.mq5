@@ -1165,7 +1165,8 @@ double OpenRiskMoney()
 //| DailyLossBreakerActive() fires only AFTER equity is already down  |
 //| the full %, and never closes anything - so several concurrent     |
 //| risk-sized trades could otherwise all stop out together past it.  |
-//| Returns "" if today's drawdown + OpenRiskMoney() + this new       |
+//| Returns "" if today's drawdown + AccountOpenRiskMoney() (every    |
+//| open stop on the account - BTC's too) + this new                  |
 //| entry's own risk fits within InpMaxDailyLossPct of the day's      |
 //| starting equity, else the reason to skip the signal.              |
 //+------------------------------------------------------------------+
@@ -1183,7 +1184,7 @@ string DailyRiskBudgetReason(double newLots, double slDist = 0.0)
    double newRisk   = slDist / tickSize * tickValue * newLots;
    double budget    = g_dayStartEquity * InpMaxDailyLossPct / 100.0;
    double drawdown  = MathMax(0.0, g_dayStartEquity - AccountInfoDouble(ACCOUNT_EQUITY));
-   double committed = drawdown + OpenRiskMoney() + newRisk;
+   double committed = drawdown + AccountOpenRiskMoney() + newRisk;
    if(committed > budget + 0.000000001)
       return(StringFormat("daily loss budget: drawdown + open risk + this trade = %.2f, over the "
                           "%.2f%% cap (%.2f)", committed, InpMaxDailyLossPct, budget));
@@ -1793,7 +1794,7 @@ string BuildStatsText()
    if(InpMaxDailyLossPct > 0.0 && g_dayStartEquity > 0.0)
    {
       double lostPct = 100.0 * MathMax(0.0, g_dayStartEquity - equity) / g_dayStartEquity;
-      double riskPct = 100.0 * OpenRiskMoney() / g_dayStartEquity;
+      double riskPct = 100.0 * AccountOpenRiskMoney() / g_dayStartEquity;
       text += StringFormat("\n\nDaily loss budget: %.1f%% lost + %.1f%% at risk of the %.1f%% cap%s",
                            lostPct, riskPct, InpMaxDailyLossPct,
                            g_dailyLossHit ? " (breaker TRIGGERED)" : "");

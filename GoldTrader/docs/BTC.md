@@ -49,9 +49,12 @@ BTC entry until their risk fits. Change it in `app/profiles.py`
 account, so each cap measures the account's equity, not its own trades: BTC
 stops opening once the account is 5% down on the day (from either market),
 gold (Claude and Telegram) at 10%. Neither closes open trades; each also
-refuses an entry whose stop would take the day past its cap. A bad BTC day
-therefore also counts toward gold's 10%. The margin guard counts every open
-stop on the account (gold and BTC) before any new entry.
+refuses an entry when today's loss + **every open stop on the account (gold
+and BTC)** + the new stop would pass its cap - so the account's worst day is
+bounded by the larger cap (10%), not the sum. In practice: on weekdays BTC
+opens little while gold already has several trades at risk, and on a Monday
+gold may wait until BTC's weekend trades are locked or closed. The margin
+guard counts every open stop on the account too.
 
 Also scaled to Bitcoin's price: a liquidity sweep must pierce 5% of an M15
 ATR (gold: 3 pips), and a market order may fill up to 2000 points ($20) from

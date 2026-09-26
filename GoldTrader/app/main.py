@@ -774,7 +774,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="which market's rules: gold (XAUUSD, the default) or btc (BTCUSD with its own "
                              "stop/lock/trail, 24/7, own magic, logs\\btc) - see profiles.py")
     parser.add_argument("--no-companions", action="store_true", dest="no_companions",
-                        help="don't start the settings.ini companion programs (the btc profile never does)")
+                        help="don't start the settings.ini companion programs (the btc profile starts only its own "
+                             "ML retrain / calibration / scorecard jobs - never the relay or price export)")
     parser.add_argument("--symbol", help="override the traded symbol (default XAUUSD; the btc profile BTCUSD)")
     parser.add_argument("--lots", type=float,
                         help="trade this fixed lot instead of risk-%% sizing (default: risk-sized, "

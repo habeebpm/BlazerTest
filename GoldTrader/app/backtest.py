@@ -870,8 +870,8 @@ def main(argv: list | None = None) -> int:
                              "price folder): <prefix>M15.csv, <prefix>H1.csv, ... - H4/D1/W1 are built "
                              "from H1 when absent")
     parser.add_argument("--csv-prefix", dest="csv_prefix",
-                        help="file name prefix in --csv-folder (default: the symbol + '_', e.g. "
-                             "BTCUSD_ for the EA's export; BTC_prices_ for backtest --to-drive files)")
+                        help="file name prefix in --csv-folder (default: the profile's symbol + '_' - XAUUSD_ / "
+                             "BTCUSD_, as the EAs export; BTC_prices_ for backtest --to-drive files)")
     parser.add_argument("--from-mt5", action="store_true", dest="from_mt5",
                         help="pull history from a running MT5 terminal instead of CSVs")
     parser.add_argument("--months", type=float, help="with --from-mt5: the last N months (instead of --start/--end)")
@@ -930,7 +930,9 @@ def main(argv: list | None = None) -> int:
     keys.load()     # ANTHROPIC_API_KEY for a paid (non --mechanical) run
 
     base_cfg = profiles.apply(AdvisorConfig(dry_run=True), args.profile)
+    profile_symbol = base_cfg.symbol            # the plain name the EAs export price files under
     args.symbol = args.symbol or base_cfg.symbol
+    base_cfg.symbol = args.symbol               # --symbol BTCUSDm: the snapshot must ask for that symbol
     btc = base_cfg.instrument == "btc"
     if btc and args.out == os.path.join(paths.LOG_DIR, "backtest_trades.csv"):
         args.out = os.path.join(base_cfg.log_dir, "backtest_trades.csv")
@@ -987,7 +989,9 @@ def main(argv: list | None = None) -> int:
         spec = gw.symbol_spec(args.symbol)
     else:
         if args.csv_folder:
-            prefix = args.csv_prefix if args.csv_prefix is not None else f"{args.symbol}_"
+            # the EAs export under the plain name (InpXtrExportName) even on a
+            # suffixed broker symbol such as BTCUSDm
+            prefix = args.csv_prefix if args.csv_prefix is not None else f"{profile_symbol}_"
             try:
                 found = load_csv_folder(args.csv_folder, prefix, base_cfg.primary_timeframe,
                                         base_cfg.trend_timeframe)

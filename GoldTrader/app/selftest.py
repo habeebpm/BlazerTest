@@ -1843,6 +1843,18 @@ def test_backtest_end_to_end_mechanical() -> bool:
     ok &= check("recent_closed_trades() carries ticket + time (XTR stand-down joins on them)",
                 all(r["ticket"] and r["time"] is not None for r in rct), rct[:2])
 
+    # The command line with a broker suffix: --symbol must reach the snapshot
+    # too (it used to stop at "only has bars for 'XAUUSDm', not 'XAUUSD'").
+    with _tempfile.TemporaryDirectory() as tmp:
+        files = {}
+        for tf, df in (("M15", m15), ("H4", h4), ("D1", d1), ("W1", w1)):
+            files[tf] = os.path.join(tmp, f"{tf}.csv")
+            df.to_csv(files[tf], index=False)
+        rc = backtest.main(["--bars-csv", files["M15"], "--trend-csv", files["H4"], "--daily-csv", files["D1"],
+                            "--weekly-csv", files["W1"], "--symbol", "XAUUSDm", "--mechanical", "--yes",
+                            "--out", os.path.join(tmp, "trades.csv")])
+        ok &= check("backtest --symbol XAUUSDm (broker suffix) runs to the end", rc == 0, rc)
+
     return ok
 
 
@@ -4711,6 +4723,27 @@ def test_btc_profile() -> bool:
     d = executor.execute(busy, mcfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
     ok &= check("margin guard counts the whole account: $500 of gold stops + this trade > $550 free -> refused",
                 not d.executed and "margin guard" in d.reject_reason and busy.orders_sent == [], d.reject_reason)
+
+    ok &= check("daily budget counts every open stop on the account: $400 of gold stops + a $200 BTC entry "
+                "> 5% of $10,000 on a weekday -> refused; fits the 10% weekend cap",
+                "daily loss budget" in executor.daily_risk_budget_reason(busy_budget := AccountGw(
+                    400.0, bid=100000.0, ask=100010.0, bars_df=bars, equity=10000.0), btc, spec, 10000.0, 200.0)
+                and executor.daily_risk_budget_reason(busy_budget, tactics.effective_limits(
+                    btc, pd.Timestamp("2026-09-26 12:00", tz="UTC")), spec, 10000.0, 200.0) == ""
+                and executor.daily_risk_budget_reason(AccountGw(0.0, bid=100000.0, ask=100010.0, bars_df=bars,
+                                                                equity=10000.0), btc, spec, 10000.0, 200.0) == "")
+
+    class BrokenGw(AccountGw):
+        def account_open_risk(self):
+            raise RuntimeError("MT5 not answering")
+    ok &= check("account risk unreadable -> falls back to this symbol's own stops (never crashes)",
+                executor.total_open_risk(BrokenGw(0.0, bid=100000.0, ask=100010.0, bars_df=bars), btc, spec) == 0.0)
+    gea_src = open(os.path.join(paths.PACKAGE_ROOT, "mt5", "Experts", "UnifiedTrader_EA.mq5"),
+                   encoding="utf-8").read()
+    ok &= check("gold EA: daily budget, margin guard and Stats all count the whole account",
+                "double committed = drawdown + AccountOpenRiskMoney() + newRisk;" in gea_src
+                and "double worst = AccountOpenRiskMoney() +" in gea_src
+                and "100.0 * AccountOpenRiskMoney() / g_dayStartEquity" in gea_src)
 
     import services
     started = []

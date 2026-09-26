@@ -175,6 +175,7 @@ int XtrExpWriteTf(const string symbol, const string folder, const string name, E
    if(rates[n - 1].time == g_xtrExpLastBar[slot])
       return(0);                                        // no new closed bar - leave the file alone
    string csv = "datetime,open,high,low,close,volume\r\n";
+   StringReserve(csv, 64 + n * 96);                    // one allocation for up to 5000 rows (~96 chars each)
    for(int i = 0; i < n; i++)
       csv += XtrExpUtcString((datetime)((long)rates[i].time - offsetSec)) + "," +
              DoubleToString(rates[i].open, digits) + "," + DoubleToString(rates[i].high, digits) + "," +
