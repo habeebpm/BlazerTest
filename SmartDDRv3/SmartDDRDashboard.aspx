@@ -17,7 +17,13 @@
             --brand-900: #1C3737; --brand-850: #1B3B3B; --brand-700: #0F766E; --brand-500: #14B8A6; --brand-100: #CCFBF1;
             --page: #F4F7FC; --surface: #FCFCFB; --surface-2: #F3F5F8; --border: rgba(11,11,11,.10); --border-strong: #CBD5E1;
             --ink: #0B0B0B; --ink-2: #52514E; --muted: #898781; --grid: #E1E0D9; --axis: #C3C2B7;
-            --s1: #2A78D6; --s2: #EB6834;                 /* planned / actual (and 2-series charts) */
+            --s1: #2A78D6; --s2: #EB6834; --s3: #1BAF7A;  /* planned / actual / baseline (validated as a set) */
+            --bad-text: #B42318;
+            --grad-brand: linear-gradient(120deg, #0B2323 0%, #1C3737 32%, #0F766E 68%, #14B8A6 100%);
+            --grad-hero: linear-gradient(135deg, #0E2B2B 0%, #125E58 48%, #14A596 100%);
+            --grad-accent: linear-gradient(90deg, #0F766E 0%, #14B8A6 55%, #2A78D6 100%);
+            --grad-tile: linear-gradient(180deg, #FFFFFF 0%, #F6F9FC 100%);
+            --glow: 0 10px 30px -12px rgba(15,118,110,.35);
             --o1: #86B6EF; --o2: #5598E7; --o3: #2A78D6; --o4: #1C5CAB; --o5: #104281;   /* ordinal ramp, low -> high */
             --q1: #CDE2FB; --q2: #9EC5F4; --q3: #6DA7EC; --q4: #3987E5; --q5: #256ABF; --q6: #1C5CAB; --q7: #0D366B; /* sequential */
             --div-pos: #2A78D6; --div-neg: #E34948; --div-mid: #F0EFEC;
@@ -31,7 +37,10 @@
                 color-scheme: dark;
                 --page: #0D0D0D; --surface: #1A1A19; --surface-2: #232322; --border: rgba(255,255,255,.10); --border-strong: #3A3A38;
                 --ink: #FFFFFF; --ink-2: #C3C2B7; --muted: #898781; --grid: #2C2C2A; --axis: #383835;
-                --s1: #3987E5; --s2: #D95926;
+                --s1: #3987E5; --s2: #D95926; --s3: #199E70; --bad-text: #F97066;
+                --grad-tile: linear-gradient(180deg, #1E1E1D 0%, #191918 100%);
+                --grad-hero: linear-gradient(135deg, #0A1F1F 0%, #0F4A45 50%, #0F766E 100%);
+                --glow: 0 10px 30px -12px rgba(20,184,166,.35);
                 --o1: #256ABF; --o2: #3987E5; --o3: #6DA7EC; --o4: #9EC5F4; --o5: #CDE2FB;
                 --q1: #184F95; --q2: #1C5CAB; --q3: #256ABF; --q4: #3987E5; --q5: #6DA7EC; --q6: #9EC5F4; --q7: #CDE2FB;
                 --div-pos: #3987E5; --div-neg: #E66767; --div-mid: #383835; --good-text: #0CA30C;
@@ -42,7 +51,10 @@
             color-scheme: dark;
             --page: #0D0D0D; --surface: #1A1A19; --surface-2: #232322; --border: rgba(255,255,255,.10); --border-strong: #3A3A38;
             --ink: #FFFFFF; --ink-2: #C3C2B7; --muted: #898781; --grid: #2C2C2A; --axis: #383835;
-            --s1: #3987E5; --s2: #D95926;
+            --s1: #3987E5; --s2: #D95926; --s3: #199E70; --bad-text: #F97066;
+            --grad-tile: linear-gradient(180deg, #1E1E1D 0%, #191918 100%);
+            --grad-hero: linear-gradient(135deg, #0A1F1F 0%, #0F4A45 50%, #0F766E 100%);
+            --glow: 0 10px 30px -12px rgba(20,184,166,.35);
             --o1: #256ABF; --o2: #3987E5; --o3: #6DA7EC; --o4: #9EC5F4; --o5: #CDE2FB;
             --q1: #184F95; --q2: #1C5CAB; --q3: #256ABF; --q4: #3987E5; --q5: #6DA7EC; --q6: #9EC5F4; --q7: #CDE2FB;
             --div-pos: #3987E5; --div-neg: #E66767; --div-mid: #383835; --good-text: #0CA30C;
@@ -50,7 +62,16 @@
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { background: var(--page); color: var(--ink); font-family: var(--font); font-size: 14px; }
+        html, body { color: var(--ink); font-family: var(--font); font-size: 14px; }
+        html { background: var(--page); }
+        body {
+            min-height: 100vh;
+            background:
+                radial-gradient(1100px 420px at 0% -8%, rgba(20,184,166,.13), transparent 62%),
+                radial-gradient(900px 380px at 100% -6%, rgba(42,120,214,.10), transparent 60%),
+                var(--page);
+            background-attachment: fixed;
+        }
         button, input, select { font: inherit; color: inherit; }
         a { color: inherit; }
 
@@ -59,13 +80,22 @@
             position: sticky; top: 0; z-index: 50;
             display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px;
             padding: 10px 18px;
-            background: linear-gradient(135deg, var(--brand-900), var(--brand-500));
-            color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+            background: var(--grad-brand);
+            color: #fff; box-shadow: 0 6px 24px -10px rgba(11,35,35,.55);
+            border-bottom: 1px solid rgba(255,255,255,.10);
         }
+        .topbar::before {   /* soft highlight sweep */
+            content: ""; position: absolute; inset: 0; pointer-events: none;
+            background: radial-gradient(600px 120px at 18% 0%, rgba(255,255,255,.16), transparent 70%),
+                        radial-gradient(500px 140px at 85% 120%, rgba(42,120,214,.25), transparent 70%);
+        }
+        .topbar > * { position: relative; }
+        .brand-mark { background: linear-gradient(135deg, rgba(255,255,255,.30), rgba(255,255,255,.08)) !important; border: 1px solid rgba(255,255,255,.35); box-shadow: inset 0 1px 0 rgba(255,255,255,.35); }
         .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
         .brand-mark { width: 32px; height: 32px; border-radius: 9px; background: rgba(255,255,255,.18); display: flex; align-items: center; justify-content: center; font-weight: 800; }
         .brand-name { font-weight: 700; font-size: 16px; line-height: 1.1; }
         .brand-sub { font-size: 11px; opacity: .8; }
+        #stamp { display: block; opacity: .85; }
         .top-spacer { flex: 1; }
         .top-field { display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; opacity: .95; }
         .top-field select, .top-field input {
@@ -76,7 +106,8 @@
         .top-field select.wide { min-width: 240px; max-width: 320px; }
         .tbtn {
             height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.35);
-            background: rgba(255,255,255,.14); color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
+            background: linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.08)); color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.25);
             display: inline-flex; align-items: center; gap: 6px; text-decoration: none; white-space: nowrap;
         }
         .tbtn:hover { background: rgba(255,255,255,.28); }
@@ -86,21 +117,24 @@
         /* ---------------- Tabs ---------------- */
         .tabs {
             display: flex; gap: 4px; padding: 8px 18px 0; overflow-x: auto;
-            background: var(--surface); border-bottom: 1px solid var(--border);
+            background: var(--surface); background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
         }
         .tab {
             flex: 0 0 auto; padding: 9px 14px 10px; border: 0; background: transparent; cursor: pointer;
             color: var(--ink-2); font-weight: 600; font-size: 13px; border-bottom: 3px solid transparent;
         }
         .tab:hover { color: var(--ink); }
-        .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand-500); }
+        .tab { position: relative; border-radius: 10px 10px 0 0; }
+        .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: transparent; background: linear-gradient(180deg, transparent 0%, rgba(20,184,166,.10) 100%); }
+        .tab[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--grad-accent); }
         .tab .n { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); font-size: 11px; font-variant-numeric: tabular-nums; }
 
         /* ---------------- Filter bar ---------------- */
         .filterbar {
             position: sticky; top: 52px; z-index: 40;
             display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-            padding: 10px 18px; background: var(--surface); border-bottom: 1px solid var(--border);
+            padding: 10px 18px; background: var(--surface); background: color-mix(in srgb, var(--surface) 86%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
+            box-shadow: 0 8px 20px -18px rgba(15,23,42,.45);
         }
         .fbtn {
             display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
@@ -136,14 +170,37 @@
 
         .section-title { grid-column: span 12; display: flex; align-items: baseline; gap: 10px; margin: 6px 2px -4px; }
         .section-title h2 { font-size: 17px; }
+        .setup { grid-column: span 12; padding: 22px 24px; border-radius: var(--radius); border: 1px dashed var(--border-strong); background: var(--surface); }
+        .setup h3 { font-size: 15px; margin-bottom: 6px; } .setup p, .setup li { font-size: 13px; color: var(--ink-2); line-height: 1.55; } .setup ol { padding-left: 20px; margin-top: 6px; }
+        .setup code { background: var(--surface-2); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
+        .views-list { max-height: 280px; overflow: auto; margin: 6px 12px; border: 1px solid var(--border); border-radius: 8px; }
+        .views-list .vrow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+        .views-list .vrow:last-child { border-bottom: 0; }
+        .views-list .vrow .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+        .views-list .vrow .meta { color: var(--muted); font-size: 11px; font-weight: 400; display: block; }
+        .tag { display: inline-block; padding: 0 6px; border-radius: 999px; background: var(--brand-100); font-size: 10.5px; font-weight: 700; margin-left: 4px; }
+        .acx { margin-top: 16px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+        .acx-h { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: linear-gradient(90deg, rgba(20,184,166,.12), rgba(42,120,214,.08)); font-weight: 700; font-size: 13px; }
+        .acx-h a { margin-left: auto; }
+        .acx .kv { padding: 10px 14px 4px; margin: 0; }
         .section-title p { color: var(--ink-2); font-size: 12.5px; }
 
         /* ---------------- KPI tiles ---------------- */
         .kpis { grid-column: span 12; display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 12px; }
         .tile {
-            position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-            box-shadow: var(--shadow); padding: 14px 16px 13px; min-height: 104px; display: flex; flex-direction: column; gap: 4px;
+            position: relative; background: var(--grad-tile); border: 1px solid var(--border); border-radius: var(--radius);
+            box-shadow: var(--shadow); padding: 16px 16px 13px; min-height: 108px; display: flex; flex-direction: column; gap: 4px;
+            overflow: hidden; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
         }
+        .tile::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--grad-accent); opacity: .9; }
+        .tile:hover { transform: translateY(-2px); box-shadow: var(--shadow), var(--glow); }
+        .tile .ico {
+            position: absolute; right: 12px; top: 13px; width: 30px; height: 30px; border-radius: 9px;
+            display: flex; align-items: center; justify-content: center; font-size: 14px;
+            background: linear-gradient(135deg, rgba(20,184,166,.18), rgba(42,120,214,.16)); border: 1px solid rgba(20,184,166,.25);
+        }
+        .delta { font-weight: 700; font-variant-numeric: tabular-nums; }
+        .delta.good { color: var(--good-text); } .delta.bad { color: var(--bad-text); } .delta.flat { color: var(--ink-2); }
         .tile.click { cursor: pointer; }
         .tile.click:hover { border-color: var(--brand-500); }
         .tile .lbl { font-size: 12px; color: var(--ink-2); font-weight: 600; }
@@ -152,10 +209,25 @@
         .tile .meter { height: 6px; border-radius: 999px; background: var(--q1); overflow: hidden; margin-top: 6px; }
         .tile .meter > span { display: block; height: 100%; border-radius: 999px; background: var(--s1); }
         .hero { grid-column: span 12; display: grid; grid-template-columns: minmax(260px, 1.1fr) 3fr; gap: 12px; }
-        .hero .big { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px 20px; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
-        .hero .big .lbl { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+        .hero .big {
+            position: relative; overflow: hidden; background: var(--grad-hero); color: #fff; border-radius: var(--radius);
+            box-shadow: 0 18px 40px -18px rgba(14,43,43,.65); padding: 20px 22px; display: flex; flex-direction: column; justify-content: center; gap: 7px;
+        }
+        .hero .big::before { content: ""; position: absolute; width: 360px; height: 360px; right: -140px; top: -170px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,255,.18), transparent 65%); }
+        .hero .big::after { content: ""; position: absolute; width: 260px; height: 260px; left: -110px; bottom: -150px; border-radius: 50%; background: radial-gradient(circle, rgba(42,120,214,.35), transparent 65%); }
+        .hero .big > * { position: relative; z-index: 1; }
+        .hero .big .lbl { font-size: 13px; font-weight: 700; color: rgba(255,255,255,.85); letter-spacing: .2px; }
         .hero .big .num { font-size: 56px; font-weight: 750; line-height: 1; letter-spacing: -1px; }
-        .hero .big .row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
+        .hero .big .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: rgba(255,255,255,.88); }
+        .hero .big .row b { color: #fff; }
+        .hero .big .status { color: #fff; background: rgba(255,255,255,.14); padding: 2px 8px 2px 6px; border-radius: 999px; }
+        .hero .big .status::before { color: #fff !important; }
+        .hero .big .delta { background: rgba(255,255,255,.95); padding: 1px 7px; border-radius: 999px; }
+        .hero-flex { display: flex; align-items: center; gap: 18px; }
+        .ring { flex: 0 0 auto; }
+        .ring .trk { stroke: rgba(255,255,255,.18); }
+        .ring .arc { stroke: #fff; stroke-linecap: round; }
+        .ring .pln { stroke: #FACC15; stroke-width: 3; }
         .hero .kpis { grid-column: auto; grid-template-columns: repeat(3, minmax(0, 1fr)); }
         @media (max-width: 1100px) { .hero .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         @media (max-width: 900px) { .hero { grid-template-columns: 1fr; } }
@@ -169,7 +241,10 @@
         .status.critical::before { content: "\2716"; font-size: 10px; color: var(--critical); }
 
         /* ---------------- Cards ---------------- */
-        .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); display: flex; flex-direction: column; min-width: 0; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); display: flex; flex-direction: column; min-width: 0; transition: box-shadow .2s ease; }
+        .card:hover { box-shadow: var(--shadow), 0 14px 34px -22px rgba(15,23,42,.35); }
+        .card-h h3 { display: flex; align-items: center; gap: 8px; }
+        .card-h h3::before { content: ""; width: 4px; height: 16px; border-radius: 3px; background: var(--grad-accent); flex: 0 0 auto; }
         .card-h { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px 6px; }
         .card-h h3 { font-size: 14px; font-weight: 700; }
         .card-h p { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
@@ -232,7 +307,8 @@
         .pager { display: flex; align-items: center; gap: 8px; justify-content: flex-end; padding-top: 10px; font-size: 12px; color: var(--ink-2); }
         .btn { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); cursor: pointer; font-size: 12.5px; font-weight: 600; }
         .btn:hover { border-color: var(--brand-500); }
-        .btn.primary { background: var(--brand-700); border-color: var(--brand-700); color: #fff; }
+        .btn.primary { background: linear-gradient(135deg, #0F766E, #14B8A6); border-color: #0F766E; color: #fff; box-shadow: 0 6px 14px -8px rgba(15,118,110,.8); }
+        a.btn { display: inline-flex; align-items: center; text-decoration: none; }
         .btn:disabled { opacity: .45; cursor: default; }
 
         /* ---------------- Quality list ---------------- */
@@ -315,7 +391,7 @@
     <header class="topbar">
         <a class="brand" id="backLink" href="SmartDDRv3.aspx" title="Back to SmartDDR">
             <span class="brand-mark">S</span>
-            <span><span class="brand-name">SmartDDR Dashboard</span><br /><span class="brand-sub">DDR + EPR · M75 AFC analytics</span></span>
+            <span><span class="brand-name">SmartDDR Dashboard</span><br /><span class="brand-sub">DDR + EPR · M75 AFC analytics <span id="stamp"></span></span></span>
         </a>
         <span class="top-spacer"></span>
         <label class="top-field">Project group
@@ -328,10 +404,10 @@
             <input type="date" id="asOf" />
         </label>
         <button type="button" class="tbtn" id="btnRefresh" title="Reload data from the database">⟳ Refresh</button>
-        <button type="button" class="tbtn" id="btnExport" title="Export the filtered register to CSV">⬇ CSV</button>
+        <button type="button" class="tbtn" id="btnViews" title="Saved views – save, share or apply a filter set" aria-haspopup="dialog">★ Views</button>
+        <button type="button" class="tbtn" id="btnExport" title="Export this tab to Excel (.xlsx) – one sheet per chart/table">⬇ Excel</button>
         <button type="button" class="tbtn" id="btnPrint" title="Print / save as PDF">🖨</button>
         <button type="button" class="tbtn" id="btnTheme" title="Light / dark">◐</button>
-        <span class="stamp" id="stamp"></span>
     </header>
 
     <nav class="tabs" role="tablist" id="tabs"></nav>
@@ -387,6 +463,8 @@
             { id: 'overdue', label: 'Overdue' },
             { id: 'lookahead', label: 'Look-ahead' },
             { id: 'progress', label: 'Progress & S-curve' },
+            { id: 'trend', label: 'Trend' },
+            { id: 'baseline', label: 'Baseline' },
             { id: 'm75', label: 'M75 AFC' },
             { id: 'review', label: 'Review cycle' },
             { id: 'handover', label: 'Handover' },
@@ -470,16 +548,24 @@
         /* =================================================================
            Data loading and normalisation
            ================================================================= */
+        function parseResp(r) {
+            return r.text().then(function (t) {
+                var j, err;
+                try { j = JSON.parse(t); } catch (e) { err = new Error('the server returned a page instead of data (HTTP ' + r.status + '). Your session may have expired – reload the page.'); err.status = r.status; throw err; }
+                if (!r.ok || (j && j.error)) { err = new Error((j && j.error) || ('HTTP ' + r.status)); err.status = r.status; throw err; }
+                return j;
+            });
+        }
+        function qstr(params) { return Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&'); }
         function api(params) {
-            var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
-            return fetch('SmartDDRDashboard.aspx?' + qs, { credentials: 'same-origin', cache: 'no-store' })
-                .then(function (r) {
-                    return r.text().then(function (t) {
-                        var j; try { j = JSON.parse(t); } catch (e) { throw new Error('the server returned a page instead of data (HTTP ' + r.status + '). Your session may have expired – reload the page.'); }
-                        if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-                        return j;
-                    });
-                });
+            return fetch('SmartDDRDashboard.aspx?' + qstr(params), { credentials: 'same-origin', cache: 'no-store' }).then(parseResp);
+        }
+        function apiPost(params, form) {
+            return fetch('SmartDDRDashboard.aspx?' + qstr(params), {
+                method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                headers: { 'X-SDDR': '1', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                body: new URLSearchParams(form || {}).toString()
+            }).then(parseResp);
         }
 
         function loadProjects(selectValue) {
@@ -506,6 +592,7 @@
                 S.data = d;
                 normalise(d);
                 restoreFilters();
+                if (S.pendingView) { assignState(S.pendingView); S.pendingView = null; }
                 derive();
                 render();
                 $('stamp').textContent = 'Data as of ' + d.generated + (d.truncated ? ' (truncated)' : '');
@@ -569,6 +656,47 @@
             S.m75 = (d.m75rows || []).map(function (r) {
                 return { proj: r[mi.Project_No], disc: r[mi.Discipline], plan: num(r[mi.AFC_PLN_TOTAL]) || 0, afcx: num(r[mi.AFCX_COUNT]) || 0, adh: num(r[mi.ADH_COUNT]) || 0 };
             });
+
+            // Who is looking + optional history features.
+            S.user = d.user || ''; S.isAdmin = !!d.admin; S.aconexLink = !!d.aconexLink; S.history = !!d.history;
+            S.snaps = [];
+            if (d.history) {
+                var sx = {}; (d.snapcols || []).forEach(function (c, i) { sx[c] = i; });
+                S.snaps = (d.snaprows || []).map(function (r) {
+                    return {
+                        d: parseDay(r[sx.SnapDate]), disc: r[sx.Discipline], docs: num(r[sx.Docs]) || 0, complete: num(r[sx.Complete]) || 0,
+                        pending: num(r[sx.Pending]) || 0, overdue: num(r[sx.Overdue]) || 0, due14: num(r[sx.Due14]) || 0, notStarted: num(r[sx.NotStarted]) || 0,
+                        est: num(r[sx.EstHours]) || 0, earned: num(r[sx.EarnedHours]) || 0, planned: num(r[sx.PlannedHours]) || 0,
+                        m75p: num(r[sx.M75Plan]) || 0, m75d: num(r[sx.M75Done]) || 0
+                    };
+                }).filter(function (x) { return x.d != null; });
+            }
+            S.baselines = d.baselines || [];
+            setBaseline(d.baseline || '', d.blcols || [], d.blrows || []);
+        }
+
+        // Attach a baseline's planned dates to each row (by DDR_ID, else project + document number)
+        // and compute the plan drift (current plan - baseline plan, days) per milestone.
+        function setBaseline(name, cols, rows) {
+            var bi = {}; cols.forEach(function (c, i) { bi[c] = i; });
+            var byId = new Map(), byDoc = new Map();
+            rows.forEach(function (r) {
+                var dates = STAGES.map(function (st) { return parseDay(r[bi[st.p]]); });
+                if (r[bi.DDR_ID] != null && r[bi.DDR_ID] !== '') byId.set(String(r[bi.DDR_ID]), dates);
+                if (r[bi.Document_No]) byDoc.set((r[bi.Project_No] || '') + '|' + up(r[bi.Document_No]), dates);
+            });
+            S.blName = name; S.blCount = rows.length; var matched = 0;
+            S.all.forEach(function (o) {
+                var b = (o.id != null && byId.get(String(o.id))) || byDoc.get((o.proj || '') + '|' + up(o.doc)) || null;
+                o.bl = b; o.drift = null; o.docDrift = null;
+                if (b) {
+                    matched++;
+                    o.drift = o.ms.map(function (m, i) { return (m.p != null && b[i] != null) ? m.p - b[i] : null; });
+                    for (var i = 6; i >= 0; i--) if (o.drift[i] != null) { o.docDrift = o.drift[i]; break; }
+                }
+            });
+            S.blMatched = matched;
+            regCache.rows = null;
         }
 
         // Everything that depends on the data date.
@@ -740,7 +868,7 @@
             if (!vis.length) html += '<div class="note">No matching values.</div>';
             $('popList').innerHTML = html;
         }
-        function closePop() { $('pop').classList.remove('open'); popState = null; }
+        function closePop() { $('pop').classList.remove('open'); $('pop').style.width = ''; popState = null; }
         function commitPop() {
             var st = popState, key = st.key;
             var text = $('popText').value.trim(), op = $('popOp').value;
@@ -774,7 +902,7 @@
             }
         });
         $('pop').addEventListener('change', function (e) {
-            var t = e.target; if (!popState || t.type !== 'checkbox') return;
+            var t = e.target; if (!popState || popState.key === '__views' || t.type !== 'checkbox') return;
             var q = popState.search.toLowerCase();
             if (t.hasAttribute('data-all')) {
                 popState.values.forEach(function (v) { if (!q || (v || '(blanks)').toLowerCase().indexOf(q) >= 0) { if (t.checked) popState.sel.add(v); else popState.sel.delete(v); } });
@@ -783,8 +911,12 @@
                 var v = t.getAttribute('data-v'); if (t.checked) popState.sel.add(v); else popState.sel.delete(v);
             }
         });
-        $('pop').addEventListener('input', function (e) { if (e.target.id === 'popSearch') { popState.search = e.target.value; drawPopList(); } });
-        $('pop').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.target.closest('button')) { e.preventDefault(); commitPop(); } });
+        $('pop').addEventListener('input', function (e) { if (popState && popState.key !== '__views' && e.target.id === 'popSearch') { popState.search = e.target.value; drawPopList(); } });
+        $('pop').addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter' || e.target.closest('button')) return;
+            e.preventDefault();
+            if (popState && popState.key === '__views') { if (e.target.id === 'viewName') viewsAction('save'); } else commitPop();
+        });
 
         /* =================================================================
            Tooltip
@@ -884,6 +1016,7 @@
         function barDiv(host, items, o) {
             o = o || {}; host.innerHTML = '';
             if (!items.length) return emptyChart(host);
+            if (!o.tickFmt) o.tickFmt = function (t) { return fmt1(t); };
             var W = Math.max(300, innerW(host)), rowH = 26, thick = 14, labelW = Math.min(190, Math.max(80, W * 0.3)), plotW = W - labelW - 60;
             var ext = Math.max(0.1, Math.max.apply(null, items.map(function (i) { return Math.abs(i.value || 0); })));
             var mid = labelW + plotW / 2, H = items.length * rowH + 22, s = svgEl(W, H, o.label);
@@ -896,7 +1029,7 @@
                 if (v != null) {
                     var w = Math.abs(plotW / 2 * v / ext), neg = v < 0;
                     if (w > 0.5) {
-                        node('path', { d: neg ? hBarPathLeft(mid - w, by, w, thick) : hBarPath(mid, by, w, thick), style: 'fill:' + (neg ? 'var(--div-neg)' : 'var(--div-pos)') }, g);
+                        node('path', { d: neg ? hBarPathLeft(mid - w, by, w, thick) : hBarPath(mid, by, w, thick), style: 'fill:' + ((neg !== !!o.posBad) ? 'var(--div-neg)' : 'var(--div-pos)') }, g);
                     }
                     // Negative values are labelled on the empty side of the axis so they never collide with category names.
                     txt(g, neg ? mid + 6 : mid + w + 6, y + rowH / 2, it.valueLabel, 'val', 'start');
@@ -966,6 +1099,7 @@
             niceTicks(yMax, 4).forEach(function (t) { if (t > yMax + 1e-9) return; node('line', { x1: padL, x2: padL + plotW, y1: Y(t), y2: Y(t), 'class': t === 0 ? 'axis' : 'gridline' }, s); txt(s, padL - 6, Y(t), o.yFmt ? o.yFmt(t) : compact(t), 'tick', 'end'); });
             var m0 = monthKey(x0), m1 = monthKey(x1), span = m1 - m0 + 1, stepM = Math.max(1, Math.ceil(span / Math.max(2, Math.floor(plotW / 70))));
             for (var k = m0; k <= m1; k += stepM) { var d = monthStart(k); if (d < x0) continue; txt(s, X(d), H - 10, monthLabel(k), 'tick', 'middle'); }
+            if (o.refY != null && o.refY <= yMax) { node('line', { x1: padL, x2: padL + plotW, y1: Y(o.refY), y2: Y(o.refY), 'class': 'marker', style: 'stroke-width:1.5;opacity:.7' }, s); txt(s, padL + plotW + 6, Y(o.refY), o.refLabel || '', 'tick'); }
             if (o.today != null && o.today >= x0 && o.today <= x1) { node('line', { x1: X(o.today), x2: X(o.today), y1: padT, y2: padT + plotH, 'class': 'today' }, s); txt(s, X(o.today) + 4, padT + 6, 'Data date', 'tick'); }
             var ends = [];
             series.forEach(function (sr) {
@@ -1029,7 +1163,8 @@
         function legend(items) {
             return '<div class="legend">' + items.map(function (i) {
                 var cls = i.kind === 'tick' ? ' class="tick"' : (i.kind === 'line' ? ' class="line"' : '');
-                return '<span><i' + cls + (i.kind === 'tick' ? '' : ' style="background:' + i.color + '"') + '></i>' + esc(i.name) + '</span>';
+                var sty = i.kind === 'tick' ? '' : (i.kind === 'ring' ? ' style="background:transparent;border:2.5px solid ' + i.color + ';border-radius:50%"' : ' style="background:' + i.color + '"');
+                return '<span><i' + cls + sty + '></i>' + esc(i.name) + '</span>';
             }).join('') + '</div>';
         }
 
@@ -1043,6 +1178,7 @@
             el.innerHTML = '<div class="card-h"><div><h3>' + esc(o.title) + '</h3>' + (o.sub ? '<p>' + esc(o.sub) + '</p>' : '') + '</div><div class="tools">' +
                 (o.controls || '') +
                 (o.table !== false ? '<button type="button" class="icon-btn" data-act="table" aria-pressed="false" title="Show as table">▦</button>' : '') +
+                '<button type="button" class="icon-btn" data-act="xlsx" title="Download Excel (.xlsx)">⊞</button>' +
                 '<button type="button" class="icon-btn" data-act="csv" title="Download CSV">⬇</button>' +
                 '<button type="button" class="icon-btn" data-act="max" title="Focus mode">⤢</button></div></div>' +
                 (o.legend || '') + '<div class="card-b"></div>' + (o.foot ? '<div class="card-f">' + o.foot + '</div>' : '');
@@ -1079,7 +1215,8 @@
         }
         function tile(o) {
             return '<div class="tile' + (o.click ? ' click' : '') + '"' + (o.click ? ' data-go="' + esc(o.click) + '" tabindex="0" role="button"' : '') + ' title="' + esc(o.help || '') + '">' +
-                '<div class="lbl">' + esc(o.label) + '</div><div class="val">' + esc(o.value) + '</div>' +
+                (o.ico ? '<span class="ico" aria-hidden="true">' + o.ico + '</span>' : '') +
+                '<div class="lbl"' + (o.ico ? ' style="padding-right:36px"' : '') + '>' + esc(o.label) + '</div><div class="val">' + esc(o.value) + '</div>' +
                 (o.sub ? '<div class="sub">' + o.sub + '</div>' : '') +
                 (o.meter != null ? '<div class="meter"><span style="width:' + Math.max(0, Math.min(100, o.meter)) + '%"></span></div>' : '') + '</div>';
         }
@@ -1118,7 +1255,7 @@
             var wf = hoursWeight(rows), tw = sum(rows, wf);
             if (!tw) return null;
             var days = [];
-            rows.forEach(function (r) { r.ms.forEach(function (m) { if (m.p != null) days.push(m.p); if (m.a != null) days.push(m.a); }); });
+            rows.forEach(function (r) { r.ms.forEach(function (m, i) { if (m.p != null) days.push(m.p); if (m.a != null) days.push(m.a); if (r.bl && r.bl[i] != null) days.push(r.bl[i]); }); });
             if (!days.length) return null;
             days.sort(function (a, b) { return a - b; });
             var lo = days[Math.floor(days.length * 0.01)], hi = days[Math.ceil(days.length * 0.99) - 1];
@@ -1131,7 +1268,7 @@
                     var w = wf(r); if (!w) return;
                     var prevC = 0, reach = -1;
                     var pts = [];
-                    r.ms.forEach(function (m, i) { var d = m[which]; if (d != null && (which === 'p' || d <= S.asOf)) pts.push({ d: d, i: i }); });
+                    r.ms.forEach(function (m, i) { var d = which === 'b' ? (r.bl ? r.bl[i] : null) : m[which]; if (d != null && (which !== 'a' || d <= S.asOf)) pts.push({ d: d, i: i }); });
                     pts.sort(function (a, b) { return a.d - b.d || a.i - b.i; });
                     pts.forEach(function (p) {
                         if (p.i <= reach) return; reach = p.i;
@@ -1148,7 +1285,7 @@
             }
             var planned = curve('p'), actual = curve('a');
             var actualCut = actual.map(function (v, i) { return xs[i] <= S.asOf + stepDays ? v : null; });
-            return { xs: xs, planned: planned, actual: actualCut };
+            return { xs: xs, planned: planned, actual: actualCut, baseline: S.blName ? curve('b') : null };
         }
         function discRows(rows) {
             var m = groupBy(rows, function (r) { return r.disc; });
@@ -1225,6 +1362,434 @@
 
         var VIEWS = {};
 
+        /* =================================================================
+           Trend (nightly snapshots) – shared helpers
+           ================================================================= */
+        // Snapshot series for the current Discipline filter (other filters can't apply to a snapshot).
+        function snapSeries() {
+            var f = S.filters.disc, byDate = new Map();
+            S.snaps.forEach(function (x) {
+                if (f) { if (x.disc === '*' || !passField({ disc: x.disc === '(Blank)' ? '' : x.disc }, 'disc', f)) return; }
+                else if (x.disc !== '*') return;
+                var a = byDate.get(x.d);
+                if (!a) { a = { d: x.d, docs: 0, complete: 0, pending: 0, overdue: 0, due14: 0, notStarted: 0, est: 0, earned: 0, planned: 0, m75p: 0, m75d: 0 }; byDate.set(x.d, a); }
+                for (var k in a) if (k !== 'd') a[k] += x[k] || 0;
+            });
+            return Array.from(byDate.values()).sort(function (a, b) { return a.d - b.d; }).map(function (a) {
+                a.earnedPct = pct(a.earned, a.est); a.plannedPct = pct(a.planned, a.est);
+                a.spi = a.planned > 0 ? a.earned / a.planned : null; a.m75Pct = pct(a.m75d, a.m75p);
+                return a;
+            });
+        }
+        function weekAgo(series, day) { var best = null; series.forEach(function (x) { if (x.d <= day - 7) best = x; }); return best; }
+        // Deltas only make sense when the current view measures what a snapshot measured.
+        function compareBase() {
+            if (!S.history || !S.snaps.length || S.q || S.qc || S.inclAct || S.inclCancel || S.asOf < todayDay()) return null;
+            if (Object.keys(S.filters).some(function (k) { return k !== 'disc'; })) return null;
+            var prev = weekAgo(snapSeries(), S.asOf);
+            return prev ? { prev: prev } : null;
+        }
+        function deltaHtml(cur, prev, upGood, isPct) {
+            if (cur == null || prev == null) return '';
+            var d = cur - prev, txtV = isPct ? fmt1(Math.abs(d)) + ' pts' : fmtInt(Math.abs(d));
+            if (Math.abs(d) < (isPct ? 0.05 : 0.5)) return '<span class="delta flat" title="vs last week">■ 0</span>';
+            var good = (d > 0) === upGood;
+            return '<span class="delta ' + (good ? 'good' : 'bad') + '" title="vs last week">' + (d > 0 ? '▲ ' : '▼ ') + txtV + '</span>';
+        }
+        function ringSvg(ea, pl) {
+            var r = 36, c = 2 * Math.PI * r, e = Math.max(0, Math.min(100, ea || 0)), p = Math.max(0, Math.min(100, pl || 0));
+            var ang = p / 100 * 2 * Math.PI - Math.PI / 2, cx = 46, cy = 46;
+            var x1 = cx + (r - 8) * Math.cos(ang), y1 = cy + (r - 8) * Math.sin(ang), x2 = cx + (r + 8) * Math.cos(ang), y2 = cy + (r + 8) * Math.sin(ang);
+            return '<svg class="ring" width="92" height="92" viewBox="0 0 92 92" role="img" aria-label="Earned ' + fmtPct(ea) + ' against planned ' + fmtPct(pl) + '">' +
+                '<circle class="trk" cx="46" cy="46" r="' + r + '" fill="none" stroke-width="9"/>' +
+                '<circle class="arc" cx="46" cy="46" r="' + r + '" fill="none" stroke-width="9" stroke-dasharray="' + (c * e / 100).toFixed(1) + ' ' + c.toFixed(1) + '" transform="rotate(-90 46 46)"/>' +
+                (pl != null ? '<line class="pln" x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1) + '"><title>Planned</title></line>' : '') + '</svg>';
+        }
+        function curveSeries(sc) {
+            var out = [{ name: 'Planned', color: 'var(--s1)', values: sc.planned }, { name: 'Actual', color: 'var(--s2)', values: sc.actual }];
+            if (sc.baseline) out.push({ name: 'Baseline', color: 'var(--s3)', values: sc.baseline });
+            return out;
+        }
+        function curveLegend() {
+            return [{ name: 'Planned', color: 'var(--s1)', kind: 'line' }, { name: 'Actual', color: 'var(--s2)', kind: 'line' }].concat(S.blName ? [{ name: 'Baseline ' + S.blName, color: 'var(--s3)', kind: 'line' }] : []);
+        }
+        function setupCard(grid, feature) {
+            var d = document.createElement('div'); d.className = 'setup';
+            d.innerHTML = '<h3>' + esc(feature) + ' is not set up yet</h3>' +
+                '<p>This feature stores history in the database. Ask the SmartDDR administrator to:</p><ol>' +
+                '<li>Run <code>SmartDDRDashboard_Setup.sql</code> in the ACAD_DATA database (creates the snapshot, baseline and saved-view tables and procedures).</li>' +
+                '<li>Optionally enable the nightly SQL Agent job at the bottom of that script (or schedule <code>EXEC dbo.usp_SDDR_Dash_Snapshot</code>).</li>' +
+                '<li>Grant the web application\'s database login the permissions listed in the script.</li></ol>';
+            grid.appendChild(d);
+        }
+        function adminBtn(action, label) { return S.isAdmin ? '<button type="button" class="btn" data-admin="' + action + '">' + esc(label) + '</button>' : ''; }
+
+        /* ---------------- Trend ---------------- */
+        VIEWS.trend = function (grid) {
+            if (!S.history) return setupCard(grid, 'Trend history');
+            var ser = snapSeries(), snapBtn = adminBtn('snapshot', '📸 Snapshot now');
+            if (ser.length < 2) {
+                var d = document.createElement('div'); d.className = 'setup';
+                d.innerHTML = '<h3>' + (ser.length ? 'One snapshot so far' : 'No snapshots yet') + '</h3><p>Trend lines appear once there are at least two daily snapshots. They are taken nightly by the SQL Agent job' +
+                    (S.isAdmin ? ', or now with the button below.</p><p style="margin-top:10px">' + snapBtn + '</p>' : '.</p>');
+                grid.appendChild(d); return;
+            }
+            var last = ser[ser.length - 1], prev = weekAgo(ser, last.d) || ser[0];
+            var xs = ser.map(function (x) { return x.d; });
+            kpiRow(grid,
+                tile({ label: 'Earned %', ico: '📈', value: fmtPct(last.earnedPct), sub: deltaHtml(last.earnedPct, prev.earnedPct, true, true) + ' vs ' + esc(fmtDay(prev.d)) }) +
+                tile({ label: 'Planned %', ico: '🗓️', value: fmtPct(last.plannedPct), sub: deltaHtml(last.plannedPct, prev.plannedPct, true, true) }) +
+                tile({ label: 'SPI', ico: '🎯', value: last.spi == null ? '–' : last.spi.toFixed(2), sub: spiStatus(last.spi) + ' ' + (last.spi != null && prev.spi != null ? deltaHtml(last.spi * 100, prev.spi * 100, true, true).replace(' pts', '') : '') }) +
+                tile({ label: 'Pending', ico: '⏳', value: fmtInt(last.pending), sub: deltaHtml(last.pending, prev.pending, false) }) +
+                tile({ label: 'Overdue', ico: '⚠️', value: fmtInt(last.overdue), sub: deltaHtml(last.overdue, prev.overdue, false) }) +
+                tile({ label: 'M75 AFC', ico: '🚩', value: fmtPct(last.m75Pct), sub: deltaHtml(last.m75Pct, prev.m75Pct, true, true) }) +
+                tile({ label: 'Snapshots', ico: '📸', value: fmtInt(ser.length), sub: esc(fmtDay(ser[0].d)) + ' → ' + esc(fmtDay(last.d)) }));
+            var pctFmt = function (v) { return Math.round(v) + '%'; };
+            card(grid, {
+                title: 'Progress trend', sub: 'Earned vs planned % as recorded each night', span: 8, controls: snapBtn,
+                legend: legend([{ name: 'Planned %', color: 'var(--s1)', kind: 'line' }, { name: 'Earned %', color: 'var(--s2)', kind: 'line' }]),
+                draw: function (h) { lineChart(h, xs, [{ name: 'Planned %', color: 'var(--s1)', values: ser.map(function (x) { return x.plannedPct; }) }, { name: 'Earned %', color: 'var(--s2)', values: ser.map(function (x) { return x.earnedPct; }), area: true }], { yMax: 100, yFmt: pctFmt, label: 'Progress trend' }); },
+                data: function () { return snapTable(ser); }
+            });
+            var spiMax = Math.max(1.2, Math.ceil(Math.max.apply(null, ser.map(function (x) { return x.spi || 0; })) * 10 + 1) / 10);
+            card(grid, {
+                title: 'SPI trend', sub: 'Schedule performance index; the line at 1.00 is on plan', span: 4,
+                draw: function (h) { lineChart(h, xs, [{ name: 'SPI', color: 'var(--s1)', values: ser.map(function (x) { return x.spi; }) }], { yMax: spiMax, yFmt: function (v) { return v.toFixed(2); }, refY: 1, refLabel: '1.00', label: 'SPI trend' }); },
+                data: function () { return { head: ['Date', 'SPI'], num: [0, 1], rows: ser.map(function (x) { return [fmtDay(x.d), x.spi == null ? '' : x.spi.toFixed(3)]; }) }; }
+            });
+            card(grid, {
+                title: 'Backlog trend', sub: 'Pending and overdue documents', span: 6,
+                legend: legend([{ name: 'Pending', color: 'var(--s1)', kind: 'line' }, { name: 'Overdue', color: 'var(--s2)', kind: 'line' }]),
+                draw: function (h) { lineChart(h, xs, [{ name: 'Pending', color: 'var(--s1)', values: ser.map(function (x) { return x.pending; }) }, { name: 'Overdue', color: 'var(--s2)', values: ser.map(function (x) { return x.overdue; }) }], { label: 'Backlog trend' }); },
+                data: function () { return { head: ['Date', 'Pending', 'Overdue', 'Due in 14 d', 'Not started'], num: [0, 1, 1, 1, 1], rows: ser.map(function (x) { return [fmtDay(x.d), x.pending, x.overdue, x.due14, x.notStarted]; }) }; }
+            });
+            card(grid, {
+                title: 'M75 AFC trend', sub: 'AFC/AFX + ADH issued as a share of planned AFC', span: 6,
+                draw: function (h) { lineChart(h, xs, [{ name: 'M75 AFC %', color: 'var(--s1)', values: ser.map(function (x) { return x.m75Pct; }) }], { yMax: 100, yFmt: pctFmt, refY: 75, refLabel: '75%', label: 'M75 trend' }); },
+                data: function () { return { head: ['Date', 'Planned AFC', 'Issued', 'M75 %'], num: [0, 1, 1, 1], rows: ser.map(function (x) { return [fmtDay(x.d), x.m75p, x.m75d, fmt1(x.m75Pct)]; }) }; }
+            });
+            card(grid, { title: 'Snapshot history', sub: 'Newest first', span: 12, asTable: true, table: false, data: function () { var t = snapTable(ser); t.rows.reverse(); return t; } });
+            var n = document.createElement('div'); n.className = 'note-row';
+            n.textContent = 'Trend figures are the nightly snapshots (activity and cancelled rows excluded). The Discipline filter applies; other filters and the data date do not.';
+            grid.appendChild(n);
+        };
+        function snapTable(ser) {
+            return {
+                head: ['Date', 'Documents', 'Complete', 'Pending', 'Overdue', 'Est. h', 'Earned h', 'Planned h', 'Earned %', 'Planned %', 'SPI', 'M75 %'],
+                num: [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                rows: ser.map(function (x) { return [fmtDay(x.d), x.docs, x.complete, x.pending, x.overdue, fmtInt(x.est), fmtInt(x.earned), fmtInt(x.planned), fmt1(x.earnedPct), fmt1(x.plannedPct), x.spi == null ? '' : x.spi.toFixed(2), fmt1(x.m75Pct)]; })
+            };
+        }
+
+        /* ---------------- Baseline ---------------- */
+        VIEWS.baseline = function (grid, R) {
+            if (!S.history) return setupCard(grid, 'Baselines');
+            var cap = S.scope.project ? adminBtn('baseline', '📌 Capture baseline…') : '';
+            if (!S.baselines.length) {
+                var d0 = document.createElement('div'); d0.className = 'setup';
+                d0.innerHTML = '<h3>No baseline captured yet</h3><p>A baseline freezes today\'s planned dates so later re-planning shows up as plan drift. ' +
+                    (S.isAdmin ? (S.scope.project ? 'Capture one now:</p><p style="margin-top:10px">' + cap + '</p>' : 'Select a single project to capture one.</p>') : 'Ask a SmartDDR administrator to capture one.</p>');
+                grid.appendChild(d0); return;
+            }
+            var sel = '<label class="inline-ctl">Baseline <select data-ctl="bl">' + S.baselines.map(function (b) {
+                return '<option value="' + esc(b.BaselineName) + '"' + (b.BaselineName === S.blName ? ' selected' : '') + '>' + esc(b.BaselineName + ' · ' + String(b.CapturedAt || '').slice(0, 10)) + '</option>';
+            }).join('') + '</select></label>';
+            var B = R.filter(function (r) { return r.bl; }), drifts = B.map(function (r) { return r.docDrift; }).filter(function (v) { return v != null; });
+            var later = drifts.filter(function (v) { return v > 0; }).length, earlier = drifts.filter(function (v) { return v < 0; }).length;
+            var added = R.filter(function (r) { return !r.bl && !r.isAct; }).length;
+            var info = S.baselines.find(function (b) { return b.BaselineName === S.blName; }) || {};
+            kpiRow(grid,
+                tile({ label: 'Baseline', ico: '📌', value: S.blName, sub: 'captured ' + esc(String(info.CapturedAt || '').slice(0, 10)) + (info.CapturedBy ? ' by ' + esc(info.CapturedBy) : '') }) +
+                tile({ label: 'Documents compared', ico: '🔗', value: fmtInt(B.length), sub: fmtInt(S.blCount) + ' in baseline' }) +
+                tile({ label: 'Moved later', ico: '⏩', value: fmtInt(later), sub: later ? statusOf('serious', fmtPct(pct(later, drifts.length)) + ' of compared') : statusOf('good', 'None') }) +
+                tile({ label: 'Moved earlier', ico: '⏪', value: fmtInt(earlier) }) +
+                tile({ label: 'Average drift', ico: '📏', value: drifts.length ? fmt1(avg(drifts)) + ' d' : '–', sub: 'median ' + (drifts.length ? fmt1(median(drifts)) : '–') + ' d · latest milestone' }) +
+                tile({ label: 'Added since baseline', ico: '➕', value: fmtInt(added), sub: 'not in the baseline' }));
+            var sc = sCurve(R);
+            card(grid, {
+                title: 'Baseline vs current plan vs actual', sub: 'Hours-weighted S-curves', span: 12, controls: sel + cap,
+                legend: legend(curveLegend()),
+                draw: function (h) { if (!sc) return emptyChart(h); lineChart(h, sc.xs, curveSeries(sc), { yMax: 100, height: 320, yFmt: function (v) { return Math.round(v) + '%'; }, today: S.asOf, label: 'Baseline S-curve' }); },
+                data: function () { return sc ? { head: ['Week', 'Baseline %', 'Planned %', 'Actual %'], num: [0, 1, 1, 1], rows: sc.xs.map(function (x, i) { return [fmtDay(x), sc.baseline ? fmt1(sc.baseline[i]) : '', fmt1(sc.planned[i]), sc.actual[i] == null ? '' : fmt1(sc.actual[i])]; }) } : null; }
+            });
+            var ds = discRows(B).map(function (g) { var v = g.rows.map(function (r) { return r.docDrift; }).filter(function (x) { return x != null; }); return { disc: g.disc, avg: avg(v), n: v.length, later: v.filter(function (x) { return x > 0; }).length }; });
+            card(grid, {
+                title: 'Average plan drift by discipline', sub: 'Days the latest planned milestone moved (right = later) · click to filter', span: 6,
+                legend: legend([{ name: 'Later than baseline', color: 'var(--div-neg)' }, { name: 'Earlier', color: 'var(--div-pos)' }]),
+                draw: function (h) { barDiv(h, ds.map(function (d) { return { label: d.disc, value: d.avg, valueLabel: d.avg == null ? '' : (d.avg > 0 ? '+' : '') + fmt1(d.avg) + ' d', tip: tipRows(d.disc, [{ n: 'Average drift', v: d.avg == null ? '–' : fmt1(d.avg) + ' d' }, { n: 'Moved later', v: fmtInt(d.later) + ' of ' + fmtInt(d.n) }], 'Click to filter'), onClick: function () { setValueFilter('disc', d.disc === '(Blank)' ? '' : d.disc); } }; }), { posBad: true, tickFmt: function (t) { return fmt1(t) + ' d'; }, label: 'Drift by discipline' }); },
+                data: function () { return { head: ['Discipline', 'Compared', 'Moved later', 'Average drift (d)'], num: [0, 1, 1, 1], rows: ds.map(function (d) { return [d.disc, d.n, d.later, d.avg == null ? '' : fmt1(d.avg)]; }) }; }
+            });
+            var bands = [{ l: '< −30', t: function (v) { return v < -30; } }, { l: '−30…−1', t: function (v) { return v < 0 && v >= -30; } }, { l: '0', t: function (v) { return v === 0; } },
+                { l: '+1…14', t: function (v) { return v > 0 && v <= 14; } }, { l: '+15…30', t: function (v) { return v > 14 && v <= 30; } }, { l: '+31…60', t: function (v) { return v > 30 && v <= 60; } }, { l: '> +60', t: function (v) { return v > 60; } }];
+            var bc = bands.map(function (b) { return drifts.filter(b.t).length; });
+            card(grid, {
+                title: 'Plan drift distribution', sub: 'Documents by days their latest planned milestone moved (negative = earlier)', span: 6,
+                draw: function (h) { columns(h, bands.map(function (b) { return b.l; }), [{ name: 'Documents', color: 'var(--s1)', values: bc }], { height: 250, labelMax: true, label: 'Drift distribution' }); },
+                data: function () { return { head: ['Drift', 'Documents'], num: [0, 1], rows: bands.map(function (b, i) { return [b.l, bc[i]]; }) }; }
+            });
+            var perStage = STAGES.map(function (st, i) { var v = B.map(function (r) { return r.drift[i]; }).filter(function (x) { return x != null; }); return { key: st.key, avg: avg(v), n: v.length }; }).filter(function (x) { return x.n; });
+            card(grid, {
+                title: 'Average drift by milestone', sub: 'Current plan minus baseline plan (days)', span: 6,
+                draw: function (h) { barDiv(h, perStage.map(function (x) { return { label: x.key, value: x.avg, valueLabel: x.avg == null ? '' : (x.avg > 0 ? '+' : '') + fmt1(x.avg) + ' d', tip: tipRows(x.key, [{ n: 'Average drift', v: fmt1(x.avg) + ' d' }, { n: 'Documents', v: fmtInt(x.n) }]) }; }), { posBad: true, tickFmt: function (t) { return fmt1(t) + ' d'; }, label: 'Drift by milestone' }); },
+                data: function () { return { head: ['Milestone', 'Documents', 'Average drift (d)'], num: [0, 1, 1], rows: perStage.map(function (x) { return [x.key, x.n, fmt1(x.avg)]; }) }; }
+            });
+            COL.blLast = { h: 'Baseline (latest)', v: function (r) { var i = lastBoth(r); return i < 0 ? '' : fmtDay(r.bl[i]); } };
+            COL.curLast = { h: 'Current plan', v: function (r) { var i = lastBoth(r); return i < 0 ? '' : fmtDay(r.ms[i].p); } };
+            COL.drift = { h: 'Drift (d)', v: function (r) { return r.docDrift == null ? '' : (r.docDrift > 0 ? '+' : '') + r.docDrift; }, num: true };
+            var slipped = B.filter(function (r) { return r.docDrift > 0; }).sort(function (a, b) { return b.docDrift - a.docDrift; });
+            docCard(grid, 'Most re-planned documents', 'Largest movement of the latest planned milestone versus the baseline', slipped, cols('proj', 'disc', 'doc', 'title', 'status', 'blLast', 'curLast', 'drift'), 6);
+        };
+        function lastBoth(r) { if (!r.drift) return -1; for (var i = 6; i >= 0; i--) if (r.drift[i] != null) return i; return -1; }
+
+        /* =================================================================
+           Saved views (server, shared) + shareable links
+           ================================================================= */
+        function getState() {
+            var f = {}; for (var k in S.filters) { var x = S.filters[k]; f[k] = { v: x.vals ? Array.from(x.vals) : null, op: x.op, q: x.q }; }
+            return { v: 1, t: S.tab, f: f, q: S.q, qc: S.qc, a: S.inclAct, c: S.inclCancel, ld: S.lookDays, ps: S.progStage, td: S.targetDays };
+        }
+        function assignState(st) {
+            if (!st || typeof st !== 'object') return;
+            S.filters = {};
+            if (st.f) for (var k in st.f) { if (FIELDS[k]) { var x = st.f[k] || {}; S.filters[k] = { vals: Array.isArray(x.v) ? new Set(x.v.map(String)) : null, op: x.op, q: x.q ? String(x.q) : undefined }; if (!S.filters[k].vals && !S.filters[k].q) delete S.filters[k]; } }
+            S.q = st.q ? String(st.q).toLowerCase() : ''; $('qsearch').value = S.q;
+            S.qc = QUALITY.some(function (c) { return c.id === st.qc; }) ? st.qc : null;
+            S.inclAct = !!st.a; $('tglAct').checked = S.inclAct;
+            S.inclCancel = !!st.c; $('tglCancel').checked = S.inclCancel;
+            if ([7, 14, 30, 60, 90].indexOf(+st.ld) >= 0) S.lookDays = +st.ld;
+            if (STAGES.some(function (x) { return x.key === st.ps; })) S.progStage = st.ps;
+            if (+st.td >= 1 && +st.td <= 365) S.targetDays = Math.round(+st.td);
+            if (TABS.some(function (t) { return t.id === st.t; })) S.tab = st.t;
+            S.reg.page = 0;
+        }
+        function applyState(st) { assignState(st); applyFilters(); render(); history.replaceState(null, '', location.pathname + location.search + '#' + S.tab); }
+        function encodeState(st) { return btoa(unescape(encodeURIComponent(JSON.stringify(st)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+        function decodeState(p) { try { p = String(p).replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '='; return JSON.parse(decodeURIComponent(escape(atob(p)))); } catch (e) { return null; } }
+        function viewLink(st) {
+            return location.origin + location.pathname + '?group=' + encodeURIComponent(S.scope.group) + (S.scope.project ? '&project=' + encodeURIComponent(S.scope.project) : '') + '&view=' + encodeState(st || getState());
+        }
+        function copyText(text, okMsg) {
+            function fallback() { window.prompt('Copy this link:', text); }
+            if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(function () { toast(okMsg || 'Copied'); }, fallback); else fallback();
+        }
+        function toast(msg) {
+            var t = document.createElement('div'); t.className = 'banner info'; t.textContent = msg;
+            t.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:700;box-shadow:var(--shadow);margin:0';
+            document.body.appendChild(t); setTimeout(function () { t.remove(); }, 2600);
+        }
+        var localViewsKey = 'sddr.dash.views';
+        function openViews(anchor) {
+            var p = $('pop'); popState = { key: '__views' }; p.style.width = '420px';
+            p.innerHTML = '<div class="pop-h">★ Saved views<button type="button" class="icon-btn x" data-pop="close" title="Close">✕</button></div>' +
+                '<div class="pop-sub">Available views</div><div class="views-list" id="viewsList"><div class="note" style="padding:8px 10px">Loading…</div></div>' +
+                '<div class="pop-sub">Save the current filters, tab and settings</div>' +
+                '<div class="pop-row"><input type="text" id="viewName" maxlength="60" placeholder="View name, e.g. Piping – critical overdue" /></div>' +
+                '<div class="pop-row"><label class="toggle"><input type="checkbox" id="viewShared" checked /> Share with everyone</label></div>' +
+                '<div class="pop-f"><button type="button" class="btn" data-views="link">🔗 Copy link</button><button type="button" class="btn primary" data-views="save">Save view</button></div>';
+            p.classList.add('open');
+            var rc = anchor.getBoundingClientRect();
+            p.style.left = Math.max(10, Math.min(rc.right - p.offsetWidth, window.innerWidth - p.offsetWidth - 10)) + 'px'; p.style.top = (rc.bottom + 6) + 'px';
+            refreshViews();
+        }
+        function refreshViews() {
+            api({ api: 'views' }).then(function (list) { S.viewsLocal = false; drawViews(list); })
+                .catch(function (e) { S.viewsLocal = true; drawViews((store(localViewsKey) || []).map(function (v, i) { return { id: i, name: v.name, state: JSON.stringify(v.state), owner: 'this browser', shared: false, canDelete: true, local: true }; }), e.status === 501 ? 'Server views are not set up – views are saved in this browser only.' : null); });
+        }
+        function drawViews(list, note) {
+            var host = $('viewsList'); if (!host) return;
+            S.viewsCache = list;
+            host.innerHTML = (note ? '<div class="note" style="padding:8px 10px;font-size:11.5px;color:var(--muted)">' + esc(note) + '</div>' : '') +
+                (list.length ? list.map(function (v, i) {
+                    return '<div class="vrow"><span class="nm" title="' + esc(v.name) + '">' + esc(v.name) + (v.shared ? '<span class="tag">shared</span>' : '') +
+                        '<span class="meta">' + esc((v.scope ? v.scope + ' · ' : '') + (v.owner || '')) + '</span></span>' +
+                        '<button type="button" class="btn" data-views="apply" data-i="' + i + '">Apply</button>' +
+                        '<button type="button" class="icon-btn" data-views="copy" data-i="' + i + '" title="Copy link">🔗</button>' +
+                        (v.canDelete ? '<button type="button" class="icon-btn" data-views="del" data-i="' + i + '" title="Delete">🗑</button>' : '') + '</div>';
+                }).join('') : '<div class="note" style="padding:8px 10px;color:var(--muted);font-size:12px">No saved views yet.</div>');
+        }
+        function viewsAction(a, i) {
+            var list = S.viewsCache || [], v = list[i];
+            if (a === 'apply' && v) { closePop(); applyState(decodeStateJson(v.state)); toast('Applied view “' + v.name + '”'); }
+            else if (a === 'copy' && v) copyText(viewLink(decodeStateJson(v.state)), 'Link to “' + v.name + '” copied');
+            else if (a === 'link') copyText(viewLink(), 'Link to this view copied');
+            else if (a === 'del' && v) {
+                if (!window.confirm('Delete the view “' + v.name + '”?')) return;
+                if (v.local) { var ls = store(localViewsKey) || []; ls.splice(v.id, 1); store(localViewsKey, ls); refreshViews(); return; }
+                apiPost({ api: 'deleteview' }, { id: v.id }).then(refreshViews).catch(function (e) { toast(e.message); });
+            }
+            else if (a === 'save') {
+                var name = ($('viewName').value || '').trim();
+                if (!name || /[<>"'\\]/.test(name)) { $('viewName').focus(); toast('Enter a name (no < > " \' \\).'); return; }
+                var st = getState(), shared = $('viewShared').checked;
+                if (S.viewsLocal) {
+                    var l2 = (store(localViewsKey) || []).filter(function (x) { return x.name !== name; }); l2.push({ name: name, state: st }); store(localViewsKey, l2);
+                    $('viewName').value = ''; refreshViews(); toast('View saved in this browser'); return;
+                }
+                apiPost({ api: 'saveview' }, { name: name, scope: S.scope.project ? 'P:' + S.scope.project : 'G:' + S.scope.group, state: JSON.stringify(st), shared: shared ? '1' : '0' })
+                    .then(function () { $('viewName').value = ''; refreshViews(); toast('View “' + name + '” saved' + (shared ? ' and shared' : '')); })
+                    .catch(function (e) { toast(e.message); });
+            }
+        }
+        function decodeStateJson(s) { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch (e) { return null; } }
+
+        /* =================================================================
+           Admin actions
+           ================================================================= */
+        function adminAction(a) {
+            if (a === 'snapshot') {
+                if (!window.confirm('Take a snapshot for ' + (S.scope.project || 'every project') + ' now? (Today\'s snapshot is replaced.)')) return;
+                $('loading').hidden = false; $('loadingText').textContent = 'Taking snapshot…';
+                apiPost({ api: 'snapshot', project: S.scope.project || '' }).then(function () { toast('Snapshot taken'); return loadData(); })
+                    .catch(function (e) { $('loading').hidden = true; toast(e.message); });
+            } else if (a === 'baseline') {
+                var t = new Date(), def = 'BL ' + t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2);
+                var name = window.prompt('Baseline name for ' + S.scope.project + ' (an existing name is overwritten):', def);
+                if (!name) return;
+                $('loading').hidden = false; $('loadingText').textContent = 'Capturing baseline…';
+                apiPost({ api: 'baseline', project: S.scope.project }, { name: name.trim() }).then(function () { toast('Baseline “' + name.trim() + '” captured'); return loadData(); })
+                    .catch(function (e) { $('loading').hidden = true; toast(e.message); });
+            }
+        }
+        function switchBaseline(name) {
+            var params = S.scope.project ? { api: 'blrows', project: S.scope.project, name: name } : { api: 'blrows', group: S.scope.group, name: name };
+            api(params).then(function (d) { setBaseline(d.baseline, d.blcols, d.blrows); render(); }).catch(function (e) { toast(e.message); });
+        }
+
+        /* =================================================================
+           Excel (.xlsx) writer – SpreadsheetML in a stored ZIP, no library
+           ================================================================= */
+        var CRC_T = (function () { var t = new Uint32Array(256); for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+        function crc32(b) { var c = 0xFFFFFFFF; for (var i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+        function zipStore(files) {
+            var enc = new TextEncoder(), parts = [], central = [], offset = 0, now = new Date();
+            var dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+            var dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+            files.forEach(function (f) {
+                var nm = enc.encode(f.name), data = typeof f.data === 'string' ? enc.encode(f.data) : f.data, crc = crc32(data), sz = data.length;
+                var h = new DataView(new ArrayBuffer(30));
+                h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+                h.setUint16(10, dosTime, true); h.setUint16(12, dosDate, true); h.setUint32(14, crc, true); h.setUint32(18, sz, true); h.setUint32(22, sz, true);
+                h.setUint16(26, nm.length, true); h.setUint16(28, 0, true);
+                parts.push(new Uint8Array(h.buffer), nm, data);
+                var c = new DataView(new ArrayBuffer(46));
+                c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+                c.setUint16(12, dosTime, true); c.setUint16(14, dosDate, true); c.setUint32(16, crc, true); c.setUint32(20, sz, true); c.setUint32(24, sz, true);
+                c.setUint16(28, nm.length, true); c.setUint32(42, offset, true);
+                central.push(new Uint8Array(c.buffer), nm);
+                offset += 30 + nm.length + sz;
+            });
+            var cd = central.reduce(function (a, b) { return a + b.length; }, 0), e = new DataView(new ArrayBuffer(22));
+            e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, cd, true); e.setUint32(16, offset, true);
+            return new Blob(parts.concat(central, [new Uint8Array(e.buffer)]), { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        }
+        function xmlEsc(v) { return String(v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        function colLetter(n) { var s = ''; n++; while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+        var MON_IDX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+        function parseShownDay(v) {   // "dd-Mon-yy" as shown on screen -> day number
+            var m = /^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/.exec(String(v || '').trim()); if (!m || MON_IDX[m[2].toLowerCase()] == null) return null;
+            var y = +m[3]; if (y < 100) y += 2000; return Math.floor(Date.UTC(y, MON_IDX[m[2].toLowerCase()], +m[1]) / 864e5);
+        }
+        // A card's table -> sheet. Formatted numbers/dates on screen go back to real Excel numbers/dates.
+        function sheetFromTable(title, d) {
+            var NUMLIKE = /^[-+]?[\d,]*\.?\d+%?$/;
+            var types = d.head.map(function (h, i) {
+                if (d.num && d.num[i]) return 'n';
+                var sample = d.rows.slice(0, 50).map(function (r) { return r[i] == null ? '' : String(r[i]).replace(/<[^>]+>/g, '').trim(); }).filter(function (v) { return v !== '' && v !== '–'; });
+                if (!sample.length) return 's';
+                if (sample.every(function (v) { return parseShownDay(v) != null; })) return 'd';
+                if (sample.every(function (v) { return NUMLIKE.test(v); })) return 'n';   // e.g. progress bars "75.8%"
+                return 's';
+            });
+            var rows = d.rows.map(function (r) {
+                return r.map(function (v, i) {
+                    var sv = v == null ? '' : String(v); if (d.html && d.html[i]) sv = sv.replace(/<[^>]+>/g, '').trim();
+                    if (types[i] === 'n') { var n = parseFloat(sv.replace(/[,%\s+]/g, '').replace(/[–—]/g, '')); return isNaN(n) ? (sv === '–' ? null : sv) : n; }
+                    if (types[i] === 'd') return parseShownDay(sv);
+                    return sv;
+                });
+            });
+            return { name: title, head: d.head, rows: rows, types: types, foot: d.foot };
+        }
+        function sheetXml(sh, info) {
+            var n = sh.head.length, widths = sh.head.map(function (h) { return Math.min(60, Math.max(8, String(h).length + 2)); });
+            var out = [], r = 1;
+            function cell(v, t, style) {
+                if (v == null || v === '') return '<c s="' + (style || 5) + '"/>';
+                if (t === 'n' && typeof v === 'number' && isFinite(v)) return '<c s="' + (Number.isInteger(v) ? 4 : 3) + '"><v>' + v + '</v></c>';
+                if (t === 'd' && typeof v === 'number') return '<c s="2"><v>' + (v + 25569) + '</v></c>';
+                return '<c t="inlineStr" s="' + (style || 5) + '"><is><t xml:space="preserve">' + xmlEsc(v) + '</t></is></c>';
+            }
+            out.push('<row r="1" ht="24" customHeight="1">' + cell(sh.name, 's', 6) + '</row>');
+            out.push('<row r="2">' + cell(info, 's', 7) + '</row>');
+            out.push('<row r="3" ht="30" customHeight="1">' + sh.head.map(function (h) { return cell(h, 's', 1); }).join('') + '</row>');
+            r = 3;
+            sh.rows.forEach(function (row) {
+                r++;
+                out.push('<row r="' + r + '">' + row.map(function (v, i) {
+                    if (v != null && sh.types[i] === 's') widths[i] = Math.min(60, Math.max(widths[i], String(v).length + 2));
+                    return cell(v, sh.types[i]);
+                }).join('') + '</row>');
+            });
+            if (sh.foot) { r++; out.push('<row r="' + r + '">' + sh.foot.map(function (v) { return cell(v, 's', 8); }).join('') + '</row>'); }
+            var last = colLetter(Math.max(0, n - 1)), lastRow = 3 + sh.rows.length;
+            return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+                '<sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+                '<cols>' + widths.map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' +
+                '<sheetData>' + out.join('') + '</sheetData>' +
+                (sh.rows.length ? '<autoFilter ref="A3:' + last + lastRow + '"/>' : '') + '</worksheet>';
+        }
+        var XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+            '<numFmts count="2"><numFmt numFmtId="164" formatCode="dd-mmm-yyyy"/><numFmt numFmtId="165" formatCode="#,##0.0"/></numFmts>' +
+            '<fonts count="5"><font><sz val="10"/><name val="Segoe UI"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Segoe UI"/></font>' +
+            '<font><b/><sz val="14"/><color rgb="FF0F766E"/><name val="Segoe UI"/></font><font><i/><sz val="9"/><color rgb="FF64748B"/><name val="Segoe UI"/></font><font><b/><sz val="10"/><name val="Segoe UI"/></font></fonts>' +
+            '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+            '<fill><patternFill patternType="solid"><fgColor rgb="FF0F766E"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE6F7F5"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+            '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FFE2E8F0"/></bottom><diagonal/></border></borders>' +
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+            '<cellXfs count="9">' +
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+            '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+            '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>' +
+            '<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+            '<xf numFmtId="3" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>' +
+            '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+            '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+            '<xf numFmtId="0" fontId="4" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
+            '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+        function saveXlsx(fileName, sheets) {
+            var info = 'SmartDDR · ' + (S.scope.project ? 'Project ' + S.scope.project : 'Group ' + ($('selGroup').selectedOptions[0] || {}).text) +
+                ' · data date ' + fmtDay(S.asOf) + ' · exported ' + new Date().toLocaleString() + (Object.keys(S.filters).length || S.q || S.qc ? ' · filtered' : '');
+            var used = {}, names = sheets.map(function (sh) {
+                var n = String(sh.name || 'Sheet').replace(/[\[\]:*?\/\\]/g, ' ').trim().slice(0, 28) || 'Sheet', base = n, k = 2;
+                while (used[n.toLowerCase()]) n = base.slice(0, 26) + ' ' + (k++);
+                used[n.toLowerCase()] = 1; return n;
+            });
+            var files = [
+                { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + sheets.map(function (s, i) { return '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'; }).join('') + '</Types>' },
+                { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+                { name: 'xl/workbook.xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + names.map(function (n, i) { return '<sheet name="' + xmlEsc(n) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>'; }).join('') + '</sheets><definedNames>' + sheets.map(function (sh, i) { return sh.rows.length ? '<definedName name="_xlnm._FilterDatabase" localSheetId="' + i + '" hidden="1">\'' + xmlEsc(names[i].replace(/'/g, "''")) + '\'!$A$3:$' + colLetter(Math.max(0, sh.head.length - 1)) + '$' + (3 + sh.rows.length) + '</definedName>' : ''; }).join('') + '</definedNames></workbook>' },
+                { name: 'xl/_rels/workbook.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheets.map(function (s, i) { return '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>'; }).join('') + '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+                { name: 'xl/styles.xml', data: XLSX_STYLES }
+            ].concat(sheets.map(function (sh, i) { return { name: 'xl/worksheets/sheet' + (i + 1) + '.xml', data: sheetXml(Object.assign({}, sh, { name: names[i] }), info) }; }));
+            var a = document.createElement('a'); a.href = URL.createObjectURL(zipStore(files));
+            a.download = String(fileName).replace(/[^\w\-. ]+/g, '_') + '.xlsx';
+            document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+        }
+        function registerSheet() {
+            var list = regRows(), colsV = REG_COLS.filter(function (c) { return c.k !== 'proj' || !S.scope.project; });
+            return { name: 'Register', head: colsV.map(function (c) { return c.h; }), types: colsV.map(function (c) { return c.day ? 'd' : (c.num ? 'n' : 's'); }), rows: list.map(function (r) { return colsV.map(function (c) { return c.v(r); }); }) };
+        }
+        function exportTab() {
+            var label = (TABS.find(function (t) { return t.id === S.tab; }) || {}).label || 'Dashboard';
+            var base = (S.scope.project || 'Group' + S.scope.group) + '_' + label.replace(/\W+/g, '_');
+            if (S.tab === 'register') return saveXlsx(base, [registerSheet()]);
+            var sheets = CARDS.map(function (c) { var d = c.data && c.data(); return d && d.rows && d.rows.length ? sheetFromTable(c.title, d) : null; }).filter(Boolean);
+            sheets.push(registerSheet());   // the filtered register rides along with every tab export
+            saveXlsx(base, sheets);
+        }
+
         /* ---------------- Overview ---------------- */
         VIEWS.overview = function (grid, R) {
             var docs = R.filter(function (r) { return !r.isAct; });
@@ -1232,25 +1797,28 @@
             var pending = docs.length - done, od = R.filter(function (r) { return r.overdue; }), due14 = R.filter(function (r) { return r.dueIn != null && r.dueIn >= 0 && r.dueIn <= 14; }).length;
             var ea = earnedPct(R), pl = plannedPct(R), spi = (pl > 0 && ea != null) ? ea / pl : null;
             var hrs = sum(R, function (r) { return r.hrs; }), earned = sum(R, function (r) { return r.earned; });
+            // Week-on-week deltas from the nightly snapshots (only when the view matches what a snapshot measures).
+            var wk = compareBase();
+            function dl(cur, key, upGood, isPct) { return wk ? ' ' + deltaHtml(cur, wk.prev[key], upGood, isPct) : ''; }
             var hero = document.createElement('div'); hero.className = 'hero';
-            hero.innerHTML = '<div class="big"><div class="lbl">Earned progress (hours-weighted)</div><div class="num">' + fmtPct(ea) + '</div>' +
-                '<div class="row"><span>Planned to date <b>' + fmtPct(pl) + '</b></span><span>Variance <b>' + (ea != null && pl != null ? (ea - pl >= 0 ? '+' : '') + fmt1(ea - pl) + ' pts' : '–') + '</b></span></div>' +
-                '<div class="row"><span>SPI <b>' + (spi == null ? '–' : spi.toFixed(2)) + '</b></span>' + spiStatus(spi) + '</div></div>' +
+            hero.innerHTML = '<div class="big"><div class="hero-flex"><div style="flex:1;min-width:0"><div class="lbl">Earned progress (hours-weighted)</div><div class="num">' + fmtPct(ea) + '</div></div>' + ringSvg(ea, pl) + '</div>' +
+                '<div class="row"><span>Planned to date <b>' + fmtPct(pl) + '</b></span><span>Variance <b>' + (ea != null && pl != null ? (ea - pl >= 0 ? '+' : '') + fmt1(ea - pl) + ' pts' : '–') + '</b></span>' + dl(ea, 'earnedPct', true, true) + '</div>' +
+                '<div class="row"><span>SPI <b>' + (spi == null ? '–' : spi.toFixed(2)) + '</b></span>' + spiStatus(spi) + (wk ? '<span style="opacity:.8">vs ' + esc(fmtDay(wk.prev.d)) + '</span>' : '') + '</div></div>' +
                 '<div class="kpis">' +
-                tile({ label: 'Documents', value: fmtInt(docs.length), sub: fmtInt(R.length - docs.length) + ' activity rows', click: 'register' }) +
-                tile({ label: 'Complete', value: fmtInt(done), sub: fmtPct(pct(done, docs.length)) + ' of documents', meter: pct(done, docs.length) }) +
-                tile({ label: 'Pending', value: fmtInt(pending), sub: fmtInt(docs.filter(function (r) { return r.notStarted; }).length) + ' not started', click: 'pending' }) +
-                tile({ label: 'Overdue', value: fmtInt(od.length), sub: od.length ? statusOf('critical', 'avg ' + fmt1(avg(od.map(function (r) { return r.daysLate; }))) + ' days late') : statusOf('good', 'None'), click: 'overdue' }) +
-                tile({ label: 'Due in 14 days', value: fmtInt(due14), sub: 'next milestone', click: 'lookahead' }) +
-                tile({ label: 'Estimated hours', value: compact(hrs), sub: 'Earned ' + compact(earned) + ' h' }) +
+                tile({ label: 'Documents', ico: '📄', value: fmtInt(docs.length), sub: fmtInt(R.length - docs.length) + ' activity rows', click: 'register' }) +
+                tile({ label: 'Complete', ico: '✅', value: fmtInt(done), sub: fmtPct(pct(done, docs.length)) + ' of documents' + dl(done, 'complete', true), meter: pct(done, docs.length) }) +
+                tile({ label: 'Pending', ico: '⏳', value: fmtInt(pending), sub: fmtInt(docs.filter(function (r) { return r.notStarted; }).length) + ' not started' + dl(pending, 'pending', false), click: 'pending' }) +
+                tile({ label: 'Overdue', ico: '⚠️', value: fmtInt(od.length), sub: (od.length ? statusOf('critical', 'avg ' + fmt1(avg(od.map(function (r) { return r.daysLate; }))) + ' d late') : statusOf('good', 'None')) + dl(od.length, 'overdue', false), click: 'overdue' }) +
+                tile({ label: 'Due in 14 days', ico: '📅', value: fmtInt(due14), sub: 'next milestone', click: 'lookahead' }) +
+                tile({ label: 'Estimated hours', ico: '⏱️', value: compact(hrs), sub: 'Earned ' + compact(earned) + ' h' }) +
                 '</div>';
             grid.appendChild(hero);
 
             var sc = sCurve(R);
             card(grid, {
-                title: 'Progress S-curve', sub: 'Cumulative hours-weighted progress – planned vs actual', span: 8,
-                legend: legend([{ name: 'Planned', color: 'var(--s1)', kind: 'line' }, { name: 'Actual', color: 'var(--s2)', kind: 'line' }]),
-                draw: function (h) { if (!sc) return emptyChart(h, 'No planned or actual dates.'); lineChart(h, sc.xs, [{ name: 'Planned', color: 'var(--s1)', values: sc.planned }, { name: 'Actual', color: 'var(--s2)', values: sc.actual }], { yMax: 100, yFmt: function (v) { return Math.round(v) + '%'; }, today: S.asOf, label: 'Progress S-curve' }); },
+                title: 'Progress S-curve', sub: 'Cumulative hours-weighted progress – planned vs actual' + (S.blName ? ' vs baseline “' + S.blName + '”' : ''), span: 8,
+                legend: legend(curveLegend()),
+                draw: function (h) { if (!sc) return emptyChart(h, 'No planned or actual dates.'); lineChart(h, sc.xs, curveSeries(sc), { yMax: 100, yFmt: function (v) { return Math.round(v) + '%'; }, today: S.asOf, label: 'Progress S-curve' }); },
                 data: function () { return sc ? { head: ['Week', 'Planned %', 'Actual %'], num: [0, 1, 1], rows: sc.xs.map(function (x, i) { return [fmtDay(x), fmt1(sc.planned[i]), sc.actual[i] == null ? '' : fmt1(sc.actual[i])]; }) } : null; },
                 foot: 'Rules of credit ' + (S.weightsInferred ? 'derived from the EPR weights' : '(default – EPR weights not available)') + ': ' + Object.keys(S.weights).map(function (k) { return k + ' ' + Math.round(S.weights[k] * 100) + '%'; }).join(' · ')
             });
@@ -1645,7 +2213,8 @@
             { k: 'nextDue', h: 'Next due', v: function (r) { return r.nextDue; }, day: true },
             { k: 'daysLate', h: 'Days late', v: function (r) { return r.daysLate || null; }, num: true },
             { k: 'hrs', h: 'Hours', v: function (r) { return r.hrs; }, num: true, dec: true },
-            { k: 'earned', h: 'Earned h', v: function (r) { return r.earned; }, num: true, dec: true }
+            { k: 'earned', h: 'Earned h', v: function (r) { return r.earned; }, num: true, dec: true },
+            { k: 'drift', h: 'Plan drift (d)', v: function (r) { return r.docDrift; }, num: true }
         ].concat(STAGES.reduce(function (a, s, i) {
             a.push({ k: 'p' + i, h: s.key + ' plan', v: function (r) { return r.ms[i].p; }, day: true });
             a.push({ k: 'a' + i, h: s.key + ' actual', v: function (r) { return r.ms[i].a; }, day: true });
@@ -1674,7 +2243,7 @@
             var from = S.reg.page * size, pageRows = list.slice(from, from + size);
             var colsV = REG_COLS.filter(function (c) { return c.k !== 'proj' || !S.scope.project; });
             var wrap = document.createElement('section'); wrap.className = 'card span-12';
-            wrap.innerHTML = '<div class="card-h"><div><h3>Document register</h3><p>' + fmtInt(list.length) + ' rows · click a heading to sort, ▾ for Excel-style filters, a row for details</p></div><div class="tools"><button type="button" class="btn" data-reg="csv">⬇ Export CSV</button></div></div>' +
+            wrap.innerHTML = '<div class="card-h"><div><h3>Document register</h3><p>' + fmtInt(list.length) + ' rows · click a heading to sort, ▾ for Excel-style filters, a row for details</p></div><div class="tools"><button type="button" class="btn" data-reg="xlsx">⊞ Excel</button><button type="button" class="btn" data-reg="csv">⬇ CSV</button></div></div>' +
                 '<div class="card-b"><div class="tbl-wrap" style="max-height:calc(100vh - 290px)"><table class="t"><thead><tr>' +
                 colsV.map(function (c) {
                     var on = c.f && S.filters[c.f];
@@ -1709,13 +2278,33 @@
                 ['Days late', r.daysLate || '–'], ['Remarks', r.remarks]];
             var body = $('drawerBody');
             body.innerHTML = '<dl class="kv">' + kv.map(function (p) { return '<dt>' + esc(p[0]) + '</dt><dd>' + esc(p[1] == null || p[1] === '' ? '–' : p[1]) + '</dd>'; }).join('') + '</dl>' +
-                '<h3 style="font-size:14px;margin-bottom:4px">Milestone timeline</h3>' + legend([{ name: 'Planned', color: 'var(--s1)' }, { name: 'Actual', color: 'var(--s2)' }]) + '<div id="tl"></div>' +
-                tableHtml({ head: ['Milestone', 'Planned', 'Actual', 'Variance (d)'], num: [0, 0, 0, 1], rows: STAGES.map(function (s, i) { var m = r.ms[i]; return [s.key, fmtDay(m.p), fmtDay(m.x) + (m.a != null && m.x == null ? ' (after data date)' : ''), (m.p != null && m.x != null) ? m.x - m.p : ((m.p != null && m.x == null && m.p < S.asOf && !r.complete && i === r.next) ? 'overdue ' + (S.asOf - m.p) : '')]; }) });
+                '<h3 style="font-size:14px;margin-bottom:4px">Milestone timeline</h3>' + legend([{ name: 'Planned', color: 'var(--s1)' }, { name: 'Actual', color: 'var(--s2)' }].concat(r.bl ? [{ name: 'Baseline', color: 'var(--s3)', kind: 'ring' }] : [])) + '<div id="tl"></div>' +
+                tableHtml({
+                    head: ['Milestone'].concat(r.bl ? ['Baseline'] : [], ['Planned', 'Actual', 'Variance (d)'], r.bl ? ['Plan drift (d)'] : []),
+                    num: [0].concat(r.bl ? [0] : [], [0, 0, 1], r.bl ? [1] : []),
+                    rows: STAGES.map(function (s, i) {
+                        var m = r.ms[i];
+                        return [s.key].concat(r.bl ? [fmtDay(r.bl[i])] : [], [fmtDay(m.p), fmtDay(m.x) + (m.a != null && m.x == null ? ' (after data date)' : ''), (m.p != null && m.x != null) ? m.x - m.p : ((m.p != null && m.x == null && m.p < S.asOf && !r.complete && i === r.next) ? 'overdue ' + (S.asOf - m.p) : '')], r.bl ? [r.drift[i] == null ? '' : (r.drift[i] > 0 ? '+' : '') + r.drift[i]] : []);
+                    })
+                }) + '<div class="acx" id="acx"><div class="acx-h">🏢 Aconex record <span class="muted" style="font-weight:400;color:var(--muted)">loading…</span></div></div>';
             $('drawer').classList.add('open'); $('drawer').setAttribute('aria-hidden', 'false');
             timeline($('tl'), r);
+            loadAconex(r);
+        }
+        var acxSeq = 0;
+        function loadAconex(r) {
+            var seq = ++acxSeq, box = $('acx');
+            if (!r.doc || !r.proj) { box.innerHTML = '<div class="acx-h">🏢 Aconex record</div><div class="empty">No document number.</div>'; return; }
+            api({ api: 'aconex', project: r.proj, doc: r.doc }).then(function (a) {
+                if (seq !== acxSeq) return;
+                var link = a.url && /^https?:\/\//i.test(a.url) ? '<a class="btn primary" href="' + esc(a.url) + '" target="_blank" rel="noopener noreferrer">Open in Aconex ↗</a>' : '';
+                box.innerHTML = '<div class="acx-h">🏢 Aconex record' + link + '</div>' + (a.found
+                    ? '<dl class="kv">' + a.record.slice(0, 30).map(function (p) { return '<dt>' + esc(p[0]) + '</dt><dd>' + esc(p[1]) + '</dd>'; }).join('') + '</dl>'
+                    : '<div class="empty">No Aconex record matches this document number.</div>');
+            }).catch(function (e) { if (seq === acxSeq) box.innerHTML = '<div class="acx-h">🏢 Aconex record</div><div class="empty">' + esc(e.message) + '</div>'; });
         }
         function timeline(host, r) {
-            var pts = []; r.ms.forEach(function (m) { if (m.p != null) pts.push(m.p); if (m.a != null) pts.push(m.a); }); pts.push(S.asOf);
+            var pts = []; r.ms.forEach(function (m, i) { if (m.p != null) pts.push(m.p); if (m.a != null) pts.push(m.a); if (r.bl && r.bl[i] != null) pts.push(r.bl[i]); }); pts.push(S.asOf);
             if (pts.length < 2) { host.innerHTML = '<div class="empty">No dates.</div>'; return; }
             var lo = Math.min.apply(null, pts) - 7, hi = Math.max.apply(null, pts) + 7;
             var W = Math.max(320, innerW(host) || 600), labelW = 60, rowH = 26, H = STAGES.length * rowH + 24, plotW = W - labelW - 16;
@@ -1730,8 +2319,11 @@
                 txt(g, labelW - 8, y, st.key, 'lbl', 'end');
                 if (m.p != null && m.a != null) node('line', { x1: X(m.p), x2: X(m.a), y1: y, y2: y, style: 'stroke:var(--axis);stroke-width:2' }, g);
                 if (m.p != null) node('circle', { cx: X(m.p), cy: y, r: 5, 'class': 'dot', style: 'fill:var(--s1)' }, g);
+                var b = r.bl ? r.bl[i] : null;
+                // Baseline as a ring so an unchanged plan (baseline = planned) still shows both markers.
+                if (b != null) node('circle', { cx: X(b), cy: y, r: 7, style: 'fill:none;stroke:var(--s3);stroke-width:2.5' }, g);
                 if (m.a != null) node('circle', { cx: X(m.a), cy: y, r: 5, 'class': 'dot', style: 'fill:var(--s2)' }, g);
-                bindHover(g, function () { return tipRows(st.key, [{ n: 'Planned', v: fmtDay(m.p) || '–', c: 'var(--s1)' }, { n: 'Actual', v: fmtDay(m.a) || '–', c: 'var(--s2)' }, { n: 'Variance', v: (m.p != null && m.a != null) ? (m.a - m.p) + ' d' : '–' }]); });
+                bindHover(g, function () { return tipRows(st.key, (b != null ? [{ n: 'Baseline', v: fmtDay(b), c: 'var(--s3)' }] : []).concat([{ n: 'Planned', v: fmtDay(m.p) || '–', c: 'var(--s1)' }, { n: 'Actual', v: fmtDay(m.a) || '–', c: 'var(--s2)' }, { n: 'Variance', v: (m.p != null && m.a != null) ? (m.a - m.p) + ' d' : '–' }])); });
             });
             host.innerHTML = ''; host.appendChild(s);
         }
@@ -1754,11 +2346,13 @@
                 applyFilters(); render(); return;
             }
             if ((el = t.closest('[data-go]'))) { go(el.getAttribute('data-go')); return; }
+            if ((el = t.closest('[data-views]'))) { viewsAction(el.getAttribute('data-views'), +el.getAttribute('data-i')); return; }
+            if ((el = t.closest('[data-admin]'))) { adminAction(el.getAttribute('data-admin')); return; }
             if ((el = t.closest('[data-qc]'))) { S.qc = el.getAttribute('data-qc'); applyFilters(); go('register'); return; }
             if ((el = t.closest('[data-sort]'))) { var sk = el.getAttribute('data-sort'); if (S.reg.sort === sk) S.reg.dir = -S.reg.dir; else { S.reg.sort = sk; S.reg.dir = 1; } render(); return; }
             if ((el = t.closest('[data-reg]'))) {
                 var a = el.getAttribute('data-reg');
-                if (a === 'prev') { S.reg.page--; render(); } else if (a === 'next') { S.reg.page++; render(); } else if (a === 'csv') exportRegister();
+                if (a === 'prev') { S.reg.page--; render(); } else if (a === 'next') { S.reg.page++; render(); } else if (a === 'csv') exportRegister(); else if (a === 'xlsx') saveXlsx((S.scope.project || 'Group' + S.scope.group) + '_DDR_register', [registerSheet()]);
                 return;
             }
             if ((el = t.closest('[data-act]'))) {
@@ -1766,6 +2360,7 @@
                 if (!c) return;
                 if (act === 'table') { c.asTable = !c.asTable; paint(c); }
                 else if (act === 'csv') { var d = c.data(); if (d) download(c.title, csvOf(d)); }
+                else if (act === 'xlsx') { var dx = c.data(); if (dx) saveXlsx(c.title, [sheetFromTable(c.title, dx)]); }
                 else if (act === 'max') {
                     var on = !cardEl.classList.contains('max');
                     cardEl.classList.toggle('max', on);
@@ -1791,6 +2386,7 @@
             var t = e.target, c = t.getAttribute && t.getAttribute('data-ctl');
             if (c === 'look') { S.lookDays = +t.value; render(); }
             else if (c === 'stage') { S.progStage = t.value; render(); }
+            else if (c === 'bl') { switchBaseline(t.value); }
             else if (c === 'target') { S.targetDays = Math.max(1, +t.value || 14); store('sddr.dash.target', S.targetDays); render(); }
             else if (t.getAttribute('data-reg') === 'size') { S.reg.size = +t.value; S.reg.page = 0; render(); }
         });
@@ -1806,7 +2402,8 @@
         $('selGroup').addEventListener('change', function (e) { S.scope.group = e.target.value; loadProjects(null).then(loadData).catch(function (err) { $('view').innerHTML = '<div class="banner">Could not load projects: ' + esc(err.message) + '</div>'; }); });
         $('selProject').addEventListener('change', function (e) { S.scope.project = e.target.value === '*' ? '' : e.target.value; S.reg.page = 0; loadData(); });
         $('btnRefresh').addEventListener('click', loadData);
-        $('btnExport').addEventListener('click', exportRegister);
+        $('btnExport').addEventListener('click', exportTab);
+        $('btnViews').addEventListener('click', function (e) { e.stopPropagation(); if (popState && popState.key === '__views') closePop(); else { closePop(); openViews(e.currentTarget); } });
         $('btnPrint').addEventListener('click', function () { window.print(); });
         $('btnTheme').addEventListener('click', function () {
             var cur = document.documentElement.getAttribute('data-theme');
@@ -1827,6 +2424,7 @@
             var theme = store('sddr.dash.theme'); if (theme) document.documentElement.setAttribute('data-theme', theme);
             S.targetDays = Math.max(1, Math.min(365, Math.round(+store('sddr.dash.target')) || 14));
             var qs = new URLSearchParams(location.search);
+            if (qs.get('view')) S.pendingView = decodeState(qs.get('view'));
             var tab = (location.hash || '').slice(1) || store('sddr.dash.tab');
             if (TABS.some(function (t) { return t.id === tab; })) S.tab = tab;
             $('asOf').value = isoDay(S.asOf);
