@@ -2,7 +2,7 @@
 Instrument profiles: one program, one set of rules per market.
 
     python goldtrader.py start                   # gold (XAUUSD) - the default, unchanged
-    python goldtrader.py start --profile btc     # Bitcoin (BTCUSD) - start_btc.bat
+    python goldtrader.py start --profile btc     # Bitcoin (BTCUSD) - start.bat runs both
 
 The BTC profile keeps gold's tested SHAPE - a stop of about one M15 ATR,
 the profit locked at +1R, then trailed 0.5R behind - but sizes it from
@@ -20,9 +20,9 @@ daily cap and budget, the margin guard, the scorecard and the journal -
 in their own files (logs\\btc\\, BTC_ journal files, own magic number and
 pause switch), so the gold instance never sees BTC and the other way round.
 Its own ML retrain, conviction report and weekly scorecard run from
-start_btc.bat; the Telegram relay and price export stay with gold.
+the BTC instance; the Telegram relay and price export stay with gold.
 
-Profile values are applied BEFORE any start-up option, so start_btc.bat can
+Profile values are applied BEFORE any start-up option, so start.bat (BTC_ARGS) can
 still change one (e.g. --symbol BTCUSDm for a broker with a suffix).
 """
 from __future__ import annotations

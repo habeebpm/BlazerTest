@@ -242,7 +242,9 @@ Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 
 ## Bitcoin (BTCUSD) instance
 
-`start_btc.bat` runs a second, independent instance with `--profile btc`
+`start.bat` (`goldtrader.py start-all`) runs gold and a second, independent
+Bitcoin instance in one window (`BTC_ARGS`; `off` = gold only), each its own
+program with its own restart and `instance.lock`, with `--profile btc`
 (`app/profiles.py`): BTCUSD, magic 20260931, `logs\btc\`, `BTC_` journal
 files, no Telegram side; its own ML retrain, conviction report and scorecard
 jobs (no relay or price export). Stop 1.0 x M15 ATR14 within

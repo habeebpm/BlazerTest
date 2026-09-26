@@ -36,7 +36,7 @@
         string folder = WebConfigurationManager.AppSettings["LogsFolder"] ?? "";
         if (folder.Trim().Length == 0)
             folder = Path.GetFullPath(Path.Combine(Server.MapPath("~/"), "..", "logs"));
-        // ?m=btc: the BTC instance's report (start_btc.bat writes logs\btc\status.json)
+        // ?m=btc: the BTC instance's report (the BTC instance of start.bat writes logs\btc\status.json)
         IsBtc = !IsSample && Request.QueryString["m"] == "btc";
         HasBtc = File.Exists(Path.Combine(Path.Combine(folder, "btc"), "status.json"));
         DataPath = IsSample ? Server.MapPath("~/App_Data/status.sample.json")

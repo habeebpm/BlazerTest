@@ -9,7 +9,7 @@ Bitcoin's own trading rules. Gold keeps running exactly as before.
 
 | Part | Gold | Bitcoin |
 |---|---|---|
-| Program | `start.bat` | `start_btc.bat` (`--profile btc`) |
+| Program | `start.bat` (`GT_ARGS`) | the same `start.bat`, same window (`BTC_ARGS`, runs `--profile btc`) |
 | EA | UnifiedTrader_EA on XAUUSD | **BTCTrader_EA** on BTCUSD |
 | Entries | Claude + Telegram signals | Claude only |
 | Magic number | 20260921 (Claude), 20260922 (Telegram) | 20260931 |
@@ -61,7 +61,7 @@ ATR (gold: 3 pips), and a market order may fill up to 2000 points ($20) from
 the requested price (gold: 30 points).
 
 These are a principled starting point, **not yet backtested on real BTC
-prices** (see "Test it" below). Change one in `start_btc.bat` `GT_ARGS`, e.g.
+prices** (see "Test it" below). Change one in `start.bat` `BTC_ARGS`, e.g.
 `--max-daily-loss 4`, `--risk-percent 1`, `--max-positions 2`.
 
 What Claude is told about Bitcoin: it trades 24/7 with thin weekend and
@@ -90,24 +90,28 @@ SEC / ETF decisions, crypto bans, large holders moving coins.
 4. Gold chart: reopen UnifiedTrader_EA's inputs and check
    `InpBtcMagicNumber = 20260931` (it is, after the update) - your Telegram
    buttons get a new row: **PauseBtcHab / ResumeBtcHab**.
-5. First run in dry-run: open `start_btc.bat` in Notepad, remove `--live`,
-   add `--symbol BTCUSDm` if your broker uses a suffix, save, double-click it.
-   **You should see** `Profile btc: BTCUSD, magic 20260931, logs ...\logs\btc`
-   and, each M15 bar, a Claude call or the reason there was none.
-6. Go live on demo: `--live` back in `start_btc.bat`, `InpDryRun=false` on
-   BTCTrader_EA. Keep both windows (`start.bat` and `start_btc.bat`) open.
+5. First run in dry-run: open `start.bat` in Notepad, change
+   `set BTC_ARGS=--live` to `set BTC_ARGS=` plus `--symbol BTCUSDm` if your
+   broker uses a suffix (empty = dry-run), save, double-click it. Gold and
+   Bitcoin run in the same window; every line starts with `GOLD |` or `BTC |`.
+   **You should see** `BTC  | ... Profile btc: BTCUSD, magic 20260931, logs
+   ...\logs\btc` and, each M15 bar, a Claude call or the reason there was none.
+6. Go live on demo: `set BTC_ARGS=--live` back in `start.bat`,
+   `InpDryRun=false` on BTCTrader_EA. Gold only: `set BTC_ARGS=off`.
 
 ## Every day
 
-- Dashboard: the **Gold | BTC** switch at the top (appears once
-  `start_btc.bat` has written its first report).
+- Dashboard: the **Gold | BTC** switch at the top (appears once the BTC
+  instance has written its first report).
 - Telegram: `PauseBtcHab` closes BTC trades and stops new ones,
   `ResumeBtcHab` restarts; `PauseHab` / `ResumeHab` now cover BTC too.
 - Journal in Drive: `BTC_trades.csv`, `BTC_claude_decisions.csv`.
-- `start_btc.bat` runs BTC's own scheduled jobs from `settings.ini` (ML
+- The BTC instance runs its own scheduled jobs from `settings.ini` (ML
   retrain, conviction report, weekly scorecard - Claude only, in
-  `logs\btc\`); the Telegram relay and price export run only from
-  `start.bat`.
+  `logs\btc\`); the Telegram relay and price export run only with gold.
+- A second copy of the same instance never starts (each holds
+  `logs\instance.lock` / `logs\btc\instance.lock`): an old `start_btc.bat`
+  opened next to the new `start.bat` just says `already running`.
 - Claude cost: Bitcoin is evaluated 24/7 (168 hours a week vs gold's 52), so
   expect roughly 2-3 times gold's call count; the log shows the real tokens
   per call (`Claude call: ... tokens`).

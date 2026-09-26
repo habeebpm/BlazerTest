@@ -938,6 +938,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 SETTINGS_ERROR = 3   # goldtrader.py start does not restart on this - fix the options first
+ALREADY_RUNNING = 4  # nor on this: the same instance runs in another window
+_instance_lock = None
+
+
+def acquire_instance_lock(log_dir: str):
+    """Holds <log_dir>\\instance.lock while this process runs (the OS frees
+    it when the process ends, even on a crash). None when another process
+    holds it - the same instance (gold, or BTC) already running elsewhere,
+    which would open every trade twice."""
+    handle = open(os.path.join(log_dir, "instance.lock"), "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
 
 
 def main(argv: list | None = None) -> int:
@@ -1048,6 +1070,12 @@ def main(argv: list | None = None) -> int:
         run_once(client, cfg, spec, day, xtr_state)
         return 0
 
+    global _instance_lock
+    _instance_lock = acquire_instance_lock(cfg.log_dir)
+    if _instance_lock is None:
+        log.error("%s (%s) is already running in another window - not starting a second copy, it "
+                  "would open every trade twice. Close the other window first.", cfg.symbol, cfg.log_dir)
+        return ALREADY_RUNNING
     if cfg.run_companions:
         start_companions(cfg, args.preset, force_relay=args.relay and not cfg.companion_jobs_only,
                          jobs_only=cfg.companion_jobs_only)
@@ -1105,7 +1133,7 @@ def main(argv: list | None = None) -> int:
                               + ("Telegram signals are still copied and open trades still managed. "
                                  "Fix it, then restart start.bat." if cfg.instrument == "gold" else
                                  "Open trades are still managed by the EA. Fix it, then restart "
-                                 "start_btc.bat.")),
+                                 "start.bat (BTC_ARGS).")),
                         daemon=True).start()
                 log.warning(
                     "Claude unavailable and this looks like it needs manual action (credits/API "

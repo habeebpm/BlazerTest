@@ -190,7 +190,7 @@ UPDATE_STATE = os.path.join(ROOT, "logs", "update_state.json")
 UPDATE_BACKUPS = os.path.join(ROOT, "logs", "update_backup")
 # Yours to edit: an update never overwrites your changed copy - the new one
 # is saved next to it as <name>.new instead.
-USER_FILES = {"start.bat", "start_btc.bat", "settings.ini"}
+USER_FILES = {"start.bat", "start_btc.bat", "settings.ini"}   # start_btc.bat: from before start.bat ran both
 
 
 def _sha256(path: str) -> str:
@@ -250,9 +250,10 @@ def extract_package(zip_bytes: bytes, dest: str) -> tuple[str, str]:
 
 def instance_running(root: str = ROOT, now: float | None = None) -> str:
     """The instance whose status.json was written in the last 3 minutes
-    (start.bat / start_btc.bat still open), else ""."""
+    (start.bat still open), else ""."""
     now = time.time() if now is None else now
-    for name, rel in (("start.bat", ("logs", "status.json")), ("start_btc.bat", ("logs", "btc", "status.json"))):
+    for name, rel in (("start.bat (gold)", ("logs", "status.json")),
+                      ("start.bat (Bitcoin)", ("logs", "btc", "status.json"))):
         try:
             if now - os.path.getmtime(os.path.join(root, *rel)) < 180:
                 return name
@@ -265,7 +266,7 @@ def apply_update(new_root: str, root: str = ROOT, state: dict | None = None,
                  backup_dir: str | None = None) -> dict:
     """Copies the new version's solution files over `root`. Your files are
     never touched: keys.txt, *.session, the dashboard password, logs\\ (not
-    solution files), and a start.bat / start_btc.bat / settings.ini you
+    solution files), and a start.bat / settings.ini you
     changed (the new one goes to <name>.new). Files the previous version
     shipped but this one does not are removed. Everything replaced or
     removed is kept in backup_dir for rollback_update()."""
@@ -368,7 +369,7 @@ def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
                        "installed_utc": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()),
                        "shipped": report["shipped"]}, state_path)
     print(f"\nGoldTrader updated to {sha[:7]}. Next: the EAs are recompiled (update.bat does it), then start "
-          "start.bat (and start_btc.bat). New EA inputs, if any, are listed in docs\\DEPLOYMENT.md section 11.")
+          "start.bat. New EA inputs, if any, are listed in docs\\DEPLOYMENT.md section 11.")
     return 0
 
 
@@ -515,6 +516,7 @@ def cmd_install_mt5(args) -> int:
 
 RESTART_DELAY = 60   # seconds between automatic restarts of `start`
 SETTINGS_ERROR = 3   # main.py: a mistyped option - restarting cannot fix that
+ALREADY_RUNNING = 4  # main.py: the same instance already runs in another window
 
 
 def disable_quick_edit() -> None:
@@ -534,29 +536,129 @@ def disable_quick_edit() -> None:
         pass
 
 
-def run_forever(cwd: str, script: str, args, sleep=None, max_runs=None) -> int:
+def run_forever(cwd: str, script: str, args, sleep=None, max_runs=None, runner=None, say=None,
+                stop=None) -> int:
     """`start`: keep the trading program running. A normal stop (Ctrl+C,
     exit 0) ends it; any other exit (MT5 not open yet after a reboot, a
     crash) restarts it after RESTART_DELAY seconds - except a settings error
-    (SETTINGS_ERROR), which a restart cannot fix."""
+    (SETTINGS_ERROR), which a restart cannot fix, and ALREADY_RUNNING (the
+    same instance is open in another window). start-all passes its own
+    runner / say (labelled output) and a stop event."""
     import time
     sleep = sleep or time.sleep
+    say = say or (lambda text: print(text, flush=True))
+    runner = runner or (lambda: py(cwd, script, *args))
     runs = 0
     while True:
-        rc = py(cwd, script, *args)
+        if stop is not None and stop.is_set():
+            return 130
+        rc = runner()
         runs += 1
-        if rc in (0, 130) or (max_runs is not None and runs >= max_runs):
+        if rc in (0, 130) or (max_runs is not None and runs >= max_runs) or (stop is not None and stop.is_set()):
             return rc
         if rc == SETTINGS_ERROR:
-            print("\nThe program stopped because of a setting it did not understand (see the "
-                  "message above). Fix it in start.bat, then start again.", flush=True)
+            say("\nThe program stopped because of a setting it did not understand (see the "
+                "message above). Fix it in start.bat, then start again.")
             return rc
-        print(f"\nThe program stopped (exit {rc}) - restarting in {RESTART_DELAY}s. "
-              "Close this window or press Ctrl+C to stop.", flush=True)
+        if rc == ALREADY_RUNNING:
+            say("\nNot started: this instance is already running in another window (close that one "
+                "first - an old start_btc.bat window, for example).")
+            return rc
+        say(f"\nThe program stopped (exit {rc}) - restarting in {RESTART_DELAY}s. "
+            "Close this window or press Ctrl+C to stop.")
         try:
             sleep(RESTART_DELAY)
         except KeyboardInterrupt:
             return 130
+
+
+def labelled_runner(label: str, cwd: str, script: str, args, emit):
+    """Runs the program once with every output line prefixed "GOLD | " /
+    "BTC  | ". No keyboard input: settings questions are asked before
+    start-all launches anything."""
+    def run_once() -> int:
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        try:
+            proc = subprocess.Popen([sys.executable, script, *args], cwd=cwd, env=env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        except OSError as exc:
+            emit(f"{label} | could not start: {exc}")
+            return 1
+        for line in proc.stdout:
+            emit(f"{label} | {line.rstrip()}")
+        return proc.wait()
+    return run_once
+
+
+def split_start_all(argv) -> tuple[list, list | None]:
+    """start-all <gold options> --btc <BTC options>: (gold args, BTC args or
+    None). BTC is off without --btc, with nothing after it, or with "off"."""
+    argv = list(argv)
+    if "--btc" not in argv:
+        return argv, None
+    i = argv.index("--btc")
+    gold, btc = argv[:i], argv[i + 1:]
+    if not btc or [a.lower() for a in btc] == ["off"]:
+        return gold, None
+    if "--profile" not in btc:
+        btc = ["--profile", "btc", *btc]
+    return gold, btc
+
+
+def first_run_pending() -> bool:
+    """True when the settings questions still have to be asked (first start)."""
+    sys.path.insert(0, APP_DIR)
+    try:
+        import first_run
+        import keys
+        keys.load()
+        return first_run.should_run()
+    except Exception:
+        return False
+    finally:
+        sys.path.remove(APP_DIR)
+
+
+def start_all(argv, runner_factory=labelled_runner, sleep=None) -> int:
+    """start.bat: gold and (unless switched off) Bitcoin in ONE window - two
+    separate programs, each restarted on its own, every line labelled.
+    Ctrl+C or closing the window stops both."""
+    import threading
+    gold, btc = split_start_all(argv)
+    if first_run_pending():
+        rc = py(APP_DIR, "main.py", "--setup")           # questions first, in the open
+        if rc != 0:
+            return rc
+    lock = threading.Lock()
+
+    def emit(text: str) -> None:
+        with lock:
+            print(text, flush=True)
+    stop = threading.Event()
+    jobs = [("GOLD", gold)] + ([("BTC ", btc)] if btc is not None else [])
+    emit("Starting " + (" + ".join(name.strip() for name, _ in jobs)) + " in this window - leave it open. "
+         "Ctrl+C stops everything.")
+    results = {}
+    threads = []
+    for name, args in jobs:
+        run = runner_factory(name, APP_DIR, "main.py", args, emit)
+        say = (lambda n: (lambda text: emit(f"{n} | {text.strip()}")))(name)
+        t = threading.Thread(target=lambda n=name, r=run, s=say: results.__setitem__(
+            n, run_forever(APP_DIR, "main.py", [], sleep=sleep or stop.wait, runner=r, say=s, stop=stop)),
+            daemon=True)
+        t.start()
+        threads.append(t)
+    try:
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(0.5)
+    except KeyboardInterrupt:
+        stop.set()                                       # the programs got Ctrl+C themselves
+        for t in threads:
+            t.join(20)
+        return 130
+    return max((rc for rc in results.values()), default=0)
 
 
 PASSTHROUGH = {"start": (APP_DIR, "main.py"), "backtest": (APP_DIR, "backtest.py"),
@@ -566,6 +668,12 @@ PASSTHROUGH = {"start": (APP_DIR, "main.py"), "backtest": (APP_DIR, "backtest.py
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "start-all":           # start.bat: gold + BTC in one window
+        disable_quick_edit()
+        notice = update_notice()
+        if notice:
+            print(f"\n*** {notice} ***\n", flush=True)
+        return start_all(argv[1:])
     if argv and argv[0] in PASSTHROUGH:          # every option goes to the program itself (even -h)
         cwd, script = PASSTHROUGH[argv[0]]
         if argv[0] == "start" and not any(a in ("-h", "--help", "--once", "--check", "--setup")

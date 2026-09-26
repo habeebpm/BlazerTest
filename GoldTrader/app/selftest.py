@@ -4815,7 +4815,7 @@ def test_btc_profile() -> bool:
         live_wed = main_mod.weekend_limits(btc)
     finally:
         main_mod.gw = real_gw
-    ok &= check("start_btc.bat applies it each cycle (and switches back when gold reopens)",
+    ok &= check("the BTC instance applies it each cycle (and switches back when gold reopens)",
                 live_sat.max_daily_loss_pct == 10.0 and live_wed is btc)
     bsrc = open(os.path.join(paths.APP_DIR, "backtest.py"), encoding="utf-8").read()
     ok &= check("the backtest replays the same weekend limits",
@@ -4938,8 +4938,17 @@ def test_btc_profile() -> bool:
         except FileNotFoundError:
             missing = True
         ok &= check("a missing primary file is a clear error", missing)
-    bat = open(os.path.join(paths.PACKAGE_ROOT, "start_btc.bat"), newline="").read()
-    ok &= check("start_btc.bat starts the btc profile live (CRLF)", "--profile btc --live" in bat and "\r\n" in bat)
+    with _tempfile.TemporaryDirectory() as tmp:
+        first = main_mod.acquire_instance_lock(tmp)
+        second = main_mod.acquire_instance_lock(tmp)
+        first.close()                                   # the first program ends (or crashes)
+        third = main_mod.acquire_instance_lock(tmp)
+        ok &= check("one copy per instance: a second one is refused; after the first ends it starts again",
+                    first is not None and second is None and third is not None)
+        third.close()
+    bat = open(os.path.join(paths.PACKAGE_ROOT, "start.bat"), newline="").read()
+    ok &= check("start.bat starts gold and BTC together (BTC live; CRLF)",
+                "start-all %GT_ARGS% --btc %BTC_ARGS%" in bat and "set BTC_ARGS=--live" in bat and "\r\n" in bat)
     return ok
 
 

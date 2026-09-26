@@ -237,6 +237,52 @@ def main() -> int:
               and read(home, "goldtrader.py") == "v2")
     check("start.bat notice only when GitHub has a newer version than the installed one",
           solution.update_notice(fetch=lambda u, t=0: b"not json") == "")
+    # start.bat: gold + Bitcoin in one window
+    split = solution.split_start_all
+    check("start-all options: gold before --btc, BTC after (+ --profile btc); empty or 'off' = gold only",
+          split(["--live", "--shared-cap-magic", "20260922", "--btc", "--live"])
+          == (["--live", "--shared-cap-magic", "20260922"], ["--profile", "btc", "--live"])
+          and split(["--live", "--btc"]) == (["--live"], None) and split(["--live", "--btc", "OFF"]) == (["--live"], None)
+          and split(["--live"]) == (["--live"], None)
+          and split(["--btc", "--live", "--symbol", "BTCUSDm"])[1] == ["--profile", "btc", "--live", "--symbol", "BTCUSDm"])
+    ran, lines = [], []
+
+    def fake_factory(label, cwd, script, args, emit):
+        def run():
+            ran.append((label.strip(), list(args)))
+            emit(f"{label} | hello")
+            return 0
+        return run
+    real_pending, real_print = solution.first_run_pending, print
+    solution.first_run_pending = lambda: False
+    try:
+        import builtins
+        builtins.print = lambda *a, **k: lines.append(" ".join(str(x) for x in a))
+        rc_all = solution.start_all(["--live", "--btc", "--live"], runner_factory=fake_factory)
+        both = sorted(ran)
+        ran.clear()
+        rc_gold = solution.start_all(["--live", "--btc", "off"], runner_factory=fake_factory)
+        gold_only = list(ran)
+    finally:
+        builtins.print = real_print
+        solution.first_run_pending = real_pending
+    check("start-all runs gold and BTC as two programs in one window, every line labelled",
+          rc_all == 0 and both == [("BTC", ["--profile", "btc", "--live"]), ("GOLD", ["--live"])]
+          and "GOLD | hello" in lines and "BTC  | hello" in lines, (both, lines))
+    check("BTC_ARGS=off -> gold only", rc_gold == 0 and gold_only == [("GOLD", ["--live"])], gold_only)
+    naps = []
+    rc_dup = solution.run_forever(solution.APP_DIR, "main.py", [], runner=lambda: solution.ALREADY_RUNNING,
+                                  sleep=naps.append, say=lambda t: None)
+    check("an instance already running elsewhere is not restarted", rc_dup == solution.ALREADY_RUNNING and naps == [])
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "child.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write("import sys\nprint('line one')\nprint('keyboard:', sys.stdin.isatty())\nsys.exit(7)\n")
+        got = []
+        rc_child = solution.labelled_runner("BTC ", tmp, "child.py", [], got.append)()
+    check("each program's output is labelled; it gets no keyboard (never asks questions mid-run)",
+          rc_child == 7 and got == ["BTC  | line one", "BTC  | keyboard: False"], got)
+
     with open(os.path.join(solution.ROOT, "update.bat"), newline="") as f:
         bat = f.read()
     check("update.bat: update, then recompile the EAs (CRLF)",

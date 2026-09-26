@@ -9,14 +9,14 @@ the same steps with what to check after each one, plus updating and going live.
 |---|---|
 | `setup.bat` | Installs everything and puts the EAs into MT5 |
 | `check.bat` | First time: asks your settings. Later: checks everything |
-| `start.bat` | Runs the system - leave its window open |
+| `start.bat` | Runs the system - gold and Bitcoin in one window; leave it open |
 | `settings.bat` | Change a setting later |
 | `update.bat` | Installs the latest version from GitHub - no downloading by hand (close `start.bat` first) |
 | `relay_login.bat` | Telegram login for the relay (only if you skipped it in Step 2) |
 | `keys.txt` | All your keys and ids in one private file (made by `setup.bat`) |
 | `dashboard_setup.bat` | Optional: your reports on your phone (run as administrator) |
 | `replay_signals.bat` | Optional: tests your signal provider on its past 3 months of signals |
-| `start_btc.bat` / `backtest_btc.bat` | Optional: the same system for Bitcoin (BTCUSD) - see [`docs/BTC.md`](docs/BTC.md) |
+| `backtest_btc.bat` | Optional: tests the Bitcoin rules on your broker's BTC prices - see [`docs/BTC.md`](docs/BTC.md) |
 
 ## Before you start (once)
 
@@ -139,7 +139,7 @@ to analyse them. Nothing is traded.
 
 **Bitcoin (BTCUSD):** the same brain with Bitcoin's own rules (stop 1x M15
 ATR, lock +1R, trail 0.5R, 24/7, 5% daily cap - 10% on weekends while gold is closed), no Telegram signals:
-**BTCTrader_EA** on a BTCUSD chart + `start_btc.bat`. Set-up, rules and
+**BTCTrader_EA** on a BTCUSD chart; `start.bat` runs it next to gold (`BTC_ARGS`). Set-up, rules and
 testing: [`docs/BTC.md`](docs/BTC.md).
 
 **MT5 trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->

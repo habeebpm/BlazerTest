@@ -141,7 +141,7 @@ with `GoldTrader_trades.csv`, `GoldTrader_claude_decisions.csv` and
 ## 7c. Bitcoin (optional)
 
 A second instance for BTCUSD with its own rules and no Telegram signals:
-BTCTrader_EA on a BTCUSD chart + `start_btc.bat`. Steps and checks:
+BTCTrader_EA on a BTCUSD chart; `start.bat` runs it in the same window as gold (`BTC_ARGS`). Steps and checks:
 [`BTC.md`](BTC.md).
 
 ## 8. Every day
@@ -190,14 +190,14 @@ one good week.
 `start.bat` says so when there is one: `*** An update is available (...) -
 close this window and double-click update.bat. ***`
 
-1. Close the `start.bat` (and `start_btc.bat`) window - open trades stay
+1. Close the `start.bat` window - open trades stay
    managed by the EAs. `update.bat` refuses while one is still running.
 2. Close MetaEditor, double-click **`update.bat`**. It downloads the latest
    version from GitHub and installs it:
    - lists what changed, then `N file(s) updated`;
    - never touches `keys.txt`, `logs\`, `relay\*.session`,
      `dashboard\App_Data\password.txt` or files of your own;
-   - `start.bat` / `start_btc.bat` / `settings.ini`: if you changed one, yours
+   - `start.bat` / `settings.ini`: if you changed one, yours
      is KEPT and the new one saved next to it as `<name>.new`;
    - runs every self-test -> `ALL SELF-TESTS PASSED`; if a test fails, the
      previous version is put back automatically;
