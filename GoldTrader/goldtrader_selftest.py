@@ -258,10 +258,14 @@ def main() -> int:
     try:
         import builtins
         builtins.print = lambda *a, **k: lines.append(" ".join(str(x) for x in a))
-        rc_all = solution.start_all(["--live", "--btc", "--live"], runner_factory=fake_factory)
+        tmp_locks = tempfile.mkdtemp()
+        lk, pz = os.path.join(tmp_locks, "start_all.lock"), os.path.join(tmp_locks, "autostart_paused")
+        rc_all = solution.start_all(["--live", "--btc", "--live"], runner_factory=fake_factory,
+                                    lock_path=lk, pause_path=pz)
         both = sorted(ran)
         ran.clear()
-        rc_gold = solution.start_all(["--live", "--btc", "off"], runner_factory=fake_factory)
+        rc_gold = solution.start_all(["--live", "--btc", "off"], runner_factory=fake_factory,
+                                     lock_path=lk, pause_path=pz)
         gold_only = list(ran)
     finally:
         builtins.print = real_print
@@ -298,10 +302,85 @@ def main() -> int:
     check("every .py compiles without warnings (a bad backslash once printed a SyntaxWarning in start.bat)",
           not bad, bad)
 
+    # Autostart: the scheduled task, the watchdog, pause-on-purpose
+    import xml.etree.ElementTree as ET
+    xml = solution.task_xml("PC\\trader", "C:\\Py\\pythonw.exe", "C:\\A & B\\GoldTrader")
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    root_el = ET.fromstring(xml.split("?>", 1)[1])
+    check("autostart task: at sign-in (+1 min) and every 5 min, one at a time, windowless watchdog, "
+          "paths escaped",
+          root_el.find("t:Triggers/t:LogonTrigger/t:Delay", ns).text == "PT1M"
+          and root_el.find("t:Triggers/t:TimeTrigger/t:Repetition/t:Interval", ns).text == "PT5M"
+          and root_el.find("t:Settings/t:MultipleInstancesPolicy", ns).text == "IgnoreNew"
+          and root_el.find("t:Settings/t:DisallowStartIfOnBatteries", ns).text == "false"
+          and root_el.find("t:Actions/t:Exec/t:Command", ns).text == "C:\\Py\\pythonw.exe"
+          and root_el.find("t:Actions/t:Exec/t:Arguments", ns).text.endswith('goldtrader.py" watchdog')
+          and root_el.find("t:Actions/t:Exec/t:WorkingDirectory", ns).text == "C:\\A & B\\GoldTrader"
+          and root_el.find("t:Principals/t:Principal/t:LogonType", ns).text == "InteractiveToken")
+    with tempfile.TemporaryDirectory() as tmp:
+        lk, pz, lg = (os.path.join(tmp, n) for n in ("start_all.lock", "autostart_paused", "autostart.log"))
+        launched = []
+        wd = lambda: solution.cmd_watchdog(None, lock_path=lk, pause_path=pz,  # noqa: E731
+                                           launch=lambda: launched.append(1), log_path=lg)
+        wd()
+        check("watchdog: start.bat not running -> started (and logged)",
+              launched == [1] and "started it" in open(lg, encoding="utf-8").read())
+        held = solution.hold_lock(lk)
+        wd()
+        check("watchdog: already running -> nothing (never a second window)", launched == [1])
+        check("a second start.bat is refused while the first runs",
+              solution.start_all(["--live"], runner_factory=fake_factory, lock_path=lk, pause_path=pz)
+              == solution.ALREADY_RUNNING)
+        solution.release_lock(held)
+        solution.set_paused(True, pz)
+        wd()
+        check("watchdog: paused (Ctrl+C / stop.bat / update) -> not restarted", launched == [1])
+
+        def bad_settings(label, cwd, script, args, emit):
+            return lambda: solution.SETTINGS_ERROR
+        solution.first_run_pending = lambda: False
+        try:
+            rc_bad = solution.start_all(["--oops"], runner_factory=bad_settings, lock_path=lk, pause_path=pz)
+            paused_after_bad = os.path.exists(pz)
+            solution.start_all(["--live"], runner_factory=fake_factory, lock_path=lk, pause_path=pz)
+            paused_after_start = os.path.exists(pz)
+        finally:
+            solution.first_run_pending = real_pending
+        check("start.bat clears the pause; a settings error pauses the autostart (no restart loop)",
+              rc_bad == solution.SETTINGS_ERROR and paused_after_bad and not paused_after_start)
+        calls = []
+
+        def popen(cmd, cwd=None, creationflags=0):
+            calls.append((cmd, creationflags))
+            if len(calls) == 1 and creationflags & getattr(solution.subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0):
+                raise OSError("breakaway not allowed")
+            return object()
+        solution.launch_start_bat(root=tmp, popen=popen)
+        check("the watchdog opens start.bat auto in its own window (breakaway, else plain)",
+              calls[-1][0][:2] == ["cmd.exe", "/c"] and calls[-1][0][2].endswith("start.bat")
+              and calls[-1][0][3] == "auto", calls)
+        home = os.path.join(tmp, "home")
+        os.makedirs(os.path.join(home, "logs"))
+        held = solution.hold_lock(os.path.join(home, "logs", "start_all.lock"))
+        rc_upd = solution.cmd_update(None, fetch=lambda u, t=0: 1 / 0, root=home)
+        solution.release_lock(held)
+        check("update while start.bat runs: refused AND the autostart paused so it is not reopened meanwhile",
+              rc_upd == 1 and os.path.exists(os.path.join(home, "logs", "autostart_paused")))
+    with open(os.path.join(solution.ROOT, "start.bat"), newline="") as f:
+        sb = f.read()
+    with open(os.path.join(solution.ROOT, "autostart.bat"), newline="") as f:
+        ab = f.read()
+    with open(os.path.join(solution.ROOT, "stop.bat"), newline="") as f:
+        stb = f.read()
+    check("start.bat closes its window when opened by the autostart; autostart.bat / stop.bat (CRLF)",
+          'if /i "%~1"=="auto" exit /b' in sb and "python goldtrader.py autostart on" in ab
+          and "python goldtrader.py autostart pause" in stb and "\r\n" in ab and "\r\n" in stb)
+
     with open(os.path.join(solution.ROOT, "update.bat"), newline="") as f:
         bat = f.read()
     check("update.bat: update, then recompile the EAs (CRLF)",
-          "python goldtrader.py update && python goldtrader.py install-mt5" in bat and "\r\n" in bat)
+          "python goldtrader.py update && python goldtrader.py install-mt5" in bat and "\r\n" in bat
+          and bat.index("install-mt5") < bat.index("python goldtrader.py autostart resume"))
     check("finds Google Drive for Desktop's My Drive (G: first)",
           solution.find_drive_root(isdir=lambda p: p in ("G:\\My Drive", "H:\\My Drive")) == "G:\\My Drive"
           and solution.find_drive_root(isdir=lambda p: p == "E:\\MyDrive") == "E:\\MyDrive"

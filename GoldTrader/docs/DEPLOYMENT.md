@@ -144,10 +144,35 @@ A second instance for BTCUSD with its own rules and no Telegram signals:
 BTCTrader_EA on a BTCUSD chart; `start.bat` runs it in the same window as gold (`BTC_ARGS`). Steps and checks:
 [`BTC.md`](BTC.md).
 
+## 7d. Autostart - after a restart and if the window closes
+
+Double-click **`autostart.bat`** once. **You should see** `Autostart ON`. From
+then on (a Windows scheduled task "GoldTrader", no window of its own):
+
+- at every Windows sign-in, after 1 minute, `start.bat` opens by itself; it
+  starts MT5 too if MT5 is not open yet (MT5 reopens its charts and EAs; keep
+  **Algo Trading** on when you close MT5);
+- if the GoldTrader window closes unexpectedly (closed by mistake, crashed),
+  it is reopened within 5 minutes - never a second copy;
+- stopping **on purpose** stays stopped: **Ctrl+C** in the window, or
+  **`stop.bat`** and then close the window. Double-click `start.bat` to run
+  again. A mistyped setting in `start.bat` also pauses it (no restart loop);
+- `update.bat` pauses it while updating and re-arms it at the end - GoldTrader
+  then reopens by itself within 5 minutes.
+
+Unattended restarts (Windows Update at night) also need Windows to sign in by
+itself: Settings -> Accounts -> Sign-in options -> **Use my sign-in info to
+automatically finish setting up after an update** = On. For every restart,
+Windows automatic sign-in (`netplwiz`) does it, but then anyone at the PC is
+signed in - your choice. Check: `python goldtrader.py autostart status`;
+undo: `python goldtrader.py autostart off`. Each automatic start is listed in
+`logs\autostart.log`.
+
 ## 8. Every day
 
 - Keep **MT5** and the **`start.bat` window** open. It restarts the program by itself after an MT5 or internet drop.
-- After a PC restart: open MT5 -> Algo Trading on -> `start.bat`, in that order.
+- After a PC restart: open MT5 -> Algo Trading on -> `start.bat`, in that order -
+  or let the autostart do it (7d).
 - Glance at the dashboard or send `Stats`. A red "Not updating" on the dashboard means `start.bat` or MT5 stopped.
 - An alert "Claude entries STOPPED" means no credits or a bad API key: fix it (`settings.bat`), then restart `start.bat`. Telegram signals keep working meanwhile.
 
@@ -190,7 +215,7 @@ one good week.
 `start.bat` says so when there is one: `*** An update is available (...) -
 close this window and double-click update.bat. ***`
 
-1. Close the `start.bat` window - open trades stay
+1. Press **Ctrl+C** in the `start.bat` window (or `stop.bat`) - open trades stay
    managed by the EAs. `update.bat` refuses while one is still running.
 2. Close MetaEditor, double-click **`update.bat`**. It downloads the latest
    version from GitHub and installs it:
@@ -239,5 +264,6 @@ dashboard site can read only the `dashboard` and `logs` folders.
 ## 13. Stop everything
 
 `PauseHab` in Telegram (closes all positions, stops new entries), then
-close the `start.bat` window. Remove the EA from the chart to stop the
-Telegram side completely.
+**Ctrl+C** in the `start.bat` window (or `stop.bat`, then close it) - just
+closing the window counts as unexpected, and the autostart (if on) reopens
+it. Remove the EA from the chart to stop the Telegram side completely.

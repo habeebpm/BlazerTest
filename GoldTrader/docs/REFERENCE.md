@@ -391,7 +391,11 @@ without the tactics. Results on a year of real prices:
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
 once | start | backtest | replay-signals | scorecard | xtr-export | dashboard-password |
-update | drive-copy | test`. `update` (= `update.bat`) installs the newest
+update | autostart on/off/pause/resume/status | drive-copy | test`. `autostart on`
+(`autostart.bat`) registers the scheduled task "GoldTrader": at sign-in (+1 min)
+and every 5 min a windowless `goldtrader.py watchdog` opens `start.bat auto` when
+it is not running (`logs\start_all.lock`) and not paused (`logs\autostart_paused`:
+Ctrl+C, `stop.bat`, a settings error, an update in progress). `update` (= `update.bat`) installs the newest
 version of the solution's GitHub branch: your keys, logins, logs and edited
 start/settings files are kept, a version that fails its self-tests is rolled
 back (backups in `logs\update_backup\`), and the installed version is

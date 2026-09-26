@@ -19,11 +19,14 @@ GoldTrader launcher - everything runs from this folder.
     python goldtrader.py xtr-export [options] e.g. --check (VPS Drive upload test)
     python goldtrader.py dashboard-password   set the web dashboard's password (dashboard/)
     python goldtrader.py update         download + install the latest version from GitHub (update.bat)
+    python goldtrader.py autostart on   start.bat at every sign-in + restarted if its window closes
+                                        (autostart.bat; also off | pause | resume | status)
     python goldtrader.py drive-copy     copy the solution to Google Drive\MyTraderbyClaude\GoldTrader
                                         (also after every successful setup / update)
     python goldtrader.py test           every self-test
 
-Double-click versions: setup.bat, settings.bat, check.bat, start.bat, relay_login.bat, update.bat.
+Double-click versions: setup.bat, settings.bat, check.bat, start.bat, relay_login.bat, update.bat,
+autostart.bat, stop.bat.
 """
 from __future__ import annotations
 
@@ -325,11 +328,15 @@ def rollback_update(report: dict, root: str = ROOT) -> None:
 def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
     branch = getattr(args, "branch", None) or UPDATE_BRANCH
     state_path = os.path.join(root, "logs", "update_state.json")
-    running = instance_running(root)
+    pause_path = os.path.join(root, "logs", "autostart_paused")
+    running = instance_running(root) or ("start.bat" if goldtrader_running(
+        os.path.join(root, "logs", "start_all.lock")) else "")
     if running and not getattr(args, "force", False):
-        print(f"\n{running} is still running - close its window first (open trades stay managed by the "
-              "EA), then run update.bat again.")
+        set_paused(True, pause_path)                     # so the autostart does not reopen it meanwhile
+        print(f"\n{running} is still running - close its window now (open trades stay managed by the "
+              "EA; the autostart will not reopen it), then run update.bat again.")
         return 1
+    set_paused(True, pause_path)                         # no autostart restart in the middle of an update
     state = load_update_state(state_path)
     try:
         sha, headline = latest_commit(branch=branch, fetch=fetch)
@@ -383,6 +390,220 @@ def update_notice(fetch=_http) -> str:
     if not state.get("sha") or sha == state["sha"]:
         return ""
     return f"An update is available ({sha[:7]}: {headline}) - close this window and double-click update.bat."
+
+
+# --------------------------------------------------------------- autostart
+
+AUTOSTART_TASK = "GoldTrader"
+RUN_LOCK = os.path.join(ROOT, "logs", "start_all.lock")
+PAUSE_FLAG = os.path.join(ROOT, "logs", "autostart_paused")
+AUTOSTART_LOG = os.path.join(ROOT, "logs", "autostart.log")
+
+
+def hold_lock(path: str):
+    """An OS lock on `path`, held while the returned handle stays open (freed
+    by the OS if the process dies); None if another process holds it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    handle = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def release_lock(handle) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()
+    except (OSError, ValueError):
+        pass
+
+
+def goldtrader_running(lock_path: str = RUN_LOCK) -> bool:
+    """True while a start.bat window (start-all) holds its lock."""
+    handle = hold_lock(lock_path)
+    if handle is None:
+        return True
+    release_lock(handle)
+    return False
+
+
+def set_paused(paused: bool, path: str = PAUSE_FLAG) -> None:
+    try:
+        if paused:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+        elif os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def launch_start_bat(root: str = ROOT, popen=subprocess.Popen):
+    """start.bat in a NEW visible console window, detached from the scheduled
+    task that launched it (so it keeps running after the watchdog exits)."""
+    cmd = ["cmd.exe", "/c", os.path.join(root, "start.bat"), "auto"]
+    new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+    try:
+        return popen(cmd, cwd=root, creationflags=new_console | breakaway)
+    except OSError:                                      # the task's job does not allow breakaway
+        return popen(cmd, cwd=root, creationflags=new_console)
+
+
+def cmd_watchdog(_args=None, lock_path: str | None = None, pause_path: str | None = None,
+                 launch=None, log_path: str | None = None) -> int:
+    """Run by the scheduled task at sign-in and every 5 minutes, without a
+    window: starts start.bat when it is not running and not paused."""
+    if os.path.exists(pause_path or PAUSE_FLAG):
+        return 0
+    if goldtrader_running(lock_path or RUN_LOCK):
+        return 0
+    (launch or launch_start_bat)()
+    try:
+        path = log_path or AUTOSTART_LOG
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  start.bat was not running - started it\n")
+    except OSError:
+        pass
+    return 0
+
+
+def task_xml(user: str, pythonw: str, root: str = ROOT) -> str:
+    """The scheduled task: at sign-in (after 1 minute, so MT5, Drive and the
+    network are up) and every 5 minutes, run the watchdog - one at a time."""
+    from xml.sax.saxutils import escape as x
+    user_el = f"<UserId>{x(user)}</UserId>" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>GoldTrader: starts start.bat at sign-in and restarts it within 5 minutes if its window closes unexpectedly (goldtrader.py autostart).</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      {user_el}
+      <Delay>PT1M</Delay>
+    </LogonTrigger>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      {user_el}
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{x(pythonw)}</Command>
+      <Arguments>"{x(os.path.join(root, "goldtrader.py"))}" watchdog</Arguments>
+      <WorkingDirectory>{x(root)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def pythonw_path() -> str:
+    """pythonw.exe next to this Python (runs the watchdog without a window)."""
+    candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return candidate if os.path.exists(candidate) else sys.executable
+
+
+def autostart_installed(run=subprocess.run) -> bool:
+    try:
+        return run(["schtasks", "/Query", "/TN", AUTOSTART_TASK], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def cmd_autostart(args, run=subprocess.run) -> int:
+    action = getattr(args, "action", "status")
+    if action == "pause":
+        set_paused(True)
+        print("Autostart paused: GoldTrader will not be restarted until you double-click start.bat.\n"
+              "Close the GoldTrader window now if it is open (open trades stay managed by the EAs).")
+        return 0
+    if action == "resume":
+        set_paused(False)
+        print("GoldTrader starts again by itself within 5 minutes (autostart), or double-click start.bat now."
+              if autostart_installed(run) else "Double-click start.bat to start GoldTrader again.")
+        return 0
+    if action == "status":
+        print(f"Autostart: {'ON' if autostart_installed(run) else 'off'}; "
+              f"{'PAUSED (start.bat restarts it)' if os.path.exists(PAUSE_FLAG) else 'not paused'}; "
+              f"GoldTrader {'running' if goldtrader_running() else 'not running'}.")
+        return 0
+    if os.name != "nt":
+        print("Autostart uses the Windows Task Scheduler - only on Windows.")
+        return 1
+    if action == "off":
+        rc = run(["schtasks", "/Delete", "/TN", AUTOSTART_TASK, "/F"], capture_output=True, text=True).returncode
+        print("Autostart OFF - start GoldTrader with start.bat yourself." if rc == 0 else
+              "Autostart was not on.")
+        return 0
+    user = "\\".join(p for p in (os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", "")) if p)
+    xml_path = os.path.join(tempfile.gettempdir(), "goldtrader_autostart.xml")
+    with open(xml_path, "w", encoding="utf-16") as f:
+        f.write(task_xml(user, pythonw_path()))
+    try:
+        res = run(["schtasks", "/Create", "/TN", AUTOSTART_TASK, "/XML", xml_path, "/F"],
+                  capture_output=True, text=True)
+    finally:
+        try:
+            os.remove(xml_path)
+        except OSError:
+            pass
+    if res.returncode != 0:
+        print(f"Could not create the scheduled task: {(res.stderr or res.stdout).strip()}")
+        return 1
+    set_paused(False)
+    print("Autostart ON:\n"
+          "  - at every Windows sign-in (after 1 minute) start.bat opens by itself; MT5 is started too\n"
+          "  - if the GoldTrader window closes unexpectedly it is reopened within 5 minutes\n"
+          "  - Ctrl+C in the window, or stop.bat, stops it for good (until you double-click start.bat)\n"
+          "Windows must sign in by itself after a restart for this to work unattended (see docs).")
+    return 0
 
 
 # --------------------------------------------------------------- MT5 install
@@ -620,11 +841,22 @@ def first_run_pending() -> bool:
         sys.path.remove(APP_DIR)
 
 
-def start_all(argv, runner_factory=labelled_runner, sleep=None) -> int:
+def start_all(argv, runner_factory=labelled_runner, sleep=None, lock_path: str | None = None,
+              pause_path: str | None = None) -> int:
     """start.bat: gold and (unless switched off) Bitcoin in ONE window - two
     separate programs, each restarted on its own, every line labelled.
-    Ctrl+C or closing the window stops both."""
+    Ctrl+C or closing the window stops both. Holds logs\\start_all.lock
+    while it runs (the autostart watchdog's "is it running?"); Ctrl+C or a
+    settings error pauses the autostart, so an intentional stop stays
+    stopped - only an unexpected close is restarted."""
     import threading
+    lock_path = lock_path or RUN_LOCK
+    pause_path = pause_path or PAUSE_FLAG
+    run_lock = hold_lock(lock_path)
+    if run_lock is None:
+        print("GoldTrader is already running in another window - not starting a second one.", flush=True)
+        return ALREADY_RUNNING
+    set_paused(False, pause_path)                        # running = the watchdog may restart it again
     gold, btc = split_start_all(argv)
     if first_run_pending():
         rc = py(APP_DIR, "main.py", "--setup")           # questions first, in the open
@@ -657,8 +889,16 @@ def start_all(argv, runner_factory=labelled_runner, sleep=None) -> int:
         stop.set()                                       # the programs got Ctrl+C themselves
         for t in threads:
             t.join(20)
+        set_paused(True, pause_path)
+        emit("Stopped (Ctrl+C) - the autostart will not restart GoldTrader until you double-click start.bat.")
+        release_lock(run_lock)
         return 130
-    return max((rc for rc in results.values()), default=0)
+    rc = max((rc for rc in results.values()), default=0)
+    if rc == SETTINGS_ERROR:
+        set_paused(True, pause_path)                     # restarting cannot fix a mistyped setting
+        emit("Autostart paused until the setting in start.bat is fixed and start.bat is started again.")
+    release_lock(run_lock)
+    return rc
 
 
 PASSTHROUGH = {"start": (APP_DIR, "main.py"), "backtest": (APP_DIR, "backtest.py"),
@@ -696,6 +936,9 @@ def main(argv=None) -> int:
     p.add_argument("--no-compile", action="store_true", dest="no_compile")
     sub.add_parser("settings")
     sub.add_parser("dashboard-password")
+    sub.add_parser("watchdog")
+    p = sub.add_parser("autostart")
+    p.add_argument("action", nargs="?", default="status", choices=["on", "off", "pause", "resume", "status"])
     p = sub.add_parser("update")
     p.add_argument("--branch", help="GitHub branch to install (default: the solution's own)")
     p.add_argument("--force", action="store_true", help="reinstall even if up to date / an instance runs")
@@ -720,6 +963,10 @@ def main(argv=None) -> int:
         return py(APP_DIR, "main.py", "--setup")
     if args.cmd == "update":
         return cmd_update(args)
+    if args.cmd == "watchdog":
+        return cmd_watchdog(args)
+    if args.cmd == "autostart":
+        return cmd_autostart(args)
     if args.cmd == "drive-copy":
         return cmd_drive_copy(args)
     if args.cmd == "dashboard-password":

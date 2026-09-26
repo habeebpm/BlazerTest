@@ -6,4 +6,6 @@ rem logs and your edited start.bat / settings.ini, runs every self-test (puts th
 rem old version back if one fails), refreshes the Google Drive copy, then recompiles the EAs in MT5.
 rem Close the start.bat window first.
 python goldtrader.py update && python goldtrader.py install-mt5
+rem The autostart (if on) reopens start.bat within 5 minutes after this.
+python goldtrader.py autostart resume
 pause

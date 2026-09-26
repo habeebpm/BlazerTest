@@ -12,6 +12,8 @@ the same steps with what to check after each one, plus updating and going live.
 | `start.bat` | Runs the system - gold and Bitcoin in one window; leave it open |
 | `settings.bat` | Change a setting later |
 | `update.bat` | Installs the latest version from GitHub - no downloading by hand (close `start.bat` first) |
+| `autostart.bat` | Once: `start.bat` opens by itself at every sign-in and reopens if its window closes |
+| `stop.bat` | Stop on purpose - the autostart then leaves it closed until you double-click `start.bat` |
 | `relay_login.bat` | Telegram login for the relay (only if you skipped it in Step 2) |
 | `keys.txt` | All your keys and ids in one private file (made by `setup.bat`) |
 | `dashboard_setup.bat` | Optional: your reports on your phone (run as administrator) |
@@ -90,7 +92,7 @@ trade at a time (the margin guard handles it).
 ## Every day
 
 - Keep **MT5** and the **`start.bat`** window open (it restarts itself if MT5 or the internet drops).
-- After a PC restart: open MT5 (Algo Trading on) -> `start.bat`.
+- After a PC restart: open MT5 (Algo Trading on) -> `start.bat` - or run `autostart.bat` once and it happens by itself (docs\\DEPLOYMENT.md 7d).
 
 | Telegram button | Does |
 |---|---|

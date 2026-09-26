@@ -16,4 +16,6 @@ rem dry-run; broker symbol with a suffix? add e.g. --symbol BTCUSDm. Other optio
 rem --risk-percent 2  --max-positions 3  (see docs\BTC.md). Gold only: set BTC_ARGS=off
 set BTC_ARGS=--live
 python goldtrader.py start-all %GT_ARGS% --btc %BTC_ARGS%
+rem Opened by the autostart (autostart.bat): close the window when the program ends.
+if /i "%~1"=="auto" exit /b
 pause
