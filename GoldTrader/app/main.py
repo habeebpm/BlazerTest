@@ -938,6 +938,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 SETTINGS_ERROR = 3   # goldtrader.py start does not restart on this - fix the options first
+
+
+class _Idle(Exception):
+    """Ends a poll early on purpose (gold's weekend: nothing to poll)."""
 ALREADY_RUNNING = 4  # nor on this: the same instance runs in another window
 _instance_lock = None
 
@@ -1002,7 +1006,8 @@ def main(argv: list | None = None) -> int:
         gw.connect(login=args.login, password=args.password or os.environ.get("MT5_PASSWORD") or None,
                    server=args.server, terminal_path=args.terminal_path)
         spec = gw.symbol_spec(cfg.symbol)
-        gw.server_utc_offset_seconds(cfg.symbol)   # learn the broker clock before reading any bar time
+        if not tactics.market_closed_for(cfg, datetime.now(timezone.utc)):
+            gw.server_utc_offset_seconds(cfg.symbol)   # learn the broker clock before reading any bar time
     except RuntimeError as exc:
         # The most common first-run problem - one clear line, not a traceback.
         log.error("Cannot reach MetaTrader 5: %s\n  Fix: start MT5, log in to your account, wait "
@@ -1094,8 +1099,25 @@ def main(argv: list | None = None) -> int:
     failed_bar, failed_attempts = None, 0
     bar_time = None
     claude_alerted = set()     # one Telegram alert per distinct "needs manual action" reason
+    weekend_idle = False
     while True:
         try:
+            now_utc = datetime.now(timezone.utc)
+            if tactics.market_closed_for(cfg, now_utc):
+                # Gold's weekend: no price, clock or evaluation polls at all
+                # (the dashboard file and journal below keep going).
+                if not weekend_idle:
+                    reopen = tactics.gold_reopen_after(now_utc)
+                    log.info("Gold market closed for the weekend - no polling until it reopens %s "
+                             "(%s %s time).", f"{reopen:%a %H:%M} UTC",
+                             reopen.astimezone(tactics.ZoneInfo(cfg.display_timezone)).strftime("%a %H:%M"),
+                             tactics.ZONE_LABELS.get(cfg.display_timezone, cfg.display_timezone))
+                    weekend_idle = True
+                heartbeat.mark_cycle_success()
+                raise _Idle()
+            if weekend_idle:
+                log.info("Gold market open again - polling resumed.")
+                weekend_idle = False
             gw.server_utc_offset_seconds(cfg.symbol)   # keeps bar times on true UTC (see mt5_gateway)
             bar_time = market_intel.last_closed_time(gw, cfg.symbol, cfg.primary_timeframe)
             if bar_time != last_bar_time:
@@ -1109,6 +1131,8 @@ def main(argv: list | None = None) -> int:
                 last_bar_time = bar_time
                 failed_bar, failed_attempts = None, 0
             heartbeat.mark_cycle_success()
+            sleep_seconds = cfg.poll_seconds
+        except _Idle:
             sleep_seconds = cfg.poll_seconds
         except KeyboardInterrupt:
             log.info("Stopped.")

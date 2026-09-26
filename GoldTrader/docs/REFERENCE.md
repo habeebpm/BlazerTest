@@ -242,6 +242,12 @@ Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 
 ## Bitcoin (BTCUSD) instance
 
+While gold's market is closed (Friday 17:00 - Sunday 18:00 New York = Saturday 01:00 -
+Monday 02:00 Oman) the gold program polls nothing - no prices, broker clock or
+evaluations; it logs `Gold market closed for the weekend - no polling until it
+reopens ...` once and resumes by itself. The dashboard file, journal and relay keep
+running; Bitcoin trades on.
+
 `start.bat` (`goldtrader.py start-all`) runs gold and a second, independent
 Bitcoin instance in one window (`BTC_ARGS`; `off` = gold only), each its own
 program with its own restart and `instance.lock`, with `--profile btc`

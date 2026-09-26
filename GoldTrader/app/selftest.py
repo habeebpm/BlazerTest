@@ -4824,6 +4824,23 @@ def test_btc_profile() -> bool:
                 and (we.risk_percent, we.sl_atr_mult, we.lock_r, we.trail_r) == (2.0, 1.0, 1.0, 0.5)
                 and wd is btc and btc.max_daily_loss_pct == 5.0,
                 (we.max_daily_loss_pct, we.max_open_positions_per_direction))
+    reopen = tactics.gold_reopen_after
+    ok &= check("gold's weekly reopen: Sunday 18:00 New York (22:00 UTC in summer, 23:00 in winter)",
+                reopen(U("2026-09-26 12:00")) == U("2026-09-27 22:00").to_pydatetime()
+                and reopen(U("2026-09-27 21:00")) == U("2026-09-27 22:00").to_pydatetime()
+                and reopen(U("2026-09-27 23:00")) == U("2026-10-04 22:00").to_pydatetime()
+                and reopen(U("2026-12-05 12:00")) == U("2026-12-06 23:00").to_pydatetime(),
+                reopen(U("2026-09-26 12:00")))
+    ok &= check("weekend: the gold program polls nothing; Bitcoin keeps going; gold polls on weekdays",
+                tactics.market_closed_for(gold, sat) and not tactics.market_closed_for(btc, sat)
+                and not tactics.market_closed_for(gold, wed))
+    msrc = open(os.path.join(paths.APP_DIR, "main.py"), encoding="utf-8").read()
+    loop = msrc[msrc.index("weekend_idle = False"):]
+    ok &= check("main loop: the closed-market skip comes before any MT5 price or clock read",
+                loop.index("tactics.market_closed_for(cfg, now_utc)") < loop.index("gw.server_utc_offset_seconds")
+                < loop.index("market_intel.last_closed_time")
+                and "if not tactics.market_closed_for(cfg, datetime.now(timezone.utc)):\n"
+                    "            gw.server_utc_offset_seconds(cfg.symbol)" in msrc)
     ok &= check("gold never changes (no weekend allowance)",
                 tactics.effective_limits(gold, sat) is gold and not tactics.weekend_mode(gold, sat))
     down6 = FakeGateway(bid=100000.0, ask=100010.0, bars_df=bars, equity=9400.0)   # 6% down on the day

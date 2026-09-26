@@ -259,6 +259,23 @@ def gold_market_closed(now) -> bool:
     return (day == 4 and minute >= GOLD_CLOSE_NY) or day == 5 or (day == 6 and minute < GOLD_REOPEN_NY)
 
 
+def gold_reopen_after(now) -> datetime:
+    """The next Sunday 18:00 New York (gold's weekly reopen) after `now`, in UTC."""
+    ny = _as_utc(now).astimezone(NEW_YORK)
+    days = (6 - ny.weekday()) % 7
+    reopen = (ny + timedelta(days=days)).replace(hour=GOLD_REOPEN_NY // 60, minute=GOLD_REOPEN_NY % 60,
+                                                 second=0, microsecond=0)
+    if reopen <= ny:
+        reopen = reopen + timedelta(days=7)
+    return reopen.astimezone(timezone.utc)
+
+
+def market_closed_for(cfg, now) -> bool:
+    """The gold instance has nothing to poll while gold's market is closed
+    for the weekend; Bitcoin never closes."""
+    return getattr(cfg, "instrument", "gold") == "gold" and gold_market_closed(now)
+
+
 def weekend_mode(cfg, now) -> bool:
     """The BTC weekend allowance is in force: gold is closed and the profile
     sets a weekend daily cap or position limit."""
