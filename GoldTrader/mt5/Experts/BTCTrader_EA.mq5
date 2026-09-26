@@ -4,7 +4,7 @@
 //|                                                                    |
 //| Exit manager for the BTCUSD instance of GoldTrader. No Telegram    |
 //| signals: every BTC entry is decided by app/main.py --profile btc   |
-//| (start_btc.bat) - Claude's "full" verdict on the 2-of-3 confluence  |
+//| (start.bat, BTC_ARGS) - Claude's "full" verdict on the 2-of-3      |
 //| legs, SMC structure, M15/H1 alignment, the economic calendar and    |
 //| crypto breaking news - and sent under InpMagicNumber with its stop. |
 //| This EA manages those positions tick by tick, like UnifiedTrader_EA |
@@ -277,7 +277,7 @@ int OnInit()
    trade.SetExpertMagicNumber(InpMagicNumber);
    EventSetTimer(1);
    PrintFormat("BTCTrader_EA: managing %s positions with magic %I64d - lock at +%.2fR, trail %.2fR "
-               "(R = each trade's opening stop)%s. Entries come from start_btc.bat.",
+               "(R = each trade's opening stop)%s. Entries come from start.bat (BTC lines).",
                _Symbol, InpMagicNumber, InpLockR, InpTrailR, InpDryRun ? " - DRY-RUN, nothing modified" : "");
    ManageAll();
    return(INIT_SUCCEEDED);

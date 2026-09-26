@@ -48,7 +48,7 @@
 //|   PauseClaudeHab / ResumeClaudeHab Claude trades only - written to |
 //|                    InpClaudePauseFilename in Common\Files, which   |
 //|                    main.py reads every cycle (same PC required)    |
-//|   PauseBtcHab / ResumeBtcHab       the BTC instance (start_btc.bat)|
+//|   PauseBtcHab / ResumeBtcHab       the BTC instance (start.bat)    |
 //|                    - closes InpBtcMagicNumber positions on any     |
 //|                    symbol and writes InpBtcPauseFilename; PauseHab |
 //|                    and ResumeHab include BTC too                   |
@@ -182,7 +182,7 @@ input group "=== Remote control (optional) - see file header's REMOTE CONTROL se
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
 input string  InpLastVerdictFilename = "claudesmc_last_verdict.txt"; // Why button: MUST match app/config.py's AdvisorConfig.last_verdict_filename
 input string  InpClaudePauseFilename = "claudesmc_pause.txt";        // PauseClaudeHab/ResumeClaudeHab: MUST match app/config.py's AdvisorConfig.claude_pause_filename
-input long    InpBtcMagicNumber      = 20260931;                     // PauseBtcHab/ResumeBtcHab buttons: the BTC instance's magic (start_btc.bat, BTCTrader_EA); 0 = no BTC buttons
+input long    InpBtcMagicNumber      = 20260931;                     // PauseBtcHab/ResumeBtcHab buttons: the BTC instance's magic (start.bat BTC_ARGS, BTCTrader_EA); 0 = no BTC buttons
 input string  InpBtcPauseFilename    = "claudesmc_btc_pause.txt";    // BTC pause switch file: MUST match profiles.py btc claude_pause_filename
 input bool    InpNotifyTradeClosed   = true;                         // Message InpControlChatId on every closed trade (P/L, equity, today's win%)
 

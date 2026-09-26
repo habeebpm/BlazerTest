@@ -1,6 +1,6 @@
 ; BTCTrader_EA - GoldTrader BTCUSD preset
 ; Chart: your BTCUSD chart (any timeframe) > EA Inputs > Load. Entries come from
-; start_btc.bat (app/main.py --profile btc); this EA only manages them:
+; start.bat (its BTC lines: app/main.py --profile btc); this EA only manages them:
 ; the stop is locked at +1R profit, then trailed 0.5R behind price, where R is
 ; each trade's own opening stop (about one M15 ATR, 0.20%-2.0% of price).
 ; InpMagicNumber / InpLockR / InpTrailR MUST match app/profiles.py 'btc'.
