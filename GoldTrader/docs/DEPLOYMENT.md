@@ -138,6 +138,12 @@ folder (the EA's price files already go there). A few minutes after
 with `GoldTrader_trades.csv`, `GoldTrader_claude_decisions.csv` and
 `GoldTrader_telegram_signals.csv`. Ask Claude to analyse them from Drive.
 
+## 7c. Bitcoin (optional)
+
+A second instance for BTCUSD with its own rules and no Telegram signals:
+BTCTrader_EA on a BTCUSD chart + `start_btc.bat`. Steps and checks:
+[`BTC.md`](BTC.md).
+
 ## 8. Every day
 
 - Keep **MT5** and the **`start.bat` window** open. It restarts the program by itself after an MT5 or internet drop.

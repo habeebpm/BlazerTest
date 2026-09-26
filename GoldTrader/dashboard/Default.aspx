@@ -16,7 +16,7 @@
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
     static readonly string[] Sources = { "Claude", "Telegram" };
     protected Dictionary<string, object> R = new Dictionary<string, object>();
-    protected bool HasData, IsSample, Stale;
+    protected bool HasData, IsSample, Stale, IsBtc, HasBtc;
     protected string DataPath = "", LoadError = "";
     protected double AgeMinutes;
     protected DateTime ReportTime = DateTime.UtcNow;   // "7 days", "30 days" count back from the report's own time
@@ -36,7 +36,11 @@
         string folder = WebConfigurationManager.AppSettings["LogsFolder"] ?? "";
         if (folder.Trim().Length == 0)
             folder = Path.GetFullPath(Path.Combine(Server.MapPath("~/"), "..", "logs"));
-        DataPath = IsSample ? Server.MapPath("~/App_Data/status.sample.json") : Path.Combine(folder, "status.json");
+        // ?m=btc: the BTC instance's report (start_btc.bat writes logs\btc\status.json)
+        IsBtc = !IsSample && Request.QueryString["m"] == "btc";
+        HasBtc = File.Exists(Path.Combine(Path.Combine(folder, "btc"), "status.json"));
+        DataPath = IsSample ? Server.MapPath("~/App_Data/status.sample.json")
+                 : Path.Combine(IsBtc ? Path.Combine(folder, "btc") : folder, "status.json");
         try
         {
             string json;
@@ -144,7 +148,7 @@
             if (local.Length > 0 && localZone.Length > 0 && hours.Length > 0 && zone != localZone)
                 return local + " " + localZone + " time, Mon-Fri (" + hours + " " + zone + ")";
             if (hours.Length == 0 && R.ContainsKey("trade_hours_ny")) return S(G(R, "trade_hours_ny")) + " New York time";
-            if (hours.Length == 0) return "at any hour";
+            if (hours.Length == 0) return IsBtc ? "around the clock, 7 days a week" : "at any hour";
             return hours + (zone.Length > 0 ? " " + zone + " time" : "") + (days.Length > 0 ? ", " + days : "");
         }
     }
@@ -316,6 +320,7 @@
     protected string SignalsHtml()
     {
         IList list = L(G(R, "signals"));
+        if (IsBtc) return "<p class=\"empty\">Bitcoin trades on Claude's analysis only - no Telegram signals.</p>";
         if (list.Count == 0) return "<p class=\"empty\">No Telegram signals logged yet (MT5 &rarr; MQL5\\Files\\TelegramSMC_Signals.csv).</p>";
         StringBuilder sb = new StringBuilder("<ul class=\"rows\">");
         foreach (object o in list)
@@ -378,6 +383,11 @@
     {
         Dictionary<string, object> r = D(G(R, "rules"));
         if (r.Count == 0) return "";
+        if (S(G(r, "lock_mode")) == "r")
+            return N(G(r, "risk_percent")).ToString("0.##", Inv) + "% risk · stop " + N(G(r, "sl_atr_mult")).ToString("0.##", Inv)
+                 + "x M15 ATR (1R) · lock +" + N(G(r, "lock_r")).ToString("0.##", Inv) + "R · trail "
+                 + N(G(r, "trail_r")).ToString("0.##", Inv) + "R · " + N(G(r, "max_per_direction")).ToString("0", Inv)
+                 + " per direction · " + N(G(r, "max_daily_loss_pct")).ToString("0.##", Inv) + "% daily cap";
         string stop = "$" + N(G(r, "sl_dollars")).ToString("0.##", Inv) + " stop";
         if (B(G(r, "telegram_signal_sl")))
             stop += " (Telegram: the signal's stop if $" + N(G(r, "signal_sl_min")).ToString("0.##", Inv) + "-$"
@@ -421,6 +431,9 @@ body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-u
 .brand { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .brand h1 { margin:0 auto 0 0; font-size:19px; letter-spacing:.01em; }
 .brand h1 span { color:var(--gold); }
+.market { display:flex; border:1px solid var(--rule); border-radius:999px; overflow:hidden; }
+.market a { padding:4px 12px; font-size:13px; font-weight:700; color:var(--ink-2); text-decoration:none; }
+.market a[aria-current="page"] { background:var(--gold); color:var(--surface); }
 nav.tabs { display:flex; }
 nav.tabs a { flex:1 1 auto; text-align:center; padding:9px 4px; font-size:14.5px; color:var(--ink-2); text-decoration:none; font-weight:600; border-bottom:3px solid transparent; }
 nav.tabs a[aria-current="page"] { color:var(--ink); border-bottom-color:var(--gold); }
@@ -482,6 +495,11 @@ code { font-size:12.5px; overflow-wrap:anywhere; }
 <div class="bar"><div class="in">
   <div class="brand">
     <h1>Gold<span>Trader</span></h1>
+    <% if (HasBtc || IsBtc) { %>
+      <nav class="market" aria-label="Market">
+        <a href="Default.aspx"<%= IsBtc ? "" : " aria-current=\"page\"" %>>Gold</a><a href="Default.aspx?m=btc"<%= IsBtc ? " aria-current=\"page\"" : "" %>>BTC</a>
+      </nav>
+    <% } %>
     <% if (HasData) { %>
       <span class="chip <%= Mode == "Live" ? "gold" : "" %>"><%= Mode %></span>
       <span class="chip <%= Stale ? "bad" : "good" %>" id="age" data-updated="<%= H(S(G(R, "updated_utc"))) %>"><%= Stale ? "Not updating" : "Updated" %></span>

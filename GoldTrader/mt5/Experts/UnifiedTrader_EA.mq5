@@ -48,6 +48,10 @@
 //|   PauseClaudeHab / ResumeClaudeHab Claude trades only - written to |
 //|                    InpClaudePauseFilename in Common\Files, which   |
 //|                    main.py reads every cycle (same PC required)    |
+//|   PauseBtcHab / ResumeBtcHab       the BTC instance (start_btc.bat)|
+//|                    - closes InpBtcMagicNumber positions on any     |
+//|                    symbol and writes InpBtcPauseFilename; PauseHab |
+//|                    and ResumeHab include BTC too                   |
 //|   Stats   equity, P/L, win % today / 7 / 30 days, daily budget     |
 //|   News    economic calendar with gold impact                       |
 //|   Why     Claude's last reasoning (InpLastVerdictFilename)         |
@@ -178,6 +182,8 @@ input group "=== Remote control (optional) - see file header's REMOTE CONTROL se
 input long    InpControlChatId = 0;                // Your own DM chat id with this bot; 0 = disabled
 input string  InpLastVerdictFilename = "claudesmc_last_verdict.txt"; // Why button: MUST match app/config.py's AdvisorConfig.last_verdict_filename
 input string  InpClaudePauseFilename = "claudesmc_pause.txt";        // PauseClaudeHab/ResumeClaudeHab: MUST match app/config.py's AdvisorConfig.claude_pause_filename
+input long    InpBtcMagicNumber      = 20260931;                     // PauseBtcHab/ResumeBtcHab buttons: the BTC instance's magic (start_btc.bat, BTCTrader_EA); 0 = no BTC buttons
+input string  InpBtcPauseFilename    = "claudesmc_btc_pause.txt";    // BTC pause switch file: MUST match profiles.py btc claude_pause_filename
 input bool    InpNotifyTradeClosed   = true;                         // Message InpControlChatId on every closed trade (P/L, equity, today's win%)
 
 input group "=== XTR HTF filter (Telegram entries) - never trade against a clear M15/H1 ==="
@@ -279,6 +285,8 @@ int      ClosePositionsByMagic(long magic, const string &label);
 int      CloseAllMine();
 int      CancelAllPendingMine();
 int      CloseAllClaudeMine();
+int      CloseBtcPositions();
+void     WriteBtcPauseFile(bool paused);
 void     SetTelegramPaused(bool paused);
 void     SetClaudePaused(bool paused);
 void     WriteClaudePauseFile();
@@ -1460,6 +1468,49 @@ int CloseAllClaudeMine()
 }
 
 //+------------------------------------------------------------------+
+//| The BTC instance's positions (InpBtcMagicNumber) on ANY symbol -   |
+//| PauseBtcHab / PauseHab. 0 = none (no BTC instance).                 |
+//+------------------------------------------------------------------+
+int CloseBtcPositions()
+{
+   if(InpBtcMagicNumber == 0)
+      return(0);
+   int closed = 0;
+   trade.SetExpertMagicNumber(InpBtcMagicNumber);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpBtcMagicNumber) continue;
+      if(InpDryRun)
+      {
+         PrintFormat("UnifiedTrader_EA: [DRY-RUN] would close BTC ticket %I64u", ticket);
+         closed++;
+      }
+      else if(trade.PositionClose(ticket))
+         closed++;
+      else
+         PrintFormat("UnifiedTrader_EA: FAILED to close BTC ticket %I64u (retcode=%d %s) - still OPEN, "
+                     "check manually.", ticket, trade.ResultRetcode(), trade.ResultRetcodeDescription());
+   }
+   return(closed);
+}
+
+//+------------------------------------------------------------------+
+//| "paused"/"running" for the BTC instance (app/main.py --profile btc |
+//| reads InpBtcPauseFilename every cycle, like the Claude pause file). |
+//+------------------------------------------------------------------+
+void WriteBtcPauseFile(bool paused)
+{
+   if(InpBtcMagicNumber == 0 || StringLen(InpBtcPauseFilename) == 0 || MQLInfoInteger(MQL_TESTER)
+      || MQLInfoInteger(MQL_OPTIMIZATION))
+      return;
+   if(!CommonFileWriteAtomic(InpBtcPauseFilename, paused ? "paused" : "running"))
+      PrintFormat("UnifiedTrader_EA: WARNING - could not write the BTC pause file %s (error %d).",
+                  InpBtcPauseFilename, GetLastError());
+}
+
+//+------------------------------------------------------------------+
 //| Sets g_telegramPaused for THIS run (so the pause gate in           |
 //| ProcessSignal is actually exercisable while dry-run testing this   |
 //| feature, per SETUP.md's own "leave InpDryRun=true until you trust  |
@@ -1762,19 +1813,23 @@ void ProcessControlCommand(const string &rawText)
       int telClosed    = CloseAllMine();
       int telCancelled = CancelAllPendingMine();
       int claudeClosed = CloseAllClaudeMine();
+      int btcClosed    = CloseBtcPositions();
       SetTelegramPaused(true);
       SetClaudePaused(true);
+      WriteBtcPauseFile(true);
       SendControlReply(StringFormat(
                   "PauseHab %s %d Telegram position(s), %d pending order(s), %d Claude "
-                  "position(s). New Telegram AND Claude entries are now BLOCKED until ResumeHab.",
+                  "position(s)%s. New Telegram AND Claude entries are now BLOCKED until ResumeHab.",
                   InpDryRun ? "[DRY-RUN] would clear" : "done - cleared",
-                  telClosed, telCancelled, claudeClosed));
+                  telClosed, telCancelled, claudeClosed,
+                  InpBtcMagicNumber != 0 ? StringFormat(", %d BTC position(s) (BTC paused too)", btcClosed) : ""));
       return;
    }
    if(cmd == "RESUMEHAB")
    {
       SetTelegramPaused(false);
       SetClaudePaused(false);
+      WriteBtcPauseFile(false);
       SendControlReply("ResumeHab done - new Telegram and Claude entries re-enabled (Telegram still "
                         "subject to InpEnableTelegramSignals). Nothing was reopened.");
       return;
@@ -1822,6 +1877,22 @@ void ProcessControlCommand(const string &rawText)
                   claudeClosed));
       return;
    }
+   if(cmd == "PAUSEBTCHAB" && InpBtcMagicNumber != 0)
+   {
+      int btcClosed = CloseBtcPositions();
+      WriteBtcPauseFile(true);
+      SendControlReply(StringFormat("PauseBtcHab %s %d BTC position(s). New BTC entries are now BLOCKED "
+                                    "until ResumeBtcHab or ResumeHab. Gold is unchanged.",
+                                    InpDryRun ? "[DRY-RUN] would close" : "done - closed", btcClosed));
+      return;
+   }
+   if(cmd == "RESUMEBTCHAB" && InpBtcMagicNumber != 0)
+   {
+      WriteBtcPauseFile(false);
+      SendControlReply("ResumeBtcHab done - new BTC entries re-enabled from the BTC instance's next "
+                        "cycle. Gold is unchanged.");
+      return;
+   }
    if(cmd == "STATS")
    {
       SendControlReply(BuildStatsText());
@@ -1846,7 +1917,7 @@ void ProcessControlCommand(const string &rawText)
    SendControlReply(StringFormat(
                "Unrecognized control command: '%s' - tap a button below, or send exactly one of "
                "PauseHab / ResumeHab / PauseTelHab / ResumeTelHab / PauseClaudeHab / "
-               "ResumeClaudeHab / Stats / News / Why.", rawText));
+               "ResumeClaudeHab / PauseBtcHab / ResumeBtcHab / Stats / News / Why.", rawText));
 }
 
 //+------------------------------------------------------------------+
@@ -2546,7 +2617,9 @@ bool TelegramSendMessage(long chatId, const string text)
    int sendTimeoutMs = (int)MathMin(InpHttpTimeoutMs, 3000);
    string keyboardJson =
       "{\"keyboard\":[[\"PauseHab\",\"ResumeHab\"],[\"PauseTelHab\",\"ResumeTelHab\"],"
-      "[\"PauseClaudeHab\",\"ResumeClaudeHab\"],[\"Stats\",\"News\",\"Why\"]],"
+      "[\"PauseClaudeHab\",\"ResumeClaudeHab\"],"
+      + (InpBtcMagicNumber != 0 ? "[\"PauseBtcHab\",\"ResumeBtcHab\"]," : "")
+      + "[\"Stats\",\"News\",\"Why\"]],"
       "\"resize_keyboard\":true,\"is_persistent\":true}";
    string body = StringFormat("{\"chat_id\":%I64d,\"text\":\"%s\",\"reply_markup\":%s}",
                                chatId, JsonEscape(text), keyboardJson);

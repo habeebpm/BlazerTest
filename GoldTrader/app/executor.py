@@ -211,6 +211,10 @@ def verdict_independent_block(gateway, cfg: AdvisorConfig, trades_today: int) ->
             reason = tactics.spread_block(cfg, spread)
             if reason:
                 return reason
+    if cfg.max_spread_pct:
+        pct = tactics.current_spread_pct(gateway, cfg)
+        if pct is not None and pct > cfg.max_spread_pct:
+            return f"spread {pct:.3f}% of price is above the {cfg.max_spread_pct:g}% limit"
     blackout = in_news_blackout(cfg, now=now)
     if blackout:
         return blackout
@@ -371,9 +375,25 @@ def atr_sl_distance(gateway, cfg: AdvisorConfig, spec) -> float | None:
     if atr_value <= 0:
         return None
     sl_dist = atr_value * cfg.sl_atr_mult
+    if cfg.sl_pct_min > 0 or cfg.sl_pct_max > 0:
+        # bounds in % of price (BTC): they scale with the market's own level
+        price = float(closed["close"].iloc[-1])
+        min_dist = price * cfg.sl_pct_min / 100.0
+        max_dist = price * cfg.sl_pct_max / 100.0 if cfg.sl_pct_max > 0 else sl_dist
+        return max(min_dist, min(sl_dist, max_dist))
     min_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars_min, cfg.reference_lot)
     max_dist = gateway.price_distance_for_dollars(spec, cfg.sl_dollars_max, cfg.reference_lot)
     return max(min_dist, min(sl_dist, max_dist))
+
+
+def lock_trail_distances(gateway, cfg: AdvisorConfig, spec, sl_dist: float) -> tuple[float, float]:
+    """(lock, trail) price distances: gold's fixed tp1_dollars / trail_dollars
+    at reference_lot, or with lock_mode="r" multiples of this trade's own
+    stop (BTC: +1R lock, 0.5R trail - what BTCTrader_EA applies)."""
+    if cfg.lock_mode == "r":
+        return sl_dist * cfg.lock_r, sl_dist * cfg.trail_r
+    return (gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.reference_lot),
+            gateway.price_distance_for_dollars(spec, cfg.trail_dollars, cfg.reference_lot))
 
 
 def _reject(cfg: AdvisorConfig, verdict: ConfluenceVerdict, reason: str,
@@ -401,8 +421,7 @@ def build_plan(gateway, cfg: AdvisorConfig, spec, direction: str) -> TradePlan:
     else:
         raise ValueError(f"Unrecognized sl_mode {cfg.sl_mode!r} - must be 'fixed' or 'atr'.")
     lots = position_size(gateway, cfg, spec, sl_dist)
-    tp1_dist = gateway.price_distance_for_dollars(spec, cfg.tp1_dollars, cfg.reference_lot)
-    trail_dist = gateway.price_distance_for_dollars(spec, cfg.trail_dollars, cfg.reference_lot)
+    tp1_dist, trail_dist = lock_trail_distances(gateway, cfg, spec, sl_dist)
 
     if cfg.exit_style == "fixed_tp":
         # The original design: a real broker take-profit at entry+tp1_dist -
@@ -495,7 +514,8 @@ def execute(gateway, cfg: AdvisorConfig, verdict: ConfluenceVerdict, spec,
                        plan=plan, news_note=news_note)
     # Some brokers report price 0.0 on a market fill - keep the requested price then.
     fill_price = getattr(result, "price", 0.0) or entry_price
-    tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at ${cfg.tp1_dollars:g} via SL)"
+    lock_desc = f"+{cfg.lock_r:g}R" if cfg.lock_mode == "r" else f"${cfg.tp1_dollars:g}"
+    tp_desc = f"tp={tp_price:.2f}" if tp_price else f"no broker TP (locks at {lock_desc} via SL)"
     log.info("ACCEPTED %s %.2f lots @ %.2f sl=%.2f %s (conviction=%s, %d/3)",
               verdict.direction.upper(), lots, fill_price, sl_price, tp_desc,
               verdict.conviction, verdict.confluence_count)

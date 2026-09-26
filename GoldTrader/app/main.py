@@ -34,6 +34,7 @@ import relay_supervisor
 import services
 import status_report
 import trade_journal
+import profiles
 import tactics
 import telegram_alert
 import xtr_logic
@@ -58,7 +59,11 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def build_config(args: argparse.Namespace) -> AdvisorConfig:
-    cfg = AdvisorConfig()
+    # The market's own rules first (profiles.py: gold = the defaults, btc =
+    # BTCUSD's), so any option below can still change one of them.
+    cfg = profiles.apply(AdvisorConfig(), getattr(args, "profile", None) or "gold")
+    if getattr(args, "no_companions", False):
+        cfg.run_companions = False
     if args.symbol:
         cfg.symbol = args.symbol
     if args.lots is not None:
@@ -742,7 +747,12 @@ def start_companions(cfg: AdvisorConfig, preset_path: str, force_relay: bool = F
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--symbol", help="override the traded symbol (default XAUUSD)")
+    parser.add_argument("--profile", default="gold", choices=profiles.names(),
+                        help="which market's rules: gold (XAUUSD, the default) or btc (BTCUSD with its own "
+                             "stop/lock/trail, 24/7, own magic, logs\\btc) - see profiles.py")
+    parser.add_argument("--no-companions", action="store_true", dest="no_companions",
+                        help="don't start the settings.ini companion programs (the btc profile never does)")
+    parser.add_argument("--symbol", help="override the traded symbol (default XAUUSD; the btc profile BTCUSD)")
     parser.add_argument("--lots", type=float,
                         help="trade this fixed lot instead of risk-%% sizing (default: risk-sized, "
                              "see --risk-percent; with --risk-percent too, it is only the fallback "
@@ -925,6 +935,7 @@ def main(argv: list | None = None) -> int:
     except ValueError as exc:
         log.error("Setting not understood: %s - fix it in start.bat (GT_ARGS) and start again.", exc)
         return SETTINGS_ERROR
+    os.makedirs(cfg.log_dir, exist_ok=True)       # logs\btc for the btc profile
     if cfg.shared_cap_magic_numbers:
         # The EA counts the same cap with its own InpMaxPositionsPerDirection -
         # the preset carries the same number (checked by goldtrader.py test);
@@ -1013,7 +1024,12 @@ def main(argv: list | None = None) -> int:
         run_once(client, cfg, spec, day, xtr_state)
         return 0
 
-    start_companions(cfg, args.preset, force_relay=args.relay)
+    if cfg.run_companions:
+        start_companions(cfg, args.preset, force_relay=args.relay)
+    else:
+        log.info("Companion programs: not started by this instance (profile %s) - the gold start.bat "
+                 "runs them", cfg.instrument)
+    log.info("Profile %s: %s, magic %d, logs %s", cfg.instrument, cfg.symbol, cfg.magic, cfg.log_dir)
     log.info("Entry filters: XTR gate %s; %s (lot, SL, TP and trail unchanged)",
              cfg.xtr_gate, tactics.describe(cfg))
     log.info("%s", trade_journal.describe(cfg))
@@ -1061,9 +1077,11 @@ def main(argv: list | None = None) -> int:
                     threading.Thread(
                         target=telegram_alert.send_alert,
                         args=(cfg.telegram_alert_bot_token, cfg.telegram_alert_chat_id,
-                              f"GoldTrader: Claude entries STOPPED - {reason[:300]}\n"
-                              "Telegram signals are still copied and open trades still managed. "
-                              "Fix it, then restart start.bat."),
+                              f"GoldTrader ({cfg.symbol}): Claude entries STOPPED - {reason[:300]}\n"
+                              + ("Telegram signals are still copied and open trades still managed. "
+                                 "Fix it, then restart start.bat." if cfg.instrument == "gold" else
+                                 "Open trades are still managed by the EA. Fix it, then restart "
+                                 "start_btc.bat.")),
                         daemon=True).start()
                 log.warning(
                     "Claude unavailable and this looks like it needs manual action (credits/API "

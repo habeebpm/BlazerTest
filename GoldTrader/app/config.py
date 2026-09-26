@@ -51,6 +51,10 @@ import paths
 class AdvisorConfig:
     # --- Instrument ---
     symbol: str = "XAUUSD"
+    # Which market the analysis is written for ("gold" or "btc") - picks the
+    # Claude and news-check prompt wording, the calendar impact note and the
+    # news feeds. Set by profiles.py (--profile btc), never by hand.
+    instrument: str = "gold"
 
     # --- DXY correlation context (optional; off by default) - XAUUSD is
     #     usually (not always) inversely correlated with US dollar strength,
@@ -153,8 +157,13 @@ class AdvisorConfig:
     # from Drive for analysis. "auto" = MyMQChartDrive\GoldTrader wherever Drive
     # shows it (G:\My Drive\... or G:\MyDrive\...); a path; "" = logs\ only.
     journal_folder: str = "auto"
+    journal_prefix: str = "GoldTrader_"   # file names in the journal folder (BTC: "BTC_")
+    # start the settings.ini companions (relay, ML retrain, scorecard...) -
+    # off for a second instance such as the BTC one (one relay per login)
+    run_companions: bool = True
     friday_cutoff_ny: str = "16:00"   # no new entry on Friday from this New York time (weekend gap)
     max_spread_points: int = 50       # no entry while the live spread is above this (reopen, news)
+    max_spread_pct: float = 0.0       # when > 0: no entry while the spread is above this % of price (BTC)
     min_adx: float = 0.0              # e.g. 25: no entry while M15 ADX14 is below this
 
     # --- Breaking-news check (on by default) - see news_check.py. Right
@@ -267,6 +276,19 @@ class AdvisorConfig:
     sl_atr_timeframe: str = "M15"    # sl_mode="atr" only: usually primary_timeframe
     sl_dollars_min: float = 3.0      # sl_mode="atr" only: floor, in USD at fixed_lot
     sl_dollars_max: float = 15.0     # sl_mode="atr" only: ceiling, in USD at fixed_lot
+    # sl_mode="atr" only, when > 0: floor/ceiling as % of the entry price
+    # instead of sl_dollars_min/max - for markets whose price level moves a
+    # lot (BTC), so the bounds scale with it.
+    sl_pct_min: float = 0.0
+    sl_pct_max: float = 0.0
+    # How the lock and trail distances are set: "dollars" = tp1_dollars /
+    # trail_dollars at reference_lot (gold: $6 / $3); "r" = multiples of the
+    # trade's own stop distance (BTC: lock at +1R, trail 0.5R - gold's $6/$6/$3
+    # shape in units of risk). The EA managing the positions must match
+    # (UnifiedTrader_EA: dollars; BTCTrader_EA: InpLockR/InpTrailR).
+    lock_mode: str = "dollars"
+    lock_r: float = 1.0
+    trail_r: float = 0.5
 
     # --- breakeven_r_decay only - see the module docstring; enforced by the
     #     MQL5 EAs, not this script, so these three exist purely as the one

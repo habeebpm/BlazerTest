@@ -240,6 +240,20 @@ own first stop (`stop_distance`). To analyse, ask Claude to read the files from 
 Google Drive. Other Drive path: `--journal-folder "X:\path"` in `start.bat`
 (`off` = logs only). Trading never waits on it or fails because of it.
 
+## Bitcoin (BTCUSD) instance
+
+`start_btc.bat` runs a second, independent instance with `--profile btc`
+(`app/profiles.py`): BTCUSD, magic 20260931, `logs\btc\`, `BTC_` journal
+files, no Telegram side, no companion programs. Stop 1.0 x M15 ATR14 within
+0.20%-2.0% of price; **BTCTrader_EA** locks at +1R and trails 0.5R, where R is
+each trade's own opening stop; 2% risk, 5% daily cap, 3 per direction, 24/7,
+spread limit 0.06% of price. Claude and the news check get Bitcoin-specific
+wording and crypto feeds; gold's prompts are unchanged. Telegram:
+`PauseBtcHab` / `ResumeBtcHab` (UnifiedTrader_EA inputs `InpBtcMagicNumber`,
+`InpBtcPauseFilename`); `PauseHab` / `ResumeHab` include BTC.
+`backtest_btc.bat` = `backtest --profile btc --from-mt5 --months 12
+--mechanical --to-drive`. Full guide: [`BTC.md`](BTC.md).
+
 ## Signal-history replay (test a provider in hours)
 
 `replay_signals.bat` (or `python goldtrader.py replay-signals --months 3`):

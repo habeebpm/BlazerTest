@@ -15,6 +15,7 @@ the same steps with what to check after each one, plus updating and going live.
 | `keys.txt` | All your keys and ids in one private file (made by `setup.bat`) |
 | `dashboard_setup.bat` | Optional: your reports on your phone (run as administrator) |
 | `replay_signals.bat` | Optional: tests your signal provider on its past 3 months of signals |
+| `start_btc.bat` / `backtest_btc.bat` | Optional: the same system for Bitcoin (BTCUSD) - see [`docs/BTC.md`](docs/BTC.md) |
 
 ## Before you start (once)
 
@@ -134,6 +135,11 @@ logged in) and replays them through the EA's rules on real MT5 prices -
 fixed $6 stop vs the signal's stop, plus the provider's own targets for
 reference. Results go to Google Drive (`GoldTrader_replay_*`); ask Claude
 to analyse them. Nothing is traded.
+
+**Bitcoin (BTCUSD):** the same brain with Bitcoin's own rules (stop 1x M15
+ATR, lock +1R, trail 0.5R, 24/7, 5% daily cap), no Telegram signals:
+**BTCTrader_EA** on a BTCUSD chart + `start_btc.bat`. Set-up, rules and
+testing: [`docs/BTC.md`](docs/BTC.md).
 
 **MT5 trade journal:** second XAUUSD chart -> **TelegramSMC_TradeLogger** ->
 **Load** `TelegramSMC_TradeLogger_Unified.set`.

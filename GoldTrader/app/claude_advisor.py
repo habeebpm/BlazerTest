@@ -243,6 +243,56 @@ numbers that drove it, don't just restate the rule text.
 """
 
 
+def _btc_prompt(gold: str) -> str:
+    """The same analyst rules, written for BTCUSD: every gold-specific
+    passage of SYSTEM_PROMPT replaced (each must exist - the self-test
+    fails loudly if the gold prompt changes under it)."""
+    def swap(text: str, old: str, new: str) -> str:
+        if text.count(old) != 1:
+            raise RuntimeError(f"BTC prompt: gold passage not found once: {old[:60]!r}")
+        return text.replace(old, new)
+
+    out = swap(gold, "You are a disciplined XAUUSD (gold) trading analyst.",
+               "You are a disciplined BTCUSD (Bitcoin) trading analyst.")
+    start = out.index("`dxy` (US Dollar Index context")
+    end = out.index("`consensus` (null")
+    out = out[:start] + (
+        "BITCOIN MARKET NOTES: BTCUSD trades around the clock, weekends included - weekend and "
+        "late-US-evening liquidity is thin, so moves there travel further on less volume and "
+        "fake breakouts are common; the US cash session (and the London/US overlap) carries the "
+        "real volume. Stop hunts and liquidation cascades are routine: price often sweeps a "
+        "round number (every $1,000, especially $5,000/$10,000 marks) or the previous "
+        "day/week high/low, then snaps back - a sweep-and-reclaim in your direction is strong "
+        "evidence, a buy sitting just under an unswept round-number high (or a sell just above "
+        "an unswept low) pulls toward \"partial\". Moves are large relative to the stop, so "
+        "a clean structure break (BOS/CHoCH) with an order-block or FVG entry matters more "
+        "than a marginal oscillator reading.\n\n"
+        "`dxy` (US Dollar Index context, null if not configured for this account - ignore it "
+        "entirely when null) gives `vs_ema20` and `change_pct_last_10_bars` for the dollar "
+        "index. Bitcoin behaves mostly like a high-beta risk asset (it tends to move with "
+        "Nasdaq and liquidity) with a loose, unstable inverse link to the dollar: a dollar "
+        "rising hard argues against a BUY and supports a SELL, a falling dollar the other way "
+        "round. Treat a contradiction as a reason to lean toward \"partial\", never an "
+        "automatic veto - the link breaks often (crypto-specific news, ETF flows, exchange "
+        "events dominate on many days).\n\n") + out[end:]
+    out = swap(out, "`gold_impact`: a USD-positive surprise usually pressures gold, a "
+                    "USD-negative one usually supports it.",
+               "`btc_impact`: a USD-positive (hawkish) surprise usually pressures Bitcoin, a "
+               "USD-negative (dovish) one usually supports it.")
+    out = swap(out, "a separately forward-tested gold scalping rulebook.",
+               "a mechanical rulebook first built for gold scalping, used here as a plain "
+               "M5/M15/H1 trend-alignment read for BTCUSD.")
+    return out
+
+
+BTC_SYSTEM_PROMPT = _btc_prompt(SYSTEM_PROMPT)
+
+
+def system_prompt(cfg) -> str:
+    """The analyst prompt for this instance's market (gold unchanged)."""
+    return BTC_SYSTEM_PROMPT if getattr(cfg, "instrument", "gold") == "btc" else SYSTEM_PROMPT
+
+
 class ConfluenceLeg(BaseModel):
     direction: Literal["buy", "sell", "neutral"]
     passes: bool
@@ -391,7 +441,7 @@ def get_verdict(client, cfg: AdvisorConfig, features: dict) -> ConfluenceVerdict
             client, cfg, "parse",
             model=cfg.claude_model,
             max_tokens=cfg.claude_max_tokens,
-            system=SYSTEM_PROMPT,
+            system=system_prompt(cfg),
             messages=[{"role": "user", "content": json.dumps(features, indent=2, default=str)}],
             output_format=ConfluenceVerdict,
         )

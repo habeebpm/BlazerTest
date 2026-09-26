@@ -162,6 +162,19 @@ def gold_impact(event: EconEvent) -> str:
     return ""
 
 
+def btc_impact(event: EconEvent) -> str:
+    """Bitcoin trades like a high-beta risk asset against USD news: a
+    USD-positive (hawkish) surprise usually weighs on it, a USD-negative
+    (dovish) one usually supports it. Only USD is mapped."""
+    if event.currency != "USD":
+        return ""
+    if event.impact == "positive":
+        return "USD-positive surprise: usually bearish for Bitcoin (risk-off, tighter money)"
+    if event.impact == "negative":
+        return "USD-negative surprise: usually bullish for Bitcoin (risk-on, easier money)"
+    return ""
+
+
 def min_importance_rank(cfg: AdvisorConfig) -> int:
     """news_min_importance as a rank - a typo raises instead of silently
     meaning something else, like every other invalid setting here."""
@@ -210,9 +223,14 @@ def calendar_context(events: list[EconEvent], exported_at: datetime | None, now:
                     "actual": e.actual, "forecast": e.forecast, "previous": e.previous}
             if e.forecast is not None:
                 item["surprise"] = round(e.actual - e.forecast, 6)
-            impact = gold_impact(e)
-            if impact:
-                item["gold_impact"] = impact
+            if getattr(cfg, "instrument", "gold") == "btc":
+                impact = btc_impact(e)
+                if impact:
+                    item["btc_impact"] = impact
+            else:
+                impact = gold_impact(e)
+                if impact:
+                    item["gold_impact"] = impact
             recent.append(item)
         elif minutes <= 24 * 60:
             upcoming.append({"time_utc": e.time_utc.strftime("%Y-%m-%d %H:%M"),

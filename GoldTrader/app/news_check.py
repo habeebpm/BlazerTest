@@ -99,6 +99,40 @@ story, or empty>", "summary": "<one or two sentences a trader can act on>"}}
 """
 
 
+def _btc_prompt(gold: str) -> str:
+    """The same risk-officer rules for a BTCUSD system (each gold passage
+    must exist once - the self-test fails loudly otherwise)."""
+    def swap(text: str, old: str, new: str) -> str:
+        if text.count(old) != 1:
+            raise RuntimeError(f"BTC news prompt: gold passage not found once: {old[:60]!r}")
+        return text.replace(old, new)
+
+    out = swap(gold, "automated XAUUSD (gold) trading system", "automated BTCUSD (Bitcoin) trading system")
+    out = swap(out, "that could move gold or the US dollar sharply",
+               "that could move Bitcoin, the crypto market or the US dollar sharply")
+    out = swap(out, "FX intervention, a central bank buying or selling gold in size)",
+               "FX intervention), crypto-specific shocks (a major exchange hack, insolvency or "
+               "outage, a stablecoin losing its peg, an SEC / ETF decision or a crypto ban, a "
+               "government or a large holder moving coins in size)")
+    out = swap(out, "the latest news on gold, the US dollar,", "the latest news on Bitcoin and crypto, the US dollar,")
+    start = out.index("Usual direction of impact: gold")
+    end = out.index("Set block_trade to true")
+    out = out[:start] + (
+        "Usual direction of impact: Bitcoin tends to RISE on risk-on news, a weaker dollar, dovish "
+        "surprises, ETF inflows and crypto-friendly regulation; it tends to FALL on risk-off "
+        "shocks (war escalation, market crashes), a stronger dollar, hawkish surprises, "
+        "exchange hacks or insolvencies, stablecoin de-pegs and crackdowns.\n\n") + out[end:]
+    return out
+
+
+BTC_SYSTEM_PROMPT = _btc_prompt(SYSTEM_PROMPT)
+
+
+def system_prompt(cfg) -> str:
+    """The risk-officer prompt for this instance's market (gold unchanged)."""
+    return BTC_SYSTEM_PROMPT if getattr(cfg, "instrument", "gold") == "btc" else SYSTEM_PROMPT
+
+
 class NewsVerdict(BaseModel):
     surprise_news: bool
     severity: Literal["none", "low", "medium", "high"]
@@ -316,7 +350,7 @@ def _ask_claude(client, cfg: AdvisorConfig, user_text: str, web_search: bool):
     kwargs = dict(
         model=cfg.news_check_model or cfg.claude_model,
         max_tokens=cfg.news_check_max_tokens,
-        system=SYSTEM_PROMPT.format(lookback=cfg.news_check_lookback_minutes),
+        system=system_prompt(cfg).format(lookback=cfg.news_check_lookback_minutes),
     )
     if web_search:
         kwargs["tools"] = [{"type": cfg.news_web_search_tool, "name": "web_search",

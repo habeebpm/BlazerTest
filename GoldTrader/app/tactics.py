@@ -132,6 +132,16 @@ def spread_block(cfg, spread_points: float) -> str:
     return ""
 
 
+def current_spread_pct(gateway, cfg) -> float | None:
+    """Live spread as % of the mid price (BTC's spread limit); None when unavailable."""
+    try:
+        tick = gateway.get_tick(cfg.symbol)
+        mid = (tick.ask + tick.bid) / 2.0
+        return (tick.ask - tick.bid) / mid * 100.0 if mid > 0 else None
+    except Exception:
+        return None
+
+
 def current_spread_points(gateway, cfg, spec=None) -> float | None:
     """Live spread in points from the current tick; None when unavailable."""
     try:
@@ -246,6 +256,8 @@ def describe(cfg) -> str:
         parts.append(f"Friday cutoff {cfg.friday_cutoff_ny}")
     if cfg.max_spread_points:
         parts.append(f"spread <= {cfg.max_spread_points} points")
+    if getattr(cfg, "max_spread_pct", 0):
+        parts.append(f"spread <= {cfg.max_spread_pct:g}% of price")
     if cfg.min_adx:
         parts.append(f"ADX >= {cfg.min_adx:g}")
     return ", ".join(parts)

@@ -4614,6 +4614,156 @@ def test_signal_replay() -> bool:
     return ok
 
 
+def test_btc_profile() -> bool:
+    print("\n=== 46. BTCUSD profile (own rules, own files, same brain; gold unchanged) ===")
+    import backtest
+    import econ_calendar
+    import news_check
+    import profiles
+    import status_report as SR
+    import trade_journal as TJ
+    ok = True
+    gold, btc = AdvisorConfig(), profiles.apply(AdvisorConfig(), "btc")
+    ok &= check("the gold profile changes nothing", profiles.apply(AdvisorConfig(), "gold") == gold)
+    ok &= check("btc: BTCUSD, own magic/log folder/pause/verdict files/journal prefix, no companions, "
+                "no Telegram shared cap",
+                btc.symbol == "BTCUSD" and btc.magic == profiles.BTC_MAGIC != gold.magic
+                and btc.log_dir.endswith(os.path.join("logs", "btc"))
+                and btc.claude_pause_filename != gold.claude_pause_filename
+                and btc.last_verdict_filename != gold.last_verdict_filename
+                and btc.journal_prefix == "BTC_" and not btc.run_companions
+                and btc.shared_cap_magic_numbers == [], btc)
+    ok &= check("btc rules: stop 1x M15 ATR (0.20%-2.0%), lock +1R, trail 0.5R, 2% risk, 5% daily cap, "
+                "3 per direction, 24/7, spread limit 0.06% of price",
+                (btc.sl_mode, btc.sl_atr_mult, btc.sl_atr_timeframe, btc.sl_pct_min, btc.sl_pct_max) ==
+                ("atr", 1.0, "M15", 0.20, 2.0) and (btc.lock_mode, btc.lock_r, btc.trail_r) == ("r", 1.0, 0.5)
+                and (btc.risk_percent, btc.max_daily_loss_pct, btc.max_open_positions_per_direction) == (2.0, 5.0, 3)
+                and btc.trade_windows == "" and tactics.parse_days(btc.trade_days) == set(range(7))
+                and btc.friday_cutoff_ny == "" and btc.max_spread_points == 0 and btc.max_spread_pct == 0.06)
+    ok &= check("gold keeps its tested rules ($6/$6/$3 dollars, 2%, 10%, 5, New York hours)",
+                (gold.sl_mode, gold.lock_mode, gold.sl_dollars, gold.tp1_dollars, gold.trail_dollars,
+                 gold.risk_percent, gold.max_daily_loss_pct, gold.max_open_positions_per_direction,
+                 gold.trade_windows) == ("fixed", "dollars", 6.0, 6.0, 3.0, 2.0, 10.0, 5,
+                                         "08:00-16:45,18:15-20:00"))
+    args = main_mod.build_parser().parse_args(["--profile", "btc", "--symbol", "BTCUSDm", "--max-daily-loss", "4"])
+    c = main_mod.build_config(args)
+    ok &= check("start --profile btc applies the profile first; start options still win (--symbol, "
+                "--max-daily-loss)",
+                c.instrument == "btc" and c.symbol == "BTCUSDm" and c.max_daily_loss_pct == 4.0
+                and c.magic == profiles.BTC_MAGIC and not c.run_companions)
+    ok &= check("gold start (no --profile) is the unchanged default",
+                main_mod.build_config(main_mod.build_parser().parse_args([])).instrument == "gold")
+
+    # --- stop, lock, trail in BTC terms ---
+    spec = gw.SymbolSpec(name="BTCUSD", point=0.01, digits=2, stops_level_points=0, spread_points=0,
+                         volume_min=0.01, volume_max=100.0, volume_step=0.01, tick_value=0.01, tick_size=0.01)
+    bars = make_trending_df(n=40, start=100000.0, drift=0.0, noise=250.0, seed=5)
+    fg = FakeGateway(bid=100000.0, ask=100010.0, bars_df=bars, equity=10000.0)   # 2% = $200, under the 5-lot cap
+    cfg = dataclasses.replace(btc, dry_run=True, log_dir="/tmp/claudesmc_selftest_logs")
+    atr = float(market_intel.atr(bars.iloc[:-1], 14).iloc[-1])
+    dist = executor.atr_sl_distance(fg, cfg, spec)
+    price = float(bars.iloc[:-1]["close"].iloc[-1])
+    ok &= check("stop = 1 x M15 ATR when inside 0.20%-2.0% of price",
+                abs(dist - max(price * 0.002, min(atr, price * 0.02))) < 1e-6, (dist, atr))
+    tight = dataclasses.replace(cfg, sl_pct_min=5.0, sl_pct_max=6.0)
+    ok &= check("the % bounds hold (a floor of 5% of price wins over a smaller ATR)",
+                abs(executor.atr_sl_distance(fg, tight, spec) - price * 0.05) < 1e-6)
+    plan = executor.build_plan(fg, cfg, spec, "buy")
+    risk = plan.entry_price - plan.sl_price
+    ok &= check("build_plan: lock at +1R and trail 0.5R of the trade's own stop; lot risks 2% of equity",
+                abs(plan.tp1_price - (plan.entry_price + risk)) < 1e-6
+                and abs(plan.trail_distance - 0.5 * risk) < 1e-6 and plan.broker_tp == 0.0
+                and 200.0 - risk * 0.01 - 1e-6 <= plan.risk_money <= 200.0 + 1e-6, plan)
+    wide = FakeGateway(bid=100000.0, ask=100080.0, bars_df=bars)
+    d = executor.execute(wide, cfg, make_verdict("buy", 3, "full"), spec, trades_today=0)
+    ok &= check("spread above 0.06% of price blocks the entry", not d.executed and "% of price" in d.reject_reason,
+                d.reject_reason)
+
+    # --- backtest: R-based lock and trail ---
+    pos = backtest.SimPosition(ticket=1, direction="buy", lots=0.1, entry_time=pd.Timestamp("2026-01-01", tz="UTC"),
+                               entry_price=100000.0, sl=99500.0, tp=None, risk=500.0)
+    bt = dataclasses.replace(cfg, exit_style="sl_to_tp1")
+    backtest.HistoricalGateway._manage_sl_to_tp1(None, bt, pos, 100400.0, 99900.0, 0.0)
+    before_lock = (pos.sl, pos.armed)
+    backtest.HistoricalGateway._manage_sl_to_tp1(None, bt, pos, 100600.0, 100100.0, 0.0)
+    locked = (pos.sl, pos.armed)
+    backtest.HistoricalGateway._manage_sl_to_tp1(None, bt, pos, 101200.0, 100700.0, 0.0)
+    ok &= check("backtest: no lock below +1R; lock exactly at +1R (100500); then trail 0.5R (250) behind the high",
+                before_lock == (99500.0, False) and locked == (100500.0, True) and pos.sl == 100950.0,
+                (before_lock, locked, pos.sl))
+
+    # --- intelligence ---
+    from claude_advisor import SYSTEM_PROMPT as GOLD_P, BTC_SYSTEM_PROMPT as BTC_P, system_prompt
+    shared = GOLD_P[GOLD_P.index("THE THREE CONFLUENCES"):GOLD_P.index("`daily_weekly_levels`")]
+    ok &= check("Claude: BTC prompt = the same confluence/SMC rules, Bitcoin market notes instead of gold's",
+                system_prompt(cfg) is BTC_P and system_prompt(gold) is GOLD_P and shared in BTC_P
+                and "BTCUSD (Bitcoin)" in BTC_P and "BITCOIN MARKET NOTES" in BTC_P and "btc_impact" in BTC_P
+                and "XAUUSD (gold)" not in BTC_P and "gold_impact" not in BTC_P
+                and "XAUUSD (gold)" in GOLD_P and "BITCOIN" not in GOLD_P)
+    ok &= check("news check: crypto shocks and feeds for BTC, gold's unchanged",
+                news_check.system_prompt(cfg) is news_check.BTC_SYSTEM_PROMPT
+                and "stablecoin" in news_check.BTC_SYSTEM_PROMPT and "gold" not in news_check.BTC_SYSTEM_PROMPT.lower()
+                and news_check.system_prompt(gold) is news_check.SYSTEM_PROMPT
+                and any("coindesk" in u for u in btc.news_feeds) and "bitcoin" in btc.news_keywords
+                and "{lookback}" in news_check.BTC_SYSTEM_PROMPT)
+
+    class Ev:
+        currency, impact = "USD", "positive"
+    ok &= check("calendar: a USD-positive surprise reads bearish for Bitcoin",
+                "bearish for Bitcoin" in econ_calendar.btc_impact(Ev()))
+
+    # --- files: journal, status, EA, preset, installer ---
+    with _tempfile.TemporaryDirectory() as tmp:
+        jc = dataclasses.replace(cfg, log_dir=tmp)
+
+        class JG:
+            def journal_positions(self, symbol, magics):
+                return []
+
+            def price_distance_for_dollars(self, spec, dollars, lots):
+                return 6.0
+
+            def terminal_files_dir(self):
+                raise AssertionError("BTC must not read the gold EA's Telegram signal log")
+        names = set(TJ.build(JG(), jc, None))
+        ok &= check("journal: BTC_ files, no Telegram signal log", names == {"BTC_trades.csv"}, names)
+        sg = DashGateway(tmp)
+        day = main_mod.DayRoll()
+        rep = SR.build(sg, jc, spec, day)
+        ok &= check("dashboard report: Claude only (no Telegram card, signals or hours), R-based rules",
+                    rep["signals"] == [] and rep["telegram_hours"] == "" and rep["rules"]["lock_mode"] == "r"
+                    and SR.source_magics(jc) == {profiles.BTC_MAGIC: "Claude"}
+                    and not rep["rules"]["telegram_signal_sl"], rep.get("rules"))
+    mt5 = os.path.join(paths.PACKAGE_ROOT, "mt5")
+    bea = _mql_inputs(os.path.join(mt5, "Experts", "BTCTrader_EA.mq5"))
+    bset = _preset(os.path.join(mt5, "Presets", "BTCTrader_EA_Default.set"))
+    gea = _mql_inputs(os.path.join(mt5, "Experts", "UnifiedTrader_EA.mq5"))
+    gset = _preset(os.path.join(mt5, "Presets", "UnifiedTrader_EA_Default.set"))
+    ok &= check("BTCTrader_EA default = preset = profile (magic, lock R, trail R); gold EA's BTC buttons "
+                "use the same magic and pause file",
+                int(bea["InpMagicNumber"]) == int(bset["InpMagicNumber"]) == btc.magic
+                and float(bea["InpLockR"]) == float(bset["InpLockR"]) == btc.lock_r
+                and float(bea["InpTrailR"]) == float(bset["InpTrailR"]) == btc.trail_r
+                and int(gea["InpBtcMagicNumber"]) == int(gset["InpBtcMagicNumber"]) == btc.magic
+                and gea["InpBtcPauseFilename"] == gset["InpBtcPauseFilename"] == btc.claude_pause_filename,
+                (bea, bset))
+    src = open(os.path.join(mt5, "Experts", "BTCTrader_EA.mq5"), encoding="utf-8").read()
+    ok &= check("BTCTrader_EA: R from the opening order's stop, lock/trail in R, broker TP cleared, never opens",
+                "HistoryOrderGetDouble(o, ORDER_SL)" in src and "r * InpLockR" in src and "r * InpTrailR" in src
+                and "PositionModify(ticket, slToSend, 0.0)" in src and ".Buy(" not in src and ".Sell(" not in src)
+    import importlib.util
+    spec_g = importlib.util.spec_from_file_location("gt_launcher", os.path.join(paths.PACKAGE_ROOT, "goldtrader.py"))
+    gt = importlib.util.module_from_spec(spec_g)
+    spec_g.loader.exec_module(gt)
+    ok &= check("setup.bat installs and compiles BTCTrader_EA and its preset",
+                ("mt5/Experts/BTCTrader_EA.mq5", "Experts/BTCTrader_EA.mq5") in gt.MT5_FILES
+                and ("mt5/Presets/BTCTrader_EA_Default.set", "Presets/BTCTrader_EA_Default.set") in gt.MT5_FILES
+                and "Experts/BTCTrader_EA.mq5" in gt.MT5_COMPILE)
+    bat = open(os.path.join(paths.PACKAGE_ROOT, "start_btc.bat"), newline="").read()
+    ok &= check("start_btc.bat starts the btc profile live (CRLF)", "--profile btc --live" in bat and "\r\n" in bat)
+    return ok
+
+
 def main() -> int:
     print("Claude-SMC Trader self-test\n")
     results = [
@@ -4662,6 +4812,7 @@ def main() -> int:
         test_dashboard_password(),
         test_trade_journal(),
         test_signal_replay(),
+        test_btc_profile(),
     ]
     print()
     if all(results):

@@ -52,6 +52,8 @@ def note_claude_problem(reason: str) -> None:
 def source_magics(cfg) -> dict:
     """{magic: "Claude" | "Telegram"} - the Telegram magic is the shared-cap
     magic from start.bat (--shared-cap-magic), else the EA's default."""
+    if getattr(cfg, "instrument", "gold") != "gold":      # BTC: Claude only, no Telegram side
+        return {int(cfg.magic): "Claude"}
     tel = cfg.shared_cap_magic_numbers[0] if cfg.shared_cap_magic_numbers else TELEGRAM_MAGIC_DEFAULT
     return {int(cfg.magic): "Claude", int(tel): "Telegram"}
 
@@ -151,7 +153,7 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
         "trade_zone": tactics.zone_label(cfg),
         "claude_hours_local": tactics.windows_in(cfg, cfg.display_timezone, datetime.fromtimestamp(now, timezone.utc)),
         "local_zone": tactics.ZONE_LABELS.get(cfg.display_timezone, cfg.display_timezone),
-        "telegram_hours": cfg.telegram_trade_windows,
+        "telegram_hours": cfg.telegram_trade_windows if cfg.instrument == "gold" else "",
         "telegram_zone": "Oman" if cfg.telegram_utc_offset_hours == 4 else f"UTC{cfg.telegram_utc_offset_hours:+g}",
         "telegram_days": "Mon-Fri" if cfg.telegram_weekdays_only else "",
         "sources": {name: magic for magic, name in names.items()},
@@ -159,7 +161,9 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
                   "tp1_dollars": cfg.tp1_dollars, "trail_dollars": cfg.trail_dollars,
                   "max_per_direction": cfg.max_open_positions_per_direction,
                   "max_daily_loss_pct": cfg.max_daily_loss_pct,
-                  "telegram_signal_sl": cfg.telegram_use_signal_sl,
+                  "instrument": cfg.instrument, "lock_mode": cfg.lock_mode,
+                  "lock_r": cfg.lock_r, "trail_r": cfg.trail_r, "sl_atr_mult": cfg.sl_atr_mult,
+                  "telegram_signal_sl": cfg.telegram_use_signal_sl and cfg.instrument == "gold",
                   "signal_sl_min": cfg.signal_sl_min_distance, "signal_sl_max": cfg.signal_sl_max_distance},
     }
 
@@ -191,10 +195,14 @@ def build(gateway, cfg, spec, day, now: float | None = None) -> dict:
     if "closed" in report:
         part("scorecard", lambda: _scorecard(gateway, cfg, spec, trades, names, now))
     part("decisions", lambda: tail_csv(os.path.join(cfg.log_dir, "decisions.csv"), MAX_DECISIONS))
-    part("signals", lambda: [
-        {k: r.get(k, "") for k in ("time_utc", "action", "direction", "accepted", "sanity_reason",
-                                  "smc_reason", "order_type", "order_price", "lots", "sl", "dry_run", "raw_text")}
-        for r in tail_csv(_signals_path(gateway), MAX_SIGNALS)])
+    if cfg.instrument == "gold":             # the Telegram side belongs to the gold instance only
+        part("signals", lambda: [
+            {k: r.get(k, "") for k in ("time_utc", "action", "direction", "accepted", "sanity_reason",
+                                      "smc_reason", "order_type", "order_price", "lots", "sl", "dry_run",
+                                      "raw_text")}
+            for r in tail_csv(_signals_path(gateway), MAX_SIGNALS)])
+    else:
+        report["signals"] = []
     report["claude_problem"] = _state["claude_problem"]
     report["problems"] = problems
     return report

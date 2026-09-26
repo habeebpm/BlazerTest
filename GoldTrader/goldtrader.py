@@ -47,13 +47,15 @@ SELFTESTS = [(APP_DIR, "selftest.py"), (RELAY_DIR, "relay_selftest.py"),
 MT5_FILES = [
     ("mt5/Experts/UnifiedTrader_EA.mq5", "Experts/UnifiedTrader_EA.mq5"),
     ("mt5/Experts/TelegramSMC_TradeLogger.mq5", "Experts/TelegramSMC_TradeLogger.mq5"),
+    ("mt5/Experts/BTCTrader_EA.mq5", "Experts/BTCTrader_EA.mq5"),
     ("mt5/Include/TelegramSMC_Common.mqh", "Include/TelegramSMC_Common.mqh"),
     ("mt5/Include/EconCalendar.mqh", "Include/EconCalendar.mqh"),
     ("mt5/Include/XtrBarExport.mqh", "Include/XtrBarExport.mqh"),
     ("mt5/Presets/UnifiedTrader_EA_Default.set", "Presets/UnifiedTrader_EA_Default.set"),
     ("mt5/Presets/TelegramSMC_TradeLogger_Unified.set", "Presets/TelegramSMC_TradeLogger_Unified.set"),
+    ("mt5/Presets/BTCTrader_EA_Default.set", "Presets/BTCTrader_EA_Default.set"),
 ]
-MT5_COMPILE = ["Experts/UnifiedTrader_EA.mq5", "Experts/TelegramSMC_TradeLogger.mq5"]
+MT5_COMPILE = ["Experts/UnifiedTrader_EA.mq5", "Experts/TelegramSMC_TradeLogger.mq5", "Experts/BTCTrader_EA.mq5"]
 
 def run(cmd, cwd) -> int:
     print(f"\n> ({os.path.relpath(cwd, ROOT)}) {' '.join(cmd)}", flush=True)

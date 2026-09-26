@@ -62,6 +62,7 @@ import keys
 import market_intel
 import mt5_gateway as gw
 import paths
+import profiles
 import tactics
 import xtr_logic
 from config import AdvisorConfig
@@ -107,6 +108,7 @@ class SimPosition:
     sl: float
     tp: float | None
     armed: bool = False
+    risk: float = 0.0        # entry-to-opening-stop distance (1R) - lock_mode="r" (BTC)
 
 
 @dataclass
@@ -364,7 +366,7 @@ class HistoricalGateway:
         self._next_ticket += 1
         self.sim_positions.append(SimPosition(
             ticket=ticket, direction=direction, lots=lots, entry_time=self.current_time,
-            entry_price=price, sl=sl_price, tp=tp_price,
+            entry_price=price, sl=sl_price, tp=tp_price, risk=abs(price - sl_price) if sl_price else 0.0,
         ))
         return _FakeOrderResult(retcode=10009, order=ticket, price=price)
 
@@ -476,8 +478,12 @@ class HistoricalGateway:
         # fixed price distances - the same way the entry SL is sized and the
         # live MQL5 managers convert them. Converting at pos.lots would
         # shrink them as a risk-sized lot grows (risking ~$200 to lock ~$6).
-        tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot)
-        trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot)
+        if cfg.lock_mode == "r" and pos.risk > 0:
+            # BTCTrader_EA: lock at +lock_r x the trade's own stop, trail trail_r x it
+            tp1_dist, trail_dist = pos.risk * cfg.lock_r, pos.risk * cfg.trail_r
+        else:
+            tp1_dist = self.price_distance_for_dollars(self.spec, cfg.tp1_dollars, cfg.reference_lot)
+            trail_dist = self.price_distance_for_dollars(self.spec, cfg.trail_dollars, cfg.reference_lot)
         if pos.direction == "buy":
             if low <= pos.sl:
                 return pos.sl, "trail" if pos.armed else "sl"
@@ -817,9 +823,17 @@ def main(argv: list | None = None) -> int:
                              "(combines with --compare for all four variants)")
     parser.add_argument("--from-mt5", action="store_true", dest="from_mt5",
                         help="pull history from a running MT5 terminal instead of CSVs")
+    parser.add_argument("--months", type=float, help="with --from-mt5: the last N months (instead of --start/--end)")
+    parser.add_argument("--to-drive", action="store_true", dest="to_drive",
+                        help="also copy the summary, the trades and the price history to Google Drive "
+                             "(MyMQChartDrive\\GoldTrader, the profile's file prefix) for analysis")
     parser.add_argument("--start", help="range start (with --from-mt5), e.g. 2026-01-01")
     parser.add_argument("--end", help="range end (with --from-mt5)")
-    parser.add_argument("--symbol", default="XAUUSD")
+    parser.add_argument("--profile", default="gold", choices=profiles.names(),
+                        help="which market's rules (profiles.py): gold (default) or btc")
+    parser.add_argument("--symbol", help="symbol (default: the profile's - XAUUSD / BTCUSD)")
+    parser.add_argument("--spread-pct", type=float, dest="spread_pct",
+                        help="spread as %% of price instead of --spread-points (btc default 0.02)")
     parser.add_argument("--rollover-spread-points", type=int, default=80, dest="rollover_spread_points",
                         help="spread around the daily reopen, 16:55-18:15 New York (default 80; 0 = "
                              "the normal spread all day)")
@@ -864,7 +878,11 @@ def main(argv: list | None = None) -> int:
     setup_logging(args.verbose)
     keys.load()     # ANTHROPIC_API_KEY for a paid (non --mechanical) run
 
-    base_cfg = AdvisorConfig(dry_run=True)
+    base_cfg = profiles.apply(AdvisorConfig(dry_run=True), args.profile)
+    args.symbol = args.symbol or base_cfg.symbol
+    btc = base_cfg.instrument == "btc"
+    if btc and args.out == os.path.join(paths.LOG_DIR, "backtest_trades.csv"):
+        args.out = os.path.join(base_cfg.log_dir, "backtest_trades.csv")
     if args.model:
         base_cfg.claude_model = args.model
     if args.max_daily_loss is not None:
@@ -894,9 +912,14 @@ def main(argv: list | None = None) -> int:
         return 1
     log.info("Entry tactics: %s", tactics.describe(base_cfg))
 
+    if args.from_mt5 and args.months and not (args.start or args.end):
+        end = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
+        args.start = (end - pd.Timedelta(days=int(args.months * 30.5))).strftime("%Y-%m-%d")
+        args.end = end.strftime("%Y-%m-%d")
+        log.info("Period: %s to %s (last %g months)", args.start, args.end, args.months)
     if args.from_mt5:
         if not args.start or not args.end:
-            log.error("--from-mt5 requires --start and --end")
+            log.error("--from-mt5 requires --start and --end (or --months)")
             return 1
         gw.connect()
         bars = {
@@ -925,9 +948,23 @@ def main(argv: list | None = None) -> int:
         if args.m5_csv and args.h1_csv:
             bars["M5"] = load_bars_csv(args.m5_csv)
             bars["H1"] = load_bars_csv(args.h1_csv)
-        spec = gw.SymbolSpec(name=args.symbol, point=0.01, digits=2, stops_level_points=0,
-                             spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
-                             tick_value=1.0, tick_size=0.01)
+        if btc:     # the usual BTCUSD CFD: 1 lot = 1 BTC, so $1 of price = $1 a lot
+            spec = gw.SymbolSpec(name=args.symbol, point=0.01, digits=2, stops_level_points=0,
+                                 spread_points=0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
+                                 tick_value=0.01, tick_size=0.01)
+        else:
+            spec = gw.SymbolSpec(name=args.symbol, point=0.01, digits=2, stops_level_points=0,
+                                 spread_points=25, volume_min=0.01, volume_max=5.0, volume_step=0.01,
+                                 tick_value=1.0, tick_size=0.01)
+    spread_pct = args.spread_pct if args.spread_pct is not None else (0.02 if btc else None)
+    if spread_pct is not None:
+        # A spread in % of price (BTC): points at the period's median price
+        median = float(bars[base_cfg.primary_timeframe]["close"].median())
+        args.spread_points = max(1, int(round(median * spread_pct / 100.0 / spec.point)))
+        if btc:
+            args.rollover_spread_points = 0       # no gold-style daily reopen widening
+        log.info("Spread: %.3f%% of price = %d points at the median price %.2f", spread_pct,
+                 args.spread_points, median)
 
     have_xtr_bars = "M5" in bars and "H1" in bars
     xtr_mode = args.xtr_gate or (base_cfg.xtr_gate if have_xtr_bars else "off")
@@ -954,7 +991,8 @@ def main(argv: list | None = None) -> int:
                           base_cfg.bars_per_timeframe)
                 return 1
             cfgs[name] = dataclasses.replace(base_cfg, exit_style=style, xtr_gate=mode,
-                                             log_dir=os.path.join(paths.LOG_DIR, "backtest", name))
+                                             log_dir=os.path.join(paths.LOG_DIR, "backtest" + (
+                                                 "_btc" if btc else ""), name))
 
     n_calls = estimate_call_count(gateways[styles[0]])
     if args.mechanical:
@@ -993,7 +1031,37 @@ def main(argv: list | None = None) -> int:
         write_trades_csv(gateways[style].closed_trades, args.out)
         log.info("Backtest complete (%s) - %s", style, summary)
         log.info("Trade log written to %s", args.out)
+        if args.to_drive:
+            publish_to_drive(base_cfg, args, summary, bars)
     return 0
+
+
+def publish_to_drive(cfg, args, summary: dict, bars: dict) -> None:
+    """Summary, trades and the price history (every timeframe used) into the
+    journal's Drive folder, with the profile's prefix (GoldTrader_ / BTC_)."""
+    import trade_journal
+    drive = trade_journal.target_folder(cfg)
+    if not drive:
+        log.warning("Google Drive folder not found - the results stay in %s", args.out)
+        return
+    lines = [f"{cfg.journal_prefix.rstrip('_')} backtest ({cfg.instrument}, {args.symbol}) "
+             f"{args.start or ''} to {args.end or ''} - {'mechanical' if args.mechanical else 'Claude'}",
+             f"stop {cfg.sl_mode} x{cfg.sl_atr_mult:g}" + (f" ({cfg.sl_pct_min:g}%-{cfg.sl_pct_max:g}% of price)"
+                                                           if cfg.sl_pct_min or cfg.sl_pct_max else "")
+             + (f", lock +{cfg.lock_r:g}R, trail {cfg.trail_r:g}R" if cfg.lock_mode == "r" else
+                f", lock ${cfg.tp1_dollars:g}, trail ${cfg.trail_dollars:g}")
+             + f", risk {cfg.risk_percent:g}%, spread {args.spread_points} points", ""]
+    lines += [f"{k}: {v}" for k, v in summary.items()]
+    files = {"backtest_summary.txt": "\n".join(lines) + "\n"}
+    with open(args.out, encoding="utf-8") as f:
+        files["backtest_trades.csv"] = f.read()
+    for tf, df in bars.items():
+        out = df[["time", "open", "high", "low", "close"]].copy()
+        out["time"] = pd.to_datetime(out["time"], utc=True).dt.strftime("%Y-%m-%d %H:%M")
+        files[f"prices_{tf}.csv"] = out.to_csv(index=False)
+    for name, text in files.items():
+        trade_journal.write_if_changed(os.path.join(drive, cfg.journal_prefix + name), text)
+    log.info("Copied to Google Drive (%s): %s", drive, ", ".join(cfg.journal_prefix + n for n in files))
 
 
 if __name__ == "__main__":

@@ -57,11 +57,12 @@ def _warn_once(key: str, text: str, *args) -> None:
 
 
 def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str,
-               lock_distance: float = 0.0) -> list:
+               lock_distance: float = 0.0, lock_r: float = 0.0) -> list:
     """journal_positions() output -> CSV rows. 1R is each trade's own first
     stop (a Telegram signal's stop, or the fixed one); `sl_distance` - the
     fixed stop's price distance - when the first stop isn't known.
-    `lock_distance`: the +$6 lock's price distance (default: sl_distance)."""
+    `lock_distance`: the +$6 lock's price distance (default: sl_distance);
+    `lock_r` > 0: the lock is that many times each trade's own stop (BTC)."""
     zone = ZoneInfo(local_zone)
     lock = lock_distance or sl_distance
     out = []
@@ -72,8 +73,9 @@ def trade_rows(positions: list, names: dict, sl_distance: float, local_zone: str
         risk = risk or sl_distance
         r = move / risk if risk > 0 else 0.0
         note = ""
+        lock_here = lock_r * risk if lock_r > 0 else lock
         if (p["exit_reason"] == "stop loss" and risk > 0
-                and -HAND_MOVED[0] * risk < move < HAND_MOVED[1] * lock):
+                and -HAND_MOVED[0] * risk < move < HAND_MOVED[1] * lock_here):
             note = "stop moved by hand"
         opened, closed = p.get("open_time"), p.get("close_time")
         out.append({
@@ -204,17 +206,23 @@ def build(gateway, cfg, spec) -> dict:
     except Exception:
         sl_distance = lock_distance = 0.0
     positions = gateway.journal_positions(cfg.symbol, list(names))
-    files[TRADES_FILE] = to_csv(trade_rows(positions, names, sl_distance, cfg.display_timezone,
-                                           lock_distance), COLUMNS)
+
+    def name(base: str) -> str:              # "GoldTrader_trades.csv" -> "BTC_trades.csv" for BTC
+        return cfg.journal_prefix + base[len("GoldTrader_"):]
+
+    lock_r = cfg.lock_r if cfg.lock_mode == "r" else 0.0
+    files[name(TRADES_FILE)] = to_csv(trade_rows(positions, names, sl_distance, cfg.display_timezone,
+                                                 lock_distance, lock_r), COLUMNS)
     decisions = status_report.read_text(os.path.join(cfg.log_dir, "decisions.csv"))
     if decisions:
-        files[DECISIONS_FILE] = decisions.replace("\r\n", "\n")
-    try:
-        signals = status_report.read_text(status_report._signals_path(gateway))
-    except Exception:
-        signals = None
-    if signals:
-        files[SIGNALS_FILE] = signals.replace("\r\n", "\n")
+        files[name(DECISIONS_FILE)] = decisions.replace("\r\n", "\n")
+    if cfg.instrument == "gold":           # only the gold instance has a Telegram side
+        try:
+            signals = status_report.read_text(status_report._signals_path(gateway))
+        except Exception:
+            signals = None
+        if signals:
+            files[name(SIGNALS_FILE)] = signals.replace("\r\n", "\n")
     return files
 
 
