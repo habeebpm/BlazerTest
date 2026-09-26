@@ -391,7 +391,10 @@ without the tactics. Results on a year of real prices:
 Commands (in this folder): `python goldtrader.py setup | install-mt5 |
 settings | check | test-alert | test-feeds | test-news buy | relay-login |
 once | start | backtest | replay-signals | scorecard | xtr-export | dashboard-password |
-update | autostart on/off/pause/resume/status | drive-copy | test`. `autostart on`
+update | autostart on/off/pause/resume/status | drive-copy | test`. `start.bat`
+also writes its window to `logs\run\start_<date>.log` (7 days) and copies the
+logs to `<My Drive>\MyTraderbyClaude\Logs` every 5 minutes: the window logs,
+`autostart.log`, `gold_`/`btc_` job logs, today's MT5 Experts log (UTF-8). `autostart on`
 (`autostart.bat`) registers the scheduled task "GoldTrader": at sign-in (+1 min)
 and every 5 min a windowless `goldtrader.py watchdog` opens `start.bat auto` when
 it is not running (`logs\start_all.lock`) and not paused (`logs\autostart_paused`:

@@ -237,7 +237,12 @@ def main() -> int:
               and read(home, "goldtrader.py") == "v2")
     check("start.bat notice only when GitHub has a newer version than the installed one",
           solution.update_notice(fetch=lambda u, t=0: b"not json") == "")
-    # start.bat: gold + Bitcoin in one window
+    # start.bat: gold + Bitcoin in one window (tests: no real log file, no Drive)
+    import types
+    real_runlog, real_find_drive = solution.RunLog, solution.find_drive_root
+    window_lines = []
+    solution.RunLog = lambda: types.SimpleNamespace(write=window_lines.append)
+    solution.find_drive_root = lambda isdir=None: None
     split = solution.split_start_all
     check("start-all options: gold before --btc, BTC after (+ --profile btc); empty or 'off' = gold only",
           split(["--live", "--shared-cap-magic", "20260922", "--btc", "--live"])
@@ -375,6 +380,64 @@ def main() -> int:
     check("start.bat closes its window when opened by the autostart; autostart.bat / stop.bat (CRLF)",
           'if /i "%~1"=="auto" exit /b' in sb and "python goldtrader.py autostart on" in ab
           and "python goldtrader.py autostart pause" in stb and "\r\n" in ab and "\r\n" in stb)
+
+    check("the start.bat window is also written to the run log", "GOLD | hello" in window_lines, window_lines[:3])
+    solution.RunLog, solution.find_drive_root = real_runlog, real_find_drive
+
+    # Logs -> Google Drive (MyTraderbyClaude\\Logs)
+    import threading
+    with tempfile.TemporaryDirectory() as tmp:
+        days = iter(["2026-09-2%d" % d for d in range(1, 10)])
+        today = ["2026-09-20"]
+        rl = solution.RunLog(os.path.join(tmp, "logs", "run"), keep_days=7, today=lambda: today[0])
+        for _ in range(9):
+            today[0] = next(days)
+            rl.write("GOLD | line")
+        kept = sorted(os.listdir(os.path.join(tmp, "logs", "run")))
+        check("run log: one file a day, the last 7 kept",
+              len(kept) == 7 and kept[-1] == "start_2026-09-29.log" and kept[0] == "start_2026-09-23.log", kept)
+        home = os.path.join(tmp, "home")
+        appdata = os.path.join(tmp, "appdata")
+        mql_logs = os.path.join(appdata, "MetaQuotes", "Terminal", "ABC123", "MQL5", "Logs")
+        os.makedirs(mql_logs)
+        with open(os.path.join(mql_logs, "20260925.log"), "wb") as f:
+            f.write("old".encode("utf-16"))
+        with open(os.path.join(mql_logs, "20260926.log"), "wb") as f:
+            f.write("BTCTrader_EA: managing BTCUSD".encode("utf-16-le"))       # no byte-order mark
+        for rel, text in (("logs/run/start_2026-09-26.log", "GOLD | hi"), ("logs/autostart.log", "started"),
+                          ("logs/ml_retrain.log", "gold ml"), ("logs/btc/scorecard.log", "btc card"),
+                          ("keys.txt", "SECRET"), ("logs/trades.csv", "x")):
+            path = os.path.join(home, *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        src = solution.log_sources(home, appdata=appdata)
+        check("logs sent: this window, autostart, gold/BTC job logs, today's MT5 Experts log - nothing else",
+              set(src) == {"start_2026-09-26.log", "autostart.log", "gold_ml_retrain.log", "btc_scorecard.log",
+                           "MT5_Experts_20260926.log"}, sorted(src))
+        drive = os.path.join(tmp, "drive")
+        os.makedirs(os.path.join(drive, "MyTraderbyClaude", "Logs"))
+        stale = os.path.join(drive, "MyTraderbyClaude", "Logs", "start_2026-09-01.log")
+        mine = os.path.join(drive, "MyTraderbyClaude", "Logs", "my_notes.txt")
+        for path in (stale, mine):
+            with open(path, "w") as f:
+                f.write("x")
+        first = solution.mirror_logs(drive, home, sources=src)
+        out = os.path.join(drive, "MyTraderbyClaude", "Logs")
+        with open(os.path.join(out, "MT5_Experts_20260926.log"), encoding="utf-8") as f:
+            mt5_text = f.read()
+        check("logs copied to Drive\\MyTraderbyClaude\\Logs (MT5's UTF-16 as readable text); an old day's "
+              "file removed, your own files kept; unchanged logs not re-uploaded",
+              first == 5 and mt5_text == "BTCTrader_EA: managing BTCUSD" and not os.path.exists(stale)
+              and os.path.exists(mine) and solution.mirror_logs(drive, home, sources=src) == 0, (first, mt5_text))
+        calls, said = [], []
+        stop_now = threading.Event()
+        stop_now.set()
+        solution.log_mirror_loop(stop_now, every=0, find=lambda: drive, mirror=calls.append, say=said.append)
+        none_calls = []
+        solution.log_mirror_loop(stop_now, every=0, find=lambda: None, mirror=none_calls.append, say=said.append)
+        check("log copy: every 5 min + once on the way out; without Drive one warning, no copy",
+              calls == [drive, drive] and none_calls == [] and len(said) == 1, (calls, said))
 
     with open(os.path.join(solution.ROOT, "update.bat"), newline="") as f:
         bat = f.read()

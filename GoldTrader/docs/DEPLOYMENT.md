@@ -136,7 +136,16 @@ Nothing to set up if Drive for Desktop is running with the `MyMQChartDrive`
 folder (the EA's price files already go there). A few minutes after
 `start.bat` starts, **You should see** `MyMQChartDrive\GoldTrader` in Drive
 with `GoldTrader_trades.csv`, `GoldTrader_claude_decisions.csv` and
-`GoldTrader_telegram_signals.csv`. Ask Claude to analyse them from Drive.
+`GoldTrader_telegram_signals.csv` (Bitcoin: `BTC_trades.csv`, ...). Ask
+Claude to analyse them from Drive.
+
+**Logs in Drive** (for Claude to read - no copying text by hand): everything
+the `start.bat` window shows is also saved to `logs\run\start_<date>.log`
+(one file a day, 7 kept), and every 5 minutes (and when it stops) copied to
+`G:\My Drive\MyTraderbyClaude\Logs` with `autostart.log`, the ML /
+calibration / scorecard job logs (`gold_...`, `btc_...`) and today's MT5
+Experts log (`MT5_Experts_<date>.log` - every EA message). Never keys or
+passwords. Just tell Claude "check the logs".
 
 ## 7c. Bitcoin (optional)
 

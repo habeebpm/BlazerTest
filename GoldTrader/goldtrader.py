@@ -392,6 +392,127 @@ def update_notice(fetch=_http) -> str:
     return f"An update is available ({sha[:7]}: {headline}) - press Ctrl+C here, then double-click update.bat."
 
 
+# --------------------------------------------------------------- logs -> Drive
+
+RUN_LOG_DIR = os.path.join(ROOT, "logs", "run")
+DRIVE_LOGS_FOLDER = os.path.join("MyTraderbyClaude", "Logs")
+LOG_KEEP_DAYS = 7
+JOB_LOGS = ("ml_retrain", "calibration_report", "scorecard")
+
+
+class RunLog:
+    """Every line of the start.bat window also goes to
+    logs\\run\\start_<date>.log (one file a day, the last 7 kept)."""
+    def __init__(self, folder: str = RUN_LOG_DIR, keep_days: int = LOG_KEEP_DAYS, today=None):
+        self.folder, self.keep_days = folder, keep_days
+        self.today = today or (lambda: time.strftime("%Y-%m-%d"))
+        self.day = None
+
+    def path(self) -> str:
+        return os.path.join(self.folder, f"start_{self.today()}.log")
+
+    def write(self, text: str) -> None:
+        try:
+            day = self.today()
+            new_day = day != self.day
+            if new_day:
+                self.day = day
+                os.makedirs(self.folder, exist_ok=True)
+            with open(self.path(), "a", encoding="utf-8") as f:
+                f.write(text.rstrip("\n") + "\n")
+            if new_day:                                   # today's file exists now: keep the newest 7
+                for old in sorted(glob.glob(os.path.join(self.folder, "start_*.log")))[:-self.keep_days]:
+                    os.remove(old)
+        except OSError:
+            pass                                          # a full disk must never stop trading
+
+
+def _log_text(raw: bytes) -> str:
+    """MT5's logs are UTF-16 (sometimes without a byte-order mark)."""
+    if raw[:2] not in (b"\xff\xfe", b"\xfe\xff") and len(raw) > 3 and raw[1:2] == b"\x00" and raw[3:4] == b"\x00":
+        return raw.decode("utf-16-le", errors="replace")
+    return decode_text(raw)
+
+
+def log_sources(root: str = ROOT, appdata: str | None = None) -> dict:
+    """{name in Drive: local file} - this window (last 7 days), the
+    autostart log, gold's and BTC's job logs, and today's MT5 Experts log
+    (every EA message) of each MT5 installation."""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(root, "logs", "run", "start_*.log")))[-LOG_KEEP_DAYS:]:
+        out[os.path.basename(path)] = path
+    for name, rel in [("autostart.log", ("logs", "autostart.log"))] + [
+            (f"{prefix}{job}.log", ("logs", *sub, f"{job}.log"))
+            for prefix, sub in (("gold_", ()), ("btc_", ("btc",))) for job in JOB_LOGS]:
+        path = os.path.join(root, *rel)
+        if os.path.exists(path):
+            out[name] = path
+    for i, (data_folder, _install) in enumerate(find_data_folders(appdata)):
+        logs = sorted(glob.glob(os.path.join(data_folder, "MQL5", "Logs", "*.log")))
+        if logs:
+            tag = "" if i == 0 else f"{i + 1}_"
+            out[f"MT5_Experts_{tag}{os.path.basename(logs[-1])}"] = logs[-1]
+    return out
+
+
+def mirror_logs(dest_root: str, root: str = ROOT, sources: dict | None = None) -> int:
+    """Copies the logs into <My Drive>\\MyTraderbyClaude\\Logs (UTF-8, only
+    when changed, temp file + rename); files it put there before that are no
+    longer current are removed. Returns how many files were updated."""
+    target = os.path.join(dest_root, DRIVE_LOGS_FOLDER)
+    sources = log_sources(root) if sources is None else sources
+    os.makedirs(target, exist_ok=True)
+    updated = 0
+    for name, src in sources.items():
+        try:
+            with open(src, "rb") as f:
+                data = _log_text(f.read()).encode("utf-8")
+        except OSError:
+            continue
+        dst = os.path.join(target, name)
+        try:
+            with open(dst, "rb") as f:
+                if f.read() == data:
+                    continue
+        except OSError:
+            pass
+        tmp = dst + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, dst)
+        updated += 1
+    for path in glob.glob(os.path.join(target, "*.log")):
+        name = os.path.basename(path)
+        if name not in sources and (name.startswith("start_") or name.startswith("MT5_Experts_")):
+            os.remove(path)
+    return updated
+
+
+def log_mirror_loop(stop, every: float = 300.0, find=None, mirror=None, say=None) -> None:
+    """start.bat's background copy of the logs to Google Drive, every 5
+    minutes and once more on the way out. Never raises."""
+    find, mirror = find or find_drive_root, mirror or mirror_logs
+    warned = False
+    while True:
+        try:
+            dest = find()
+            if dest:
+                mirror(dest)
+            elif not warned and say:
+                say("Logs are not copied to Google Drive: G:\\My Drive not found (Google Drive for Desktop).")
+                warned = True
+        except Exception:
+            pass
+        if stop.wait(every):
+            try:
+                dest = find()
+                if dest:
+                    mirror(dest)
+            except Exception:
+                pass
+            return
+
+
 # --------------------------------------------------------------- autostart
 
 AUTOSTART_TASK = "GoldTrader"
@@ -842,7 +963,7 @@ def first_run_pending() -> bool:
 
 
 def start_all(argv, runner_factory=labelled_runner, sleep=None, lock_path: str | None = None,
-              pause_path: str | None = None) -> int:
+              pause_path: str | None = None, run_log=None, mirror_kw: dict | None = None) -> int:
     """start.bat: gold and (unless switched off) Bitcoin in ONE window - two
     separate programs, each restarted on its own, every line labelled.
     Ctrl+C or closing the window stops both. Holds logs\\start_all.lock
@@ -863,11 +984,16 @@ def start_all(argv, runner_factory=labelled_runner, sleep=None, lock_path: str |
         if rc != 0:
             return rc
     lock = threading.Lock()
+    run_log = RunLog() if run_log is None else run_log
 
     def emit(text: str) -> None:
         with lock:
             print(text, flush=True)
+            run_log.write(text)
     stop = threading.Event()
+    mirror_thread = threading.Thread(target=log_mirror_loop, args=(stop,),
+                                     kwargs={"say": emit, **(mirror_kw or {})}, daemon=True)
+    mirror_thread.start()
     jobs = [("GOLD", gold)] + ([("BTC ", btc)] if btc is not None else [])
     emit("Starting " + (" + ".join(name.strip() for name, _ in jobs)) + " in this window - leave it open. "
          "Ctrl+C stops everything.")
@@ -891,12 +1017,15 @@ def start_all(argv, runner_factory=labelled_runner, sleep=None, lock_path: str |
             t.join(20)
         set_paused(True, pause_path)
         emit("Stopped (Ctrl+C) - the autostart will not restart GoldTrader until you double-click start.bat.")
+        mirror_thread.join(30)                           # last copy of the logs to Drive
         release_lock(run_lock)
         return 130
     rc = max((rc for rc in results.values()), default=0)
     if rc == SETTINGS_ERROR:
         set_paused(True, pause_path)                     # restarting cannot fix a mistyped setting
         emit("Autostart paused until the setting in start.bat is fixed and start.bat is started again.")
+    stop.set()
+    mirror_thread.join(30)                               # last copy of the logs to Drive
     release_lock(run_lock)
     return rc
 
