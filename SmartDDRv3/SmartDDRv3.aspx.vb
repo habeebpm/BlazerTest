@@ -87,6 +87,10 @@ Public Class SmartDDRv3
     Private Shared ReadOnly DateHintCols As String() = {"Date", "_PLN", "_ACT"}
     Private Shared ReadOnly DoneDateCols As String() = {"APP_ACT", "AFC_ACT"}
     Private Shared ReadOnly CheckCols As String() = {"DOCUMENT_NO", "PRIMAVERA_ID", "STATUS_REQD"}
+    ' Dummy (placeholder) document serials created by DDR Developer: a "-"-separated
+    ' segment DUM01..DUM99 or DU100+ (i.e. LIKE 'DU%'). Legacy placeholders DUMMY / XXX
+    ' are still recognised so older lines keep showing up in the Dummy Serials check.
+    Private Shared ReadOnly DummySerialRx As New Regex("(^|-)(DUM\d{2}|DU\d{3,}|DUMMY)(-|$)|XXX", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
     Private Shared ReadOnly CtdHoursNames As String() = {"CTD Hrs", "CTD Hours", "CTD_Hrs", "CTD_HOURS"}
     Private Shared ReadOnly DdrHoursNames As String() = {"DDR Hrs", "DDR Hours", "DDR_Hrs", "DDR_HOURS"}
 
@@ -556,7 +560,8 @@ Public Class SmartDDRv3
                 Return QueryTable(
                     "SELECT * FROM [DDR_DISC_PLANT]
                      WHERE [CTD_ID] IN (SELECT [CTD_ID] FROM [CTD_MASTER] WHERE [PROJECT_NO] = @P)
-                       AND ([DOCUMENT_NO] LIKE '%XXX%' OR [DOCUMENT_NO] LIKE '%DUMMY%')", proj)
+                       AND ([DOCUMENT_NO] LIKE 'DU[M0-9][0-9][0-9]%' OR [DOCUMENT_NO] LIKE '%-DU[M0-9][0-9][0-9]%'
+                            OR [DOCUMENT_NO] LIKE '%XXX%' OR [DOCUMENT_NO] LIKE '%DUMMY%')", proj)
 
             Case "DDR_PDO"
                 Return QueryTable(
@@ -880,7 +885,7 @@ Public Class SmartDDRv3
 
             If MatchesAny(colName, CheckCols, False) Then
                 Dim text As String = If(hasValue, Convert.ToString(value).Trim(), "")
-                If text.Length < 2 OrElse text.IndexOf("DUMMY", StringComparison.OrdinalIgnoreCase) >= 0 Then AddClass(cell, "cell-warn")
+                If text.Length < 2 OrElse DummySerialRx.IsMatch(text) Then AddClass(cell, "cell-warn")
             End If
 
             If hasValue AndAlso colName.Equals("CTD_ID", StringComparison.OrdinalIgnoreCase) Then
