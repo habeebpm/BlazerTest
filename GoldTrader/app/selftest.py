@@ -69,9 +69,46 @@ from claude_advisor import ConfluenceLeg, ConfluenceVerdict
 from config import AdvisorConfig
 
 
+FAILED_CHECKS: list = []
+
+
 def check(name: str, ok: bool, detail: str = "") -> bool:
-    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f" - {detail}" if detail else ""))
+    line = f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f" - {detail}" if detail else "")
+    print(line)
+    if not ok:
+        FAILED_CHECKS.append(line[:2000])
     return ok
+
+
+def shipped_copy(name: str) -> str:
+    """The package's own version of a file you may edit: <name>.new when the
+    updater kept your copy, else <name>."""
+    new = os.path.join(paths.PACKAGE_ROOT, name + ".new")
+    return new if os.path.exists(new) else os.path.join(paths.PACKAGE_ROOT, name)
+
+def save_test_report(name: str, failed: list, root: str) -> None:
+    """logs\\selftest_<name>.log, and a copy in <My Drive>\\MyTraderbyClaude\\Logs
+    when that folder exists - so a failed update's reason can be read from
+    Drive. Never raises."""
+    import time as _t
+    text = (f"{_t.strftime('%Y-%m-%d %H:%M:%S')} {name} self-test: "
+            + (f"{len(failed)} FAILED check(s)\n" + "\n".join(failed) if failed else "ALL PASS") + "\n")
+    targets = [os.path.join(root, "logs")]
+    if os.name == "nt":
+        for letter in "GHIJKLMNOPQRSTUVWXYZDEF":
+            base = next((f"{letter}:\\{d}\\MyTraderbyClaude" for d in ("My Drive", "MyDrive")
+                         if os.path.isdir(f"{letter}:\\{d}\\MyTraderbyClaude")), None)
+            if base:
+                targets.append(os.path.join(base, "Logs"))
+                break
+    for folder in targets:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, f"selftest_{name}.log"), "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            pass
+
 
 
 def make_trending_df(n: int = 250, start: float = 2300.0, drift: float = 0.6,
@@ -3877,16 +3914,21 @@ def test_ea_preset_python_consistency() -> bool:
                 int(log_set["InpMagicNumber"]) == int(ea["InpTelegramMagicNumber"])
                 and int(log_set["InpMagicNumber2"]) == cfg.magic
                 and log_set["InpSourceLabel2"] == cfg.comment, log_set)
-    with open(os.path.join(paths.PACKAGE_ROOT, "start.bat"), encoding="utf-8") as f:
+    # The package's own start.bat (start.bat.new when the updater kept yours):
+    # a start.bat you edited (dry-run, other options) never fails a test.
+    with open(shipped_copy("start.bat"), encoding="utf-8") as f:
         line = next(ln for ln in f if ln.strip().lower().startswith("set gt_args="))
     gt_args = shlex.split(line.split("=", 1)[1])
     started = main_mod.build_config(main_mod.build_parser().parse_args(gt_args))
     ok &= check("start.bat's options parse; its shared cap counts the EA's Telegram magic",
-                started.shared_cap_magic_numbers == [int(ea["InpTelegramMagicNumber"])]
-                and not started.dry_run, gt_args)
-    ok &= check("start.bat keeps the fixed trading rules (2% risk, 10% cap, $6/$6/$3, 5 per direction)",
-                (started.risk_percent, started.max_daily_loss_pct, started.sl_dollars, started.tp1_dollars,
-                 started.trail_dollars, started.max_open_positions_per_direction) == (2.0, 10.0, 6.0, 6.0, 3.0, 5))
+                started.shared_cap_magic_numbers == [int(ea["InpTelegramMagicNumber"])], gt_args)
+    shipped_rules = (started.risk_percent, started.max_daily_loss_pct, started.sl_dollars, started.tp1_dollars,
+                     started.trail_dollars, started.max_open_positions_per_direction)
+    ok &= check("the fixed trading rules (2% risk, 10% cap, $6/$6/$3, 5 per direction) - start.bat changes "
+                "none of them unless you add an option yourself",
+                shipped_rules == (2.0, 10.0, 6.0, 6.0, 3.0, 5)
+                or any(a in gt_args for a in ("--risk-percent", "--max-daily-loss", "--sl-dollars", "--tp-dollars",
+                                              "--trail-dollars", "--max-positions")), (shipped_rules, gt_args))
     return ok
 
 
@@ -4982,14 +5024,17 @@ def test_btc_profile() -> bool:
     with _tempfile.TemporaryDirectory() as tmp:
         first = main_mod.acquire_instance_lock(tmp)
         second = main_mod.acquire_instance_lock(tmp)
-        first.close()                                   # the first program ends (or crashes)
+        main_mod.release_instance_lock(first)           # the first program ends
         third = main_mod.acquire_instance_lock(tmp)
         ok &= check("one copy per instance: a second one is refused; after the first ends it starts again",
                     first is not None and second is None and third is not None)
-        third.close()
-    bat = open(os.path.join(paths.PACKAGE_ROOT, "start.bat"), newline="").read()
-    ok &= check("start.bat starts gold and BTC together (BTC live; CRLF)",
-                "start-all %GT_ARGS% --btc %BTC_ARGS%" in bat and "set BTC_ARGS=--live" in bat and "\r\n" in bat)
+        if third is not None:
+            main_mod.release_instance_lock(third)
+    with open(shipped_copy("start.bat"), newline="") as f:
+        bat = f.read()
+    ok &= check("start.bat starts gold and BTC together (CRLF) - your own BTC_ARGS (dry-run, suffix) is fine",
+                "start-all %GT_ARGS% --btc %BTC_ARGS%" in bat and "set btc_args=" in bat.lower()
+                and "\r\n" in bat)
     return ok
 
 
@@ -5044,6 +5089,7 @@ def main() -> int:
         test_btc_profile(),
     ]
     print()
+    save_test_report("app", FAILED_CHECKS, paths.PACKAGE_ROOT)
     if all(results):
         print(f"ALL PASS ({len(results)}/{len(results)} suites)")
         return 0

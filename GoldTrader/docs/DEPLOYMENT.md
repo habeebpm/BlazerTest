@@ -234,7 +234,9 @@ press Ctrl+C here, then double-click update.bat. ***`
    - `start.bat` / `settings.ini`: if you changed one, yours
      is KEPT and the new one saved next to it as `<name>.new`;
    - runs every self-test -> `ALL SELF-TESTS PASSED`; if a test fails, the
-     previous version is put back automatically;
+     previous version is put back automatically, and the reason is saved to
+     `logs\update.log` + `logs\selftest_*.log` and copied to Google Drive
+     `MyTraderbyClaude\Logs` - tell Claude "check the logs";
    - overwrites the copy in Google Drive (`Google Drive copy:
      G:\My Drive\MyTraderbyClaude\GoldTrader - N updated ...`);
    - recompiles the EAs in MT5 -> `0 error(s)` (MT5 reloads them on the

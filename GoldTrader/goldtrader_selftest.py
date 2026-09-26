@@ -9,11 +9,39 @@ import tempfile
 import goldtrader as solution
 
 results = []
+failed_lines = []
 
 
 def check(name, cond, detail=""):
     results.append(bool(cond))
-    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + ("" if cond else f" - {detail}"))
+    line = f"  [{'PASS' if cond else 'FAIL'}] {name}" + ("" if cond else f" - {detail}")
+    print(line)
+    if not cond:
+        failed_lines.append(line[:2000])
+
+
+def save_test_report(name: str, failed: list, root: str) -> None:
+    """logs\\selftest_<name>.log, and a copy in <My Drive>\\MyTraderbyClaude\\Logs
+    when that folder exists - so a failed update's reason can be read from
+    Drive. Never raises."""
+    import time as _t
+    text = (f"{_t.strftime('%Y-%m-%d %H:%M:%S')} {name} self-test: "
+            + (f"{len(failed)} FAILED check(s)\n" + "\n".join(failed) if failed else "ALL PASS") + "\n")
+    targets = [os.path.join(root, "logs")]
+    if os.name == "nt":
+        for letter in "GHIJKLMNOPQRSTUVWXYZDEF":
+            base = next((f"{letter}:\\{d}\\MyTraderbyClaude" for d in ("My Drive", "MyDrive")
+                         if os.path.isdir(f"{letter}:\\{d}\\MyTraderbyClaude")), None)
+            if base:
+                targets.append(os.path.join(base, "Logs"))
+                break
+    for folder in targets:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, f"selftest_{name}.log"), "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            pass
 
 
 def main() -> int:
@@ -153,6 +181,12 @@ def main() -> int:
         with open(os.path.join(base, *rel.split("/")), encoding="utf-8") as f:
             return f.read()
 
+    def _mk_pkg(base, files):
+        pkg = tempfile.mkdtemp(dir=base)
+        for rel, text in files.items():
+            write(pkg, rel, text)
+        return pkg
+
     def make_zip(files, sha):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
@@ -231,10 +265,46 @@ def main() -> int:
               and solution.load_update_state(os.path.join(home, "logs", "update_state.json"))["sha"] == "b" * 40,
               (after, before))
 
+        # The update's own output (packages + every self-test) goes to logs\\update.log.
+        solution.save_update_state({"sha": "b" * 40, "shipped": state["shipped"]},
+                                   os.path.join(home, "logs", "update_state.json"))
+        zip_bytes = make_zip({"goldtrader.py": "v4", "app/main.py": "main v4", "settings.ini": "ini v2"}, "d" * 40)
+
+        def fetch4(url, timeout=0):
+            if "/commits/" in url:
+                return json.dumps({"sha": "d" * 40, "commit": {"message": "Four"}}).encode()
+            if "/compare/" in url:
+                return b"{}"
+            return zip_bytes
+        rc4 = solution.cmd_update(None, fetch=fetch4, root=home, setup=lambda _a: solution.run(
+            [sys.executable, "-c", "print('TEST OUTPUT LINE')"], home))
+        with open(os.path.join(home, "logs", "update.log"), encoding="utf-8") as f:
+            ulog = f.read()
+        check("update: the whole setup/test output is also saved to logs\\update.log (for Claude, via Drive)",
+              rc4 == 0 and "TEST OUTPUT LINE" in ulog and "update to ddddddd" in ulog, ulog[-300:])
+
+        # .new files: refreshed when your copy is kept, removed when stale
+        write(home, "start.bat.new", "an old template")
+        write(home, "start.bat", "start v1")                               # = what was shipped -> unedited
+        st = {"shipped": {"start.bat": hashlib.sha256(b"start v1").hexdigest()}}   # what the last update shipped
+        base = os.path.dirname(home)
+        rep = solution.apply_update(_mk_pkg(base, {"start.bat": "start v5"}), home, st,
+                                    os.path.join(base, "bk5"))
+        check("a start.bat you never edited is updated and a leftover start.bat.new removed",
+              read(home, "start.bat") == "start v5" and not os.path.exists(os.path.join(home, "start.bat.new"))
+              and rep["kept"] == [], rep)
+        write(home, "start.bat", "start v5 --symbol BTCUSDm")                 # you edit it
+        st2 = {"shipped": {"start.bat": rep["shipped"]["start.bat"]}}
+        rep2 = solution.apply_update(_mk_pkg(base, {"start.bat": "start v6"}), home, st2, os.path.join(base, "bk6"))
+        check("an edited start.bat is kept, the package's current one saved as start.bat.new (what the tests read)",
+              rep2["kept"] == ["start.bat"] and read(home, "start.bat.new") == "start v6"
+              and solution.shipped_copy("start.bat", home).endswith("start.bat.new"), rep2)
+
         def offline(url, timeout=0):
             raise OSError("no internet")
+        before_offline = sorted(solution.solution_files(home))
         check("no internet -> clear message, nothing changed", solution.cmd_update(None, fetch=offline, root=home) == 1
-              and read(home, "goldtrader.py") == "v2")
+              and sorted(solution.solution_files(home)) == before_offline and read(home, "start.bat") == "start v5 --symbol BTCUSDm")
     check("start.bat notice only when GitHub has a newer version than the installed one",
           solution.update_notice(fetch=lambda u, t=0: b"not json") == "")
     # start.bat: gold + Bitcoin in one window (tests: no real log file, no Drive)
@@ -295,14 +365,15 @@ def main() -> int:
     import warnings
     bad = []
     for rel in solution.solution_files(solution.ROOT):
-        if rel.endswith(".py"):
+        # the package's own folders only - never extra files of yours
+        if rel.endswith(".py") and os.path.dirname(rel) in ("", "app", "relay", "drive_export"):
             with open(os.path.join(solution.ROOT, rel), encoding="utf-8") as f:
                 source = f.read()
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
                 try:
                     compile(source, rel, "exec")
-                except (SyntaxError, SyntaxWarning) as exc:
+                except (SyntaxError, Warning) as exc:
                     bad.append(f"{rel}: {exc}")
     check("every .py compiles without warnings (a bad backslash once printed a SyntaxWarning in start.bat)",
           not bad, bad)
@@ -371,7 +442,7 @@ def main() -> int:
         solution.release_lock(held)
         check("update while start.bat runs: refused AND the autostart paused so it is not reopened meanwhile",
               rc_upd == 1 and os.path.exists(os.path.join(home, "logs", "autostart_paused")))
-    with open(os.path.join(solution.ROOT, "start.bat"), newline="") as f:
+    with open(solution.shipped_copy("start.bat"), newline="") as f:     # the package's, not your edits
         sb = f.read()
     with open(os.path.join(solution.ROOT, "autostart.bat"), newline="") as f:
         ab = f.read()
@@ -449,6 +520,7 @@ def main() -> int:
           and solution.find_drive_root(isdir=lambda p: p == "E:\\MyDrive") == "E:\\MyDrive"
           and solution.find_drive_root(isdir=lambda p: False) is None)
     ok = all(results)
+    save_test_report("launcher", failed_lines, solution.ROOT)
     print("ALL PASS" if ok else "SOME CHECKS FAILED")
     return 0 if ok else 1
 

@@ -70,11 +70,32 @@ MT5_FILES = [
 ]
 MT5_COMPILE = ["Experts/UnifiedTrader_EA.mq5", "Experts/TelegramSMC_TradeLogger.mq5", "Experts/BTCTrader_EA.mq5"]
 
+_TEE = {"path": None}      # cmd_update: every line of setup/tests also goes to logs\update.log
+
+
+def _tee(text: str) -> None:
+    if _TEE["path"]:
+        try:
+            with open(_TEE["path"], "a", encoding="utf-8") as f:
+                f.write(text.rstrip("\n") + "\n")
+        except OSError:
+            pass
+
+
 def run(cmd, cwd) -> int:
-    print(f"\n> ({os.path.relpath(cwd, ROOT)}) {' '.join(cmd)}", flush=True)
+    header = f"\n> ({os.path.relpath(cwd, ROOT)}) {' '.join(cmd)}"
+    print(header, flush=True)
+    _tee(header)
     env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")   # emoji-safe logs on Windows
     try:
-        return subprocess.call(cmd, cwd=cwd, env=env)
+        if not _TEE["path"]:
+            return subprocess.call(cmd, cwd=cwd, env=env)
+        proc = subprocess.Popen(cmd, cwd=cwd, env=dict(env, PYTHONUNBUFFERED="1"), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            _tee(line)
+        return proc.wait()
     except KeyboardInterrupt:
         return 130
 
@@ -288,6 +309,9 @@ def apply_update(new_root: str, root: str = ROOT, state: dict | None = None,
         src, dst = os.path.join(new_root, rel), os.path.join(root, rel)
         report["shipped"][rel] = _sha256(src)
         exists = os.path.exists(dst)
+        if rel in USER_FILES and os.path.exists(dst + ".new") and not (
+                exists and shipped.get(rel) != _sha256(dst) and not filecmp.cmp(src, dst, shallow=False)):
+            os.remove(dst + ".new")                     # a leftover from an earlier update - not current
         if exists and filecmp.cmp(src, dst, shallow=False):
             continue
         if exists and rel in USER_FILES and shipped.get(rel) != _sha256(dst):
@@ -323,6 +347,13 @@ def rollback_update(report: dict, root: str = ROOT) -> None:
         dst = os.path.join(root, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
+
+
+def shipped_copy(name: str, root: str = ROOT) -> str:
+    """The package's own version of a file you may edit (start.bat,
+    settings.ini): <name>.new when the updater kept your copy, else <name>."""
+    new = os.path.join(root, name + ".new")
+    return new if os.path.exists(new) else os.path.join(root, name)
 
 
 def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
@@ -366,11 +397,28 @@ def cmd_update(args, fetch=_http, setup=None, root: str = ROOT) -> int:
     for rel in report["kept"]:
         print(f"  KEPT your {rel} - the new version is saved as {rel}.new (compare and copy what you need).")
     if n:
-        rc = (setup or cmd_setup)(None)                  # packages, every self-test, Drive copy
+        log_path = os.path.join(root, "logs", "update.log")
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} update to {sha[:7]} ({headline})\n")
+        except OSError:
+            pass
+        _TEE["path"] = log_path                          # the whole setup/test output, for Claude
+        try:
+            rc = (setup or cmd_setup)(None)              # packages, every self-test, Drive copy
+        finally:
+            _TEE["path"] = None
+            try:
+                drive = find_drive_root()
+                if drive:
+                    mirror_logs(drive, root, sources={"update.log": log_path}, prune=False)
+            except Exception:
+                pass
         if rc != 0:
             rollback_update(report, root)
             print("\nThe new version FAILED its self-tests - your previous version was put back. "
-                  "Nothing else changed; tell Claude what the test output says.")
+                  "Nothing else changed. The reason is in logs\\update.log and in Google Drive "
+                  "MyTraderbyClaude\\Logs (update.log, selftest_*.log) - tell Claude \"check the logs\".")
             return rc
     save_update_state({"sha": sha, "branch": branch,
                        "installed_utc": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()),
@@ -441,7 +489,9 @@ def log_sources(root: str = ROOT, appdata: str | None = None) -> dict:
     out = {}
     for path in sorted(glob.glob(os.path.join(root, "logs", "run", "start_*.log")))[-LOG_KEEP_DAYS:]:
         out[os.path.basename(path)] = path
-    for name, rel in [("autostart.log", ("logs", "autostart.log"))] + [
+    for name, rel in [("autostart.log", ("logs", "autostart.log")), ("update.log", ("logs", "update.log")),
+                      ("selftest_app.log", ("logs", "selftest_app.log")),
+                      ("selftest_launcher.log", ("logs", "selftest_launcher.log"))] + [
             (f"{prefix}{job}.log", ("logs", *sub, f"{job}.log"))
             for prefix, sub in (("gold_", ()), ("btc_", ("btc",))) for job in JOB_LOGS]:
         path = os.path.join(root, *rel)
@@ -455,7 +505,7 @@ def log_sources(root: str = ROOT, appdata: str | None = None) -> dict:
     return out
 
 
-def mirror_logs(dest_root: str, root: str = ROOT, sources: dict | None = None) -> int:
+def mirror_logs(dest_root: str, root: str = ROOT, sources: dict | None = None, prune: bool = True) -> int:
     """Copies the logs into <My Drive>\\MyTraderbyClaude\\Logs (UTF-8, only
     when changed, temp file + rename); files it put there before that are no
     longer current are removed. Returns how many files were updated."""
@@ -481,7 +531,7 @@ def mirror_logs(dest_root: str, root: str = ROOT, sources: dict | None = None) -
             f.write(data)
         os.replace(tmp, dst)
         updated += 1
-    for path in glob.glob(os.path.join(target, "*.log")):
+    for path in glob.glob(os.path.join(target, "*.log")) if prune else []:
         name = os.path.basename(path)
         if name not in sources and (name.startswith("start_") or name.startswith("MT5_Experts_")):
             os.remove(path)

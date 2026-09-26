@@ -966,6 +966,19 @@ def acquire_instance_lock(log_dir: str):
     return handle
 
 
+def release_instance_lock(handle) -> None:
+    """Unlocks then closes (Windows frees a lock left on a closed file only
+    eventually)."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()
+    except (OSError, ValueError):
+        pass
+
+
 def main(argv: list | None = None) -> int:
     try:
         args = build_parser().parse_args(argv)
